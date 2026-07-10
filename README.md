@@ -118,6 +118,7 @@ All application data is stored in `~/.llampaca/`:
 | `~/.llampaca/bin/` | `llama-server` binary and shared libraries |
 | `~/.llampaca/models/` | Downloaded GGUF model files |
 | `~/.llampaca/logs/` | Server logs and PID files per port |
+| `~/.llampaca/history.db` | SQLite database storing conversation history |
 | `~/.llampaca/config.json` | User configuration |
 
 ---
@@ -142,6 +143,30 @@ All application data is stored in `~/.llampaca/`:
 
 ---
 
+## 🗄️ Database & Schema
+
+Llampaca stores all your local conversation histories in a local SQLite database at `~/.llampaca/history.db`.
+
+### Tables
+
+#### 1. `conversations`
+Stores conversation sessions.
+- `id` (TEXT, PRIMARY KEY): Unique string UUID.
+- `title` (TEXT): Title of the conversation. Automatically set using a truncated snippet of the first user message if left default.
+- `model_name` (TEXT): Name of the GGUF model file used.
+- `created_at` (TIMESTAMP): Date and time created.
+- `updated_at` (TIMESTAMP): Date and time updated.
+
+#### 2. `messages`
+Stores messages for each conversation.
+- `id` (INTEGER, PRIMARY KEY AUTOINCREMENT): Message identifier.
+- `conversation_id` (TEXT): Foreign key referencing `conversations(id)` with `ON DELETE CASCADE`.
+- `role` (TEXT): Role (`system`, `user`, `assistant`, `tool`).
+- `content` (TEXT): The message text.
+- `created_at` (TIMESTAMP): Date and time created.
+
+---
+
 ## 🛡️ Process Safety
 
 Llampaca automatically:
@@ -159,7 +184,7 @@ Llampaca automatically:
 - [x] Interactive terminal chat with streaming
 - [x] Automatic port conflict resolution
 - [x] Orphaned process cleanup
-- [ ] **Conversation history** — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
+- [x] Conversation history — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
 - [ ] Search tool (DuckDuckGo API or Direct scraping with requests+BeautifulSoup)
 - [ ] Tool Calling/function calling 
 - [ ] Agentic loop

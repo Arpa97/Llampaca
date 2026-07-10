@@ -240,5 +240,24 @@ def run(model_name, port, ctx, threads, gpu):
         server.stop()
         click.echo("Goodbye!")
 
+@main.group()
+def history():
+    """Gestisci lo storico delle chat."""
+    pass
+
+@history.command(name="list") #list history of chats
+def list_history():
+    #Get all history database
+    from llampaca.engine.db import list_conversations
+    history = list_conversations()
+    #Print history
+    for item in history:
+        click.echo(f"ID: {item['id']}")
+        click.echo(f"Title: {item['title']}")
+        click.echo(f"Model: {item['model_name']}")
+        click.echo(f"Created At: {item['created_at']}")
+        click.echo(f"Updated At: {item['updated_at']}")
+        click.echo("")
+
 if __name__ == "__main__":
     main()

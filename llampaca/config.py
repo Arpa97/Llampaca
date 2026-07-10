@@ -8,6 +8,7 @@ CONFIG_PATH = LLAMPACA_DIR / "config.json"
 BIN_DIR = LLAMPACA_DIR / "bin"
 MODELS_DIR = LLAMPACA_DIR / "models"
 LOGS_DIR = LLAMPACA_DIR / "logs"
+DB_PATH = LLAMPACA_DIR / "history.db"
 
 # Recommended model presets
 MODEL_PRESETS = {
