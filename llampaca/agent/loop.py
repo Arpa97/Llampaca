@@ -20,6 +20,7 @@ these events in the terminal today; a future GUI or local HTTP API will
 render the exact same events differently.
 """
 
+from datetime import datetime
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 from llampaca.engine.client import LlamaClient
@@ -86,10 +87,18 @@ class Agent:
         # content is produced) — so we must NOT disable tools in that case.
         self._tools_confirmed_working = False
 
+        # Local models have old training cutoffs and no clock: without this
+        # they guess the date (and e.g. build web searches around the wrong
+        # year). Appending today's date to the system prompt fixes that for
+        # free. Applied to custom prompts too, since the problem is the same.
+        base_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        today = datetime.now().strftime("%A, %d %B %Y")
+        dated_prompt = f"{base_prompt} Today's date is {today}."
+
         # Full conversation history, in OpenAI messages format.
         # Kept on the instance so multiple send() calls form one conversation.
         self.messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT}
+            {"role": "system", "content": dated_prompt}
         ]
 
     def send(self, user_input: str) -> Generator[Tuple[str, Any], None, None]:

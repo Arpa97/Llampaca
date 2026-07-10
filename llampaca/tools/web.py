@@ -28,9 +28,12 @@ MAX_PAGE_CHARS = 6000
 # model to pick a page and stay within its small context window.
 MAX_SEARCH_RESULTS = 6
 
-# DuckDuckGo's no-JavaScript endpoint. It must be queried with POST: a GET
+# DuckDuckGo's no-JavaScript endpoints. They must be queried with POST: a GET
 # returns an HTTP 202 anti-bot challenge, while POST returns real results.
+# We try "lite" first and fall back to "html": they have different markup and
+# different anti-bot behavior, so one may work when the other doesn't.
 DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
+DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 
 # Pretend to be a browser: several sites (and DuckDuckGo) return 403/challenge
 # pages to unknown user agents.
@@ -47,6 +50,76 @@ def _strip_html(fragment: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", " ", fragment)).strip()
 
 
+def _is_ad(url: str) -> bool:
+    """
+    True if a result URL is a DuckDuckGo advertisement redirect rather than
+    an organic result (ads point at duckduckgo.com/y.js with an ad_domain
+    parameter). Ads would otherwise pollute the model's context with long
+    tracking URLs of no informational value.
+    """
+    return "y.js" in url or "ad_domain=" in url
+
+
+def _parse_lite_results(page: str):
+    """
+    Parse results from the "lite" endpoint markup.
+
+    There, each result is an anchor whose href is the real target URL,
+    followed by class='result-link', with the abstract in a sibling table
+    cell of class 'result-snippet'. Returns [(url, title, snippet), ...].
+    """
+    links = re.findall(
+        r"<a[^>]*href=\"([^\"]+)\"[^>]*class=['\"]?result-link['\"]?[^>]*>(.*?)</a>",
+        page,
+        re.S,
+    )
+    snippets = re.findall(
+        r"class=['\"]?result-snippet['\"]?[^>]*>(.*?)</td>",
+        page,
+        re.S,
+    )
+    return [
+        (url, title, snippets[i] if i < len(snippets) else "")
+        for i, (url, title) in enumerate(links)
+        if not _is_ad(url)
+    ]
+
+
+def _parse_html_results(page: str):
+    """
+    Parse results from the "html" endpoint markup.
+
+    There, result anchors have class 'result__a' and their href is a
+    DuckDuckGo redirect (//duckduckgo.com/l/?uddg=<url-encoded target>), so
+    the real URL must be extracted from the 'uddg' query parameter.
+    Snippets are anchors of class 'result__snippet'.
+    """
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    links = re.findall(
+        r"<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+        page,
+        re.S,
+    )
+    snippets = re.findall(
+        r"class=\"result__snippet\"[^>]*>(.*?)</a>",
+        page,
+        re.S,
+    )
+
+    results = []
+    for i, (href, title) in enumerate(links):
+        if _is_ad(href):
+            continue  # skip sponsored results (see _is_ad)
+        url = href
+        if "uddg=" in href:
+            # Decode the redirect wrapper to get the real destination URL
+            query = urlparse(html.unescape(href)).query
+            url = unquote(parse_qs(query).get("uddg", [href])[0])
+        results.append((url, title, snippets[i] if i < len(snippets) else ""))
+    return results
+
+
 def web_search(query: str) -> str:
     """
     Search the web and return the top results as a list of title, URL and
@@ -56,43 +129,44 @@ def web_search(query: str) -> str:
     Args:
         query: The search query, in natural language.
     """
-    try:
-        response = requests.post(
-            DDG_LITE_URL,
-            data={"q": query},
-            headers=_HEADERS,
-            timeout=15,
-        )
-        response.raise_for_status()
-    except requests.RequestException as e:
-        return f"Error running web search: {e}"
+    # Try each endpoint in turn; markup differs per endpoint so each has its
+    # own parser. One endpoint occasionally returns an empty/challenge page
+    # for a query the other answers fine, so falling back matters.
+    attempts = [
+        (DDG_LITE_URL, _parse_lite_results),
+        (DDG_HTML_URL, _parse_html_results),
+    ]
+    errors = []
+    for endpoint, parser in attempts:
+        try:
+            response = requests.post(
+                endpoint,
+                data={"q": query},
+                headers=_HEADERS,
+                timeout=15,
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            errors.append(str(e))
+            continue
 
-    # In the "lite" markup each result is an anchor whose href is the real
-    # target URL, followed by class='result-link', with the abstract in a
-    # sibling cell of class 'result-snippet'.
-    results = re.findall(
-        r"<a[^>]*href=\"([^\"]+)\"[^>]*class=['\"]?result-link['\"]?[^>]*>(.*?)</a>",
-        response.text,
-        re.S,
+        results = parser(response.text)
+        if results:
+            lines = [f"Search results for '{query}':\n"]
+            for index, (url, title, snippet) in enumerate(results[:MAX_SEARCH_RESULTS]):
+                lines.append(f"{index + 1}. {_strip_html(title)}")
+                lines.append(f"   URL: {url}")
+                clean_snippet = _strip_html(snippet)
+                if clean_snippet:
+                    lines.append(f"   {clean_snippet}")
+            return "\n".join(lines)
+
+    if errors:
+        return f"Error running web search: {'; '.join(errors)}"
+    return (
+        f"No search results found for '{query}'. "
+        "Try rephrasing with fewer, more specific keywords."
     )
-    snippets = re.findall(
-        r"class=['\"]?result-snippet['\"]?[^>]*>(.*?)</td>",
-        response.text,
-        re.S,
-    )
-
-    if not results:
-        return f"No search results found for '{query}'."
-
-    # Pair each result with its snippet (there may be fewer snippets than links)
-    lines = [f"Search results for '{query}':\n"]
-    for index, (url, title) in enumerate(results[:MAX_SEARCH_RESULTS]):
-        snippet = _strip_html(snippets[index]) if index < len(snippets) else ""
-        lines.append(f"{index + 1}. {_strip_html(title)}")
-        lines.append(f"   URL: {url}")
-        if snippet:
-            lines.append(f"   {snippet}")
-    return "\n".join(lines)
 
 
 def _html_to_text(html_content: str) -> str:

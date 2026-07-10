@@ -93,7 +93,10 @@ During a `llampaca run` session the model can call these built-in tools:
 |---|---|---|
 | `read_file` | Read a text file from the workspace | No |
 | `list_directory` | List files in a workspace directory | No |
+| `find_files` | Find files by glob pattern (e.g. `*.py`) across the workspace | No |
+| `search_text` | Search text inside workspace files (grep-like, `file:line` results) | No |
 | `write_file` | Write/overwrite a file in the workspace | **Yes** |
+| `edit_file` | Replace an exact text snippet inside a file (surgical edit) | **Yes** |
 | `run_shell_command` | Run a shell command on your machine | **Yes** |
 | `web_search` | Search the web (DuckDuckGo, no API key) and return top results | No |
 | `fetch_url` | Download a web page as plain text | No |

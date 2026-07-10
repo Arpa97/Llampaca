@@ -5,6 +5,46 @@ Each entry includes the date, a brief description of the change, and the reason 
 
 ## 2026-07-10
 
+### Added — edit_file tool; hardened web_search
+
+- **`llampaca/tools/filesystem.py`** — New `edit_file(path, old_text, new_text)`
+  tool (confirmation-gated, like `write_file`).
+  - *What:* Replaces an exact snippet inside a file, leaving the rest
+    untouched. The snippet must match exactly once: zero matches or ambiguous
+    matches return an instructive error instead of editing the wrong place.
+  - *Why:* `write_file` only overwrites whole files, so small local models had
+    to reproduce the entire content to change one line — slow and error-prone
+    (risk of silently dropping parts of the file). Targeted replacement is the
+    safer editing primitive.
+- **`llampaca/tools/web.py`** — `web_search` now tries two DuckDuckGo
+  endpoints ("lite", then "html") with per-endpoint parsers, decodes the
+  html endpoint's `uddg=` redirect wrappers to real URLs, and filters out
+  sponsored results (`y.js`/`ad_domain` ad redirects).
+  - *Why:* A single regex over one endpoint's markup was fragile (a query
+    could return an empty/challenge page that the other endpoint answers) and
+    the html endpoint put an advertisement with a huge tracking URL as the
+    first result, polluting the model's context.
+
+### Added — File search tools and date-aware system prompt
+
+- **`llampaca/tools/filesystem.py`** — New `find_files(pattern)` and
+  `search_text(text, path)` tools, plus a shared `_iter_searchable_files()`
+  walker that prunes VCS/cache/dependency directories (`.git`, `__pycache__`,
+  `node_modules`, virtualenvs, …) and hidden entries.
+  - *What:* `find_files` locates files by glob pattern anywhere in the
+    workspace; `search_text` greps file contents (case-insensitive substring)
+    returning `file:line: content` matches. Both are sandboxed to the
+    workspace, skip binaries and >2 MB files, and cap result counts to protect
+    the small context window of local models.
+  - *Why:* Searching the codebase is the most-used capability when working on
+    a project; without these tools the model had to fall back on
+    `run_shell_command` (confirmation friction on every grep) or read files
+    one by one.
+- **`llampaca/agent/loop.py`** — The system prompt now ends with today's date.
+  - *Why:* Local models have old training cutoffs and no clock: they guessed
+    the date and e.g. built web searches around the wrong year. Injecting the
+    real date at session start fixes that for free.
+
 ### Added — Web search tool (Roadmap item: "DeepSearch / web search integration")
 
 - **`llampaca/tools/web.py`** — New `web_search(query)` tool.
