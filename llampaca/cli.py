@@ -247,7 +247,7 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         gpu_layers=gpu
     )
     
-    if not server.start():
+    if not await server.start():
         # Clean up active session on startup failure
         config = load_config()
         config["active_conversation_id"] = ""

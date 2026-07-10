@@ -116,7 +116,7 @@ class LlamaServer:
         """Check if the llama-server binary exists and is executable."""
         return self.binary_path.exists() and (sys.platform == "win32" or os.access(self.binary_path, os.X_OK))
 
-    def start(self, timeout_seconds: int = 60) -> bool:
+    async def start(self, timeout_seconds: int = 60) -> bool:
         """
         Start the llama-server subprocess.
         Returns True if the server started successfully and is healthy, False otherwise.
@@ -176,8 +176,7 @@ class LlamaServer:
         print(f"Command: {' '.join(cmd)}")
         print(f"Logging outputs to: {self.log_file_path}")
         
-        import asyncio
-        asyncio.run(self.db.init_db())
+        await self.db.init_db()
         print(f"Database path: {self.db.db_path}")
         print(f"Database OK!")
 
