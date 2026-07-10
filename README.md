@@ -101,6 +101,7 @@ During a `llampaca run` session the model can call these built-in tools:
 | `search_text` | Search text inside workspace files (grep-like, `file:line` results) | No |
 | `write_file` | Write/overwrite a file in the workspace | **Yes** |
 | `edit_file` | Replace an exact text snippet inside a file (surgical edit) | **Yes** |
+| `delete_path` | Permanently delete a file or directory (refuses workspace root and `.git`) | **Yes** |
 | `run_shell_command` | Run a shell command on your machine | **Yes** |
 | `web_search` | Search the web (DuckDuckGo, no API key) and return top results | No |
 | `fetch_url` | Download a web page as plain text | No |
@@ -110,7 +111,12 @@ Safety model:
 - **Explicit confirmation** — destructive tools show you the exact arguments and only run if you approve; a declined action is reported back to the model so it can adapt
 - **Iteration cap** — the tool loop stops after 10 round-trips to prevent runaway behavior
 
-Tool calling uses llama-server's native OpenAI-compatible `tools` API (enabled via `--jinja`). If the loaded model's chat template doesn't support tools, Llampaca warns you and falls back to plain chat automatically.
+Tool calling works with any model, via two modes picked automatically:
+
+- **Native** — for models whose chat template supports tools (e.g. the Qwen family): uses llama-server's OpenAI-compatible `tools` API with structured `tool_calls`. Most reliable.
+- **Prompt-based** — for models without tool support in their template (e.g. Gemma): tool definitions are injected into the system prompt and the model replies with a JSON object that Llampaca parses itself.
+
+The active mode is shown in the session header (`Tools enabled (native): ...`).
 
 ---
 

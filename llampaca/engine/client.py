@@ -14,6 +14,8 @@ Two levels of API:
 """
 
 from typing import Any, Dict, AsyncGenerator, List, Optional, Tuple
+
+import requests
 # pyrefly: ignore [missing-import]
 from openai import AsyncOpenAI
 
@@ -23,10 +25,29 @@ class LlamaClient:
         """
         Initialize the OpenAI-compatible client pointing to the local llama-server.
         """
+        self.port = port
         self.client = AsyncOpenAI(
             base_url=f"http://127.0.0.1:{port}/v1",
             api_key="llampaca-local-key"  # No key required, using placeholder
         )
+
+    def get_chat_template(self) -> str:
+        """
+        Fetch the model's chat template from llama-server's /props endpoint
+        (llama-server specific, not part of the OpenAI API).
+
+        The agent inspects it to decide the tool-calling mode: a template that
+        never mentions tools cannot render the OpenAI "tools" parameter, so
+        tool definitions must be injected via the system prompt instead.
+
+        Deliberately synchronous (blocking `requests`) even though the rest of
+        this client is async: it is called once from Agent.__init__, which is a
+        sync context, and a one-shot call at startup does not benefit from the
+        event loop.
+        """
+        response = requests.get(f"http://127.0.0.1:{self.port}/props", timeout=5)
+        response.raise_for_status()
+        return response.json().get("chat_template", "") or ""
 
     async def chat_stream(self, messages: List[Dict[str, str]], model: str = "local-model") -> AsyncGenerator[str, None]:
         """
