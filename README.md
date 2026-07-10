@@ -159,6 +159,7 @@ Llampaca automatically:
 - [x] Interactive terminal chat with streaming
 - [x] Automatic port conflict resolution
 - [x] Orphaned process cleanup
+- [ ] **Conversation history** — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
 - [ ] Agentic tool/skill execution loop
 - [ ] MCP (Model Context Protocol) integration
 - [ ] DeepSearch / web search integration
