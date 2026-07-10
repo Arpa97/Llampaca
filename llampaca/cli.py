@@ -1,5 +1,6 @@
 import os
 import sys
+# pyrefly: ignore [missing-import]
 import click
 from pathlib import Path
 from tabulate import tabulate
@@ -183,7 +184,91 @@ def run(model_name, port, ctx, threads, gpu):
         click.echo(f"Looked in {MODELS_DIR} and current working directory.")
         sys.exit(1)
         
-    # 2. Start server
+    # 2. Check and choose conversation session
+    from llampaca.engine.db import (
+        list_conversations,
+        create_conversation,
+        add_message,
+        get_conversation
+    )
+    
+    # Retrieve existing conversations to see if we can offer a resume option
+    existing_conversations = list_conversations()
+    active_conversation_id = None
+    messages = []
+    
+    if not existing_conversations:
+        # No history found - start a brand new conversation session
+        active_conversation_id = create_conversation(model_name=model_path.name)
+        system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
+        add_message(active_conversation_id, "system", system_content)
+        messages.append({"role": "system", "content": system_content})
+        click.echo("No previous chat history found. Started a new conversation session.")
+    else:
+        # Present selection menu
+        click.echo("=== Select Conversation Session ===")
+        click.echo("[1] Start a new conversation")
+        
+        # Display the most recent 9 conversations
+        display_limit = 9
+        recent_convs = existing_conversations[:display_limit]
+        for idx, conv in enumerate(recent_convs):
+            click.echo(f"[{idx + 2}] Resume: \"{conv['title']}\" (Model: {conv['model_name']}, Updated: {conv['updated_at']})")
+            
+        choice = click.prompt("Choose option (default: 1)", default=1, type=int)
+        
+        if choice == 1:
+            # User wants to start a new conversation
+            active_conversation_id = create_conversation(model_name=model_path.name)
+            system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
+            add_message(active_conversation_id, "system", system_content)
+            messages.append({"role": "system", "content": system_content})
+            click.echo("Started a new conversation session.")
+        elif 2 <= choice <= len(recent_convs) + 1:
+            # User wants to resume a previous conversation
+            selected_conv = recent_convs[choice - 2]
+            active_conversation_id = selected_conv["id"]
+            
+            # Load metadata and messages from the DB
+            conv_data = get_conversation(active_conversation_id)
+            
+            # If the stored model file exists, use it instead of the default/parameter model
+            stored_model_path = MODELS_DIR / conv_data["model_name"]
+            if stored_model_path.exists():
+                model_path = stored_model_path
+            else:
+                # If model file is missing, warn the user and proceed with the current active model
+                click.echo(f"Warning: Stored model '{conv_data['model_name']}' not found in {MODELS_DIR}.")
+                click.echo(f"Falling back to current model '{model_path.name}'.")
+                
+            # Reload messages into active memory
+            for msg in conv_data["messages"]:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+                
+            click.echo(f"\nResumed conversation: \"{conv_data['title']}\"")
+            click.echo("--- Recent History ---")
+            # Print the last 6 messages to provide immediate chat context
+            recent_msgs = conv_data["messages"][-6:]
+            for msg in recent_msgs:
+                if msg["role"] == "user":
+                    click.echo(f"You > {msg['content']}")
+                elif msg["role"] == "assistant":
+                    click.echo(f"Llampaca > {msg['content']}")
+            click.echo("----------------------")
+        else:
+            # Fallback for invalid options
+            click.echo("Invalid choice. Starting a new conversation.")
+            active_conversation_id = create_conversation(model_name=model_path.name)
+            system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
+            add_message(active_conversation_id, "system", system_content)
+            messages.append({"role": "system", "content": system_content})
+
+    # Save active_conversation_id to application config to make it accessible to other components
+    config = load_config()
+    config["active_conversation_id"] = active_conversation_id
+    save_config(config)
+
+    # 3. Start server
     server_port = port or config.get("server_port", 8080)
     
     server = LlamaServer(
@@ -195,19 +280,19 @@ def run(model_name, port, ctx, threads, gpu):
     )
     
     if not server.start():
+        # Clean up active session on startup failure
+        config = load_config()
+        config["active_conversation_id"] = ""
+        save_config(config)
         sys.exit(1)
         
-    # 3. Connect client and start interactive loop
+    # 4. Connect client and start interactive loop
     client = LlamaClient(port=server.port)
     
     click.echo("\n" + "=" * 50)
     click.echo(f" Interactive Chat Session with {model_path.name}")
     click.echo(" Type '/exit' or '/quit' to close the session.")
     click.echo("=" * 50 + "\n")
-    
-    messages = [
-        {"role": "system", "content": "You are Llampaca, a helpful, friendly local AI personal assistant."}
-    ]
     
     try:
         while True:
@@ -220,7 +305,9 @@ def run(model_name, port, ctx, threads, gpu):
             if not user_input.strip():
                 continue
                 
+            # Add message to local context and persist to SQLite
             messages.append({"role": "user", "content": user_input})
+            add_message(active_conversation_id, "user", user_input)
             
             # Print streaming response
             click.echo("Llampaca > ", nl=False)
@@ -230,14 +317,63 @@ def run(model_name, port, ctx, threads, gpu):
                 response_content += chunk
             click.echo() # Newline at the end
             
+            # Add response to local context and persist to SQLite
             messages.append({"role": "assistant", "content": response_content})
+            add_message(active_conversation_id, "assistant", response_content)
             
     except (KeyboardInterrupt, EOFError):
         click.echo("\nSession interrupted.")
     finally:
-        # 4. Cleanup
+        # Clear active conversation status from config on exit
+        config = load_config()
+        config["active_conversation_id"] = ""
+        save_config(config)
+        
+        # Shutdown server
         server.stop()
         click.echo("Goodbye!")
+
+@main.group()
+def history():
+    """Gestisci lo storico delle chat."""
+    pass
+
+@history.command(name="list") #list history of chats
+def list_history():
+    #Get all history database
+    from llampaca.engine.db import list_conversations
+    history = list_conversations()
+    #Print history
+    for item in history:
+        click.echo(f"ID: {item['id']}")
+        click.echo(f"Title: {item['title']}")
+        click.echo(f"Model: {item['model_name']}")
+        click.echo(f"Created At: {item['created_at']}")
+        click.echo(f"Updated At: {item['updated_at']}")
+        click.echo("")
+
+@history.command(name="delete")
+@click.argument("conversation_id")
+@click.option("-y", "--yes", is_flag=True, help="Ignora la conferma e cancella direttamente.")
+def delete_history(conversation_id, yes):
+    """Cancella una specifica sessione di chat tramite il suo ID (UUID)."""
+    from llampaca.engine.db import get_conversation, delete_conversation
+    
+    # Verifica l'esistenza della conversazione prima di tentare la rimozione
+    conv = get_conversation(conversation_id)
+    if not conv:
+        click.echo(f"Errore: Nessuna conversazione trovata con l'ID '{conversation_id}'.")
+        sys.exit(1)
+        
+    # Chiedi conferma all'utente a meno che non sia stato specificato il flag -y
+    if not yes:
+        if not click.confirm(f"Sei sicuro di voler eliminare la conversazione '{conv['title']}'?"):
+            click.echo("Operazione annullata.")
+            return
+            
+    # Rimuovi la conversazione (il database gestirà in cascata i messaggi correlati)
+    delete_conversation(conversation_id)
+    click.echo(f"Conversazione eliminata con successo: '{conv['title']}' (ID: {conversation_id})")
 
 if __name__ == "__main__":
     main()

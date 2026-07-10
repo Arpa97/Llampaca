@@ -109,6 +109,8 @@ class LlamaServer:
         self.process = None
         self.log_file_path = LOGS_DIR / f"llama-server-{self.port}.log"
         self.pid_file_path = LOGS_DIR / f"llama-server-{self.port}.pid"
+        from llampaca.engine import db
+        self.db = db
 
     def is_binary_available(self) -> bool:
         """Check if the llama-server binary exists and is executable."""
@@ -168,6 +170,10 @@ class LlamaServer:
         print(f"Starting llama-server on port {self.port}...")
         print(f"Command: {' '.join(cmd)}")
         print(f"Logging outputs to: {self.log_file_path}")
+        
+        self.db.init_db()
+        print(f"Database path: {self.db.db_path}")
+        print(f"Database OK!")
 
         # Ensure logs directory exists
         self.log_file_path.parent.mkdir(parents=True, exist_ok=True)

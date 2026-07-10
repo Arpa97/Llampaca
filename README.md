@@ -71,6 +71,8 @@ Type `/exit` or `/quit` to end the session. The server shuts down cleanly and al
 | `llampaca models download` | Download a model from Hugging Face |
 | `llampaca models remove <filename>` | Delete a local model |
 | `llampaca run [model_name]` | Start the server and open an interactive chat session |
+| `llampaca history list` | List all stored conversation sessions |
+| `llampaca history delete <id>` | Delete a conversation session by its ID |
 
 ### `llampaca run` options
 
@@ -87,7 +89,7 @@ Type `/exit` or `/quit` to end the session. The server shuts down cleanly and al
 
 | Preset | Size | Best For |
 |---|---|---|
-| `qwen3.5-4b-instruct` | ~2.5 GB | **Recommended** — best balance of speed and quality |
+| `qwen3.5-4b-instruct` | ~4.2 GB | **Recommended** — best balance of speed and quality |
 | `qwen2.5-coder-1.5b-instruct` | ~1 GB | Very fast, excellent for coding tasks |
 | `llama3.2-3b-instruct` | ~2 GB | General purpose, Meta's lightweight model |
 
@@ -118,6 +120,7 @@ All application data is stored in `~/.llampaca/`:
 | `~/.llampaca/bin/` | `llama-server` binary and shared libraries |
 | `~/.llampaca/models/` | Downloaded GGUF model files |
 | `~/.llampaca/logs/` | Server logs and PID files per port |
+| `~/.llampaca/history.db` | SQLite database storing conversation history |
 | `~/.llampaca/config.json` | User configuration |
 
 ---
@@ -142,6 +145,30 @@ All application data is stored in `~/.llampaca/`:
 
 ---
 
+## 🗄️ Database & Schema
+
+Llampaca stores all your local conversation histories in a local SQLite database at `~/.llampaca/history.db`.
+
+### Tables
+
+#### 1. `conversations`
+Stores conversation sessions.
+- `id` (TEXT, PRIMARY KEY): Unique string UUID.
+- `title` (TEXT): Title of the conversation. Automatically set using a truncated snippet of the first user message if left default.
+- `model_name` (TEXT): Name of the GGUF model file used.
+- `created_at` (TIMESTAMP): Date and time created.
+- `updated_at` (TIMESTAMP): Date and time updated.
+
+#### 2. `messages`
+Stores messages for each conversation.
+- `id` (INTEGER, PRIMARY KEY AUTOINCREMENT): Message identifier.
+- `conversation_id` (TEXT): Foreign key referencing `conversations(id)` with `ON DELETE CASCADE`.
+- `role` (TEXT): Role (`system`, `user`, `assistant`, `tool`).
+- `content` (TEXT): The message text.
+- `created_at` (TIMESTAMP): Date and time created.
+
+---
+
 ## 🛡️ Process Safety
 
 Llampaca automatically:
@@ -159,7 +186,7 @@ Llampaca automatically:
 - [x] Interactive terminal chat with streaming
 - [x] Automatic port conflict resolution
 - [x] Orphaned process cleanup
-- [ ] **Conversation history** — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
+- [x] Conversation history — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
 - [ ] Search tool (DuckDuckGo API or Direct scraping with requests+BeautifulSoup)
 - [ ] Tool Calling/function calling 
 - [ ] Agentic loop

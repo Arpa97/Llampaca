@@ -7,6 +7,7 @@ import shutil
 import requests
 from pathlib import Path
 from tqdm import tqdm
+# pyrefly: ignore [missing-import]
 from huggingface_hub import hf_hub_download
 from llampaca.config import BIN_DIR, MODELS_DIR
 
