@@ -116,7 +116,7 @@ class LlamaServer:
         """Check if the llama-server binary exists and is executable."""
         return self.binary_path.exists() and (sys.platform == "win32" or os.access(self.binary_path, os.X_OK))
 
-    def start(self, timeout_seconds: int = 60) -> bool:
+    async def start(self, timeout_seconds: int = 60) -> bool:
         """
         Start the llama-server subprocess.
         Returns True if the server started successfully and is healthy, False otherwise.
@@ -152,12 +152,17 @@ class LlamaServer:
             self.pid_file_path = LOGS_DIR / f"llama-server-{self.port}.pid"
 
         # Build command arguments
+        # --jinja enables the model's jinja chat template, which is required
+        # for OpenAI-compatible tool calling (the agent loop depends on it).
+        # It is the default on recent llama.cpp builds but we pass it
+        # explicitly to support older binaries.
         cmd = [
             str(self.binary_path),
             "-m", str(self.model_path),
             "--port", str(self.port),
             "-c", str(self.context_size),
-            "-t", str(self.n_threads)
+            "-t", str(self.n_threads),
+            "--jinja"
         ]
         
         # Configure GPU layers
@@ -171,7 +176,7 @@ class LlamaServer:
         print(f"Command: {' '.join(cmd)}")
         print(f"Logging outputs to: {self.log_file_path}")
         
-        self.db.init_db()
+        await self.db.init_db()
         print(f"Database path: {self.db.db_path}")
         print(f"Database OK!")
 
