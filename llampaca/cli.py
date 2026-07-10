@@ -1,5 +1,6 @@
 import os
 import sys
+# pyrefly: ignore [missing-import]
 import click
 from pathlib import Path
 from tabulate import tabulate

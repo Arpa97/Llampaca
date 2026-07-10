@@ -1,4 +1,5 @@
 from typing import Generator, List, Dict
+# pyrefly: ignore [missing-import]
 from openai import OpenAI
 
 class LlamaClient:
