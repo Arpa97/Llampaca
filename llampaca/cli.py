@@ -147,43 +147,9 @@ def remove_model(filename):
         model_path.unlink()
         click.echo(f"Deleted {model_path.name}")
 
-@main.command()
-@click.argument("model_name", required=False)
-@click.option("--port", type=int, help="Port to run llama-server on")
-@click.option("--ctx", type=int, help="Context size")
-@click.option("--threads", type=int, help="Number of CPU threads to use")
-@click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
-def run(model_name, port, ctx, threads, gpu):
-    """Launch llama-server and open an interactive chat session."""
+async def async_run_chat(model_path, port, ctx, threads, gpu):
     config = load_config()
     
-    # 1. Resolve model path
-    if not model_name:
-        model_name = config.get("default_model", "")
-        # Resolve to preset filename if default_model refers to a preset name
-        if model_name in MODEL_PRESETS:
-            model_name = MODEL_PRESETS[model_name]["file"]
-            
-    if not model_name:
-        click.echo("Error: No default model configured, and no model specified.")
-        click.echo("Please download a model using: llampaca models download")
-        sys.exit(1)
-        
-    model_path = MODELS_DIR / model_name
-    # Fallback to direct absolute/relative path if not found in models directory
-    if not model_path.exists():
-        model_path = Path(model_name)
-        if not model_path.exists():
-            # Check if user specified a preset name
-            if model_name in MODEL_PRESETS:
-                preset_file = MODEL_PRESETS[model_name]["file"]
-                model_path = MODELS_DIR / preset_file
-                
-    if not model_path.exists():
-        click.echo(f"Error: Model '{model_name}' could not be resolved to a file path.")
-        click.echo(f"Looked in {MODELS_DIR} and current working directory.")
-        sys.exit(1)
-        
     # 2. Check and choose conversation session
     from llampaca.engine.db import (
         list_conversations,
@@ -193,15 +159,15 @@ def run(model_name, port, ctx, threads, gpu):
     )
     
     # Retrieve existing conversations to see if we can offer a resume option
-    existing_conversations = list_conversations()
+    existing_conversations = await list_conversations()
     active_conversation_id = None
     messages = []
     
     if not existing_conversations:
         # No history found - start a brand new conversation session
-        active_conversation_id = create_conversation(model_name=model_path.name)
+        active_conversation_id = await create_conversation(model_name=model_path.name)
         system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
-        add_message(active_conversation_id, "system", system_content)
+        await add_message(active_conversation_id, "system", system_content)
         messages.append({"role": "system", "content": system_content})
         click.echo("No previous chat history found. Started a new conversation session.")
     else:
@@ -219,9 +185,9 @@ def run(model_name, port, ctx, threads, gpu):
         
         if choice == 1:
             # User wants to start a new conversation
-            active_conversation_id = create_conversation(model_name=model_path.name)
+            active_conversation_id = await create_conversation(model_name=model_path.name)
             system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
-            add_message(active_conversation_id, "system", system_content)
+            await add_message(active_conversation_id, "system", system_content)
             messages.append({"role": "system", "content": system_content})
             click.echo("Started a new conversation session.")
         elif 2 <= choice <= len(recent_convs) + 1:
@@ -230,7 +196,7 @@ def run(model_name, port, ctx, threads, gpu):
             active_conversation_id = selected_conv["id"]
             
             # Load metadata and messages from the DB
-            conv_data = get_conversation(active_conversation_id)
+            conv_data = await get_conversation(active_conversation_id)
             
             # If the stored model file exists, use it instead of the default/parameter model
             stored_model_path = MODELS_DIR / conv_data["model_name"]
@@ -258,9 +224,9 @@ def run(model_name, port, ctx, threads, gpu):
         else:
             # Fallback for invalid options
             click.echo("Invalid choice. Starting a new conversation.")
-            active_conversation_id = create_conversation(model_name=model_path.name)
+            active_conversation_id = await create_conversation(model_name=model_path.name)
             system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
-            add_message(active_conversation_id, "system", system_content)
+            await add_message(active_conversation_id, "system", system_content)
             messages.append({"role": "system", "content": system_content})
 
     # Save active_conversation_id to application config to make it accessible to other components
@@ -307,7 +273,7 @@ def run(model_name, port, ctx, threads, gpu):
                 
             # Add message to local context and persist to SQLite
             messages.append({"role": "user", "content": user_input})
-            add_message(active_conversation_id, "user", user_input)
+            await add_message(active_conversation_id, "user", user_input)
             
             # Print streaming response
             click.echo("Llampaca > ", nl=False)
@@ -319,7 +285,7 @@ def run(model_name, port, ctx, threads, gpu):
             
             # Add response to local context and persist to SQLite
             messages.append({"role": "assistant", "content": response_content})
-            add_message(active_conversation_id, "assistant", response_content)
+            await add_message(active_conversation_id, "assistant", response_content)
             
     except (KeyboardInterrupt, EOFError):
         click.echo("\nSession interrupted.")
@@ -333,6 +299,46 @@ def run(model_name, port, ctx, threads, gpu):
         server.stop()
         click.echo("Goodbye!")
 
+@main.command()
+@click.argument("model_name", required=False)
+@click.option("--port", type=int, help="Port to run llama-server on")
+@click.option("--ctx", type=int, help="Context size")
+@click.option("--threads", type=int, help="Number of CPU threads to use")
+@click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
+def run(model_name, port, ctx, threads, gpu):
+    """Launch llama-server and open an interactive chat session."""
+    config = load_config()
+    
+    # 1. Resolve model path
+    if not model_name:
+        model_name = config.get("default_model", "")
+        # Resolve to preset filename if default_model refers to a preset name
+        if model_name in MODEL_PRESETS:
+            model_name = MODEL_PRESETS[model_name]["file"]
+            
+    if not model_name:
+        click.echo("Error: No default model configured, and no model specified.")
+        click.echo("Please download a model using: llampaca models download")
+        sys.exit(1)
+        
+    model_path = MODELS_DIR / model_name
+    # Fallback to direct absolute/relative path if not found in models directory
+    if not model_path.exists():
+        model_path = Path(model_name)
+        if not model_path.exists():
+            # Check if user specified a preset name
+            if model_name in MODEL_PRESETS:
+                preset_file = MODEL_PRESETS[model_name]["file"]
+                model_path = MODELS_DIR / preset_file
+                
+    if not model_path.exists():
+        click.echo(f"Error: Model '{model_name}' could not be resolved to a file path.")
+        click.echo(f"Looked in {MODELS_DIR} and current working directory.")
+        sys.exit(1)
+        
+    import asyncio
+    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu))
+
 @main.group()
 def history():
     """Gestisci lo storico delle chat."""
@@ -342,7 +348,8 @@ def history():
 def list_history():
     #Get all history database
     from llampaca.engine.db import list_conversations
-    history = list_conversations()
+    import asyncio
+    history = asyncio.run(list_conversations())
     #Print history
     for item in history:
         click.echo(f"ID: {item['id']}")
@@ -358,9 +365,10 @@ def list_history():
 def delete_history(conversation_id, yes):
     """Cancella una specifica sessione di chat tramite il suo ID (UUID)."""
     from llampaca.engine.db import get_conversation, delete_conversation
+    import asyncio
     
     # Verifica l'esistenza della conversazione prima di tentare la rimozione
-    conv = get_conversation(conversation_id)
+    conv = asyncio.run(get_conversation(conversation_id))
     if not conv:
         click.echo(f"Errore: Nessuna conversazione trovata con l'ID '{conversation_id}'.")
         sys.exit(1)
@@ -372,7 +380,7 @@ def delete_history(conversation_id, yes):
             return
             
     # Rimuovi la conversazione (il database gestirà in cascata i messaggi correlati)
-    delete_conversation(conversation_id)
+    asyncio.run(delete_conversation(conversation_id))
     click.echo(f"Conversazione eliminata con successo: '{conv['title']}' (ID: {conversation_id})")
 
 if __name__ == "__main__":
