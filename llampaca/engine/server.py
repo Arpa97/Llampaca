@@ -176,7 +176,8 @@ class LlamaServer:
         print(f"Command: {' '.join(cmd)}")
         print(f"Logging outputs to: {self.log_file_path}")
         
-        self.db.init_db()
+        import asyncio
+        asyncio.run(self.db.init_db())
         print(f"Database path: {self.db.db_path}")
         print(f"Database OK!")
 
