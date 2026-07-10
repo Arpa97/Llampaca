@@ -87,7 +87,7 @@ Type `/exit` or `/quit` to end the session. The server shuts down cleanly and al
 
 | Preset | Size | Best For |
 |---|---|---|
-| `qwen3.5-4b-instruct` | ~2.5 GB | **Recommended** — best balance of speed and quality |
+| `qwen3.5-4b-instruct` | ~4.2 GB | **Recommended** — best balance of speed and quality |
 | `qwen2.5-coder-1.5b-instruct` | ~1 GB | Very fast, excellent for coding tasks |
 | `llama3.2-3b-instruct` | ~2 GB | General purpose, Meta's lightweight model |
 
