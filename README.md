@@ -160,9 +160,12 @@ Llampaca automatically:
 - [x] Automatic port conflict resolution
 - [x] Orphaned process cleanup
 - [ ] **Conversation history** — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
+- [ ] Search tool (DuckDuckGo API or Direct scraping with requests+BeautifulSoup)
+- [ ] Tool Calling/function calling 
+- [ ] Agentic loop
 - [ ] Agentic tool/skill execution loop
 - [ ] MCP (Model Context Protocol) integration
-- [ ] DeepSearch / web search integration
+- [ ] DeepSearch
 - [ ] GUI (desktop application packaging)
 - [ ] One-click installer (no Python required)
 
