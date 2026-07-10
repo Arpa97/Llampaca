@@ -14,7 +14,8 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 - 🧹 **Orphan-safe** — on startup, kills any leftover `llama-server` processes from crashed previous sessions
 - 📦 **Model management** — download GGUF models from Hugging Face with a single command, or load your own
 - 💬 **Interactive chat** — streaming terminal chat session with any loaded model
-- 🏗️ **Agent-ready** — scaffolding for agentic workflows, tool/skill binding, and MCP integration (coming soon)
+- 🤖 **Agentic tool use** — the model can read/write workspace files, run shell commands (with your confirmation) and fetch web pages, via native OpenAI-compatible tool calling
+- 🏗️ **Extensible** — register any Python function as a tool; MCP integration coming soon
 
 ---
 
@@ -82,6 +83,32 @@ Type `/exit` or `/quit` to end the session. The server shuts down cleanly and al
 | `--ctx` | `4096` | Context window size in tokens |
 | `--threads` | auto | Number of CPU threads |
 | `--gpu` | `-1` (auto) | GPU layers to offload (`0` = CPU only, `-1` = all layers) |
+| `--no-tools` | off | Disable agent tools (plain chat mode) |
+
+---
+
+## 🛠️ Agent Tools
+
+During a `llampaca run` session the model can call these built-in tools:
+
+| Tool | Description | Asks confirmation? |
+|---|---|---|
+| `read_file` | Read a text file from the workspace | No |
+| `list_directory` | List files in a workspace directory | No |
+| `find_files` | Find files by glob pattern (e.g. `*.py`) across the workspace | No |
+| `search_text` | Search text inside workspace files (grep-like, `file:line` results) | No |
+| `write_file` | Write/overwrite a file in the workspace | **Yes** |
+| `edit_file` | Replace an exact text snippet inside a file (surgical edit) | **Yes** |
+| `run_shell_command` | Run a shell command on your machine | **Yes** |
+| `web_search` | Search the web (DuckDuckGo, no API key) and return top results | No |
+| `fetch_url` | Download a web page as plain text | No |
+
+Safety model:
+- **Workspace sandbox** — file tools can only touch paths inside the directory where you launched `llampaca run`; anything else (e.g. `../../etc/passwd`) is rejected
+- **Explicit confirmation** — destructive tools show you the exact arguments and only run if you approve; a declined action is reported back to the model so it can adapt
+- **Iteration cap** — the tool loop stops after 10 round-trips to prevent runaway behavior
+
+Tool calling uses llama-server's native OpenAI-compatible `tools` API (enabled via `--jinja`). If the loaded model's chat template doesn't support tools, Llampaca warns you and falls back to plain chat automatically.
 
 ---
 
@@ -106,9 +133,14 @@ llampaca/
 ├── engine/
 │   ├── downloader.py     # GitHub binary + Hugging Face model downloader
 │   ├── server.py         # llama-server subprocess manager (PID tracking, port scanning)
-│   └── client.py         # OpenAI-compatible streaming client
-└── agent/
-    └── base.py           # Agent scaffold (tool binding, MCP — coming soon)
+│   └── client.py         # OpenAI-compatible streaming client (text + tool call streaming)
+├── agent/
+│   └── loop.py           # Agentic execution loop (UI-independent, event-based)
+└── tools/
+    ├── registry.py       # Tool registry: JSON schema generation from Python functions
+    ├── filesystem.py     # read_file / write_file / list_directory (sandboxed)
+    ├── shell.py          # run_shell_command (confirmation-gated)
+    └── web.py            # fetch_url (HTML → plain text)
 ```
 
 ### Application Data
@@ -187,12 +219,9 @@ Llampaca automatically:
 - [x] Automatic port conflict resolution
 - [x] Orphaned process cleanup
 - [x] Conversation history — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
-- [ ] Search tool (DuckDuckGo API or Direct scraping with requests+BeautifulSoup)
-- [ ] Tool Calling/function calling 
-- [ ] Agentic loop
-- [ ] Agentic tool/skill execution loop
+- [x] Agentic tool/skill execution loop (filesystem, shell, web tools with confirmation gating)
+- [x] Web search integration (DuckDuckGo, no API key) — deeper "DeepSearch" (multi-step research) still to come
 - [ ] MCP (Model Context Protocol) integration
-- [ ] DeepSearch
 - [ ] GUI (desktop application packaging)
 - [ ] One-click installer (no Python required)
 

@@ -152,12 +152,17 @@ class LlamaServer:
             self.pid_file_path = LOGS_DIR / f"llama-server-{self.port}.pid"
 
         # Build command arguments
+        # --jinja enables the model's jinja chat template, which is required
+        # for OpenAI-compatible tool calling (the agent loop depends on it).
+        # It is the default on recent llama.cpp builds but we pass it
+        # explicitly to support older binaries.
         cmd = [
             str(self.binary_path),
             "-m", str(self.model_path),
             "--port", str(self.port),
             "-c", str(self.context_size),
-            "-t", str(self.n_threads)
+            "-t", str(self.n_threads),
+            "--jinja"
         ]
         
         # Configure GPU layers

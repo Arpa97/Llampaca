@@ -16,6 +16,8 @@ from llampaca.config import (
 from llampaca.engine.downloader import download_llama_binaries, download_hf_model
 from llampaca.engine.server import LlamaServer, is_port_in_use
 from llampaca.engine.client import LlamaClient
+from llampaca.agent import Agent
+from llampaca.tools import build_default_registry
 
 def format_size(bytes_size: int) -> str:
     """Format bytes into human-readable size."""
@@ -147,7 +149,7 @@ def remove_model(filename):
         model_path.unlink()
         click.echo(f"Deleted {model_path.name}")
 
-async def async_run_chat(model_path, port, ctx, threads, gpu):
+async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
     config = load_config()
     
     # 2. Check and choose conversation session
@@ -166,7 +168,7 @@ async def async_run_chat(model_path, port, ctx, threads, gpu):
     if not existing_conversations:
         # No history found - start a brand new conversation session
         active_conversation_id = await create_conversation(model_name=model_path.name)
-        system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
+        system_content = "You are Llampaca, a helpful local AI personal assistant."
         await add_message(active_conversation_id, "system", system_content)
         messages.append({"role": "system", "content": system_content})
         click.echo("No previous chat history found. Started a new conversation session.")
@@ -186,7 +188,7 @@ async def async_run_chat(model_path, port, ctx, threads, gpu):
         if choice == 1:
             # User wants to start a new conversation
             active_conversation_id = await create_conversation(model_name=model_path.name)
-            system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
+            system_content = "You are Llampaca, a helpful local AI personal assistant."
             await add_message(active_conversation_id, "system", system_content)
             messages.append({"role": "system", "content": system_content})
             click.echo("Started a new conversation session.")
@@ -225,7 +227,7 @@ async def async_run_chat(model_path, port, ctx, threads, gpu):
             # Fallback for invalid options
             click.echo("Invalid choice. Starting a new conversation.")
             active_conversation_id = await create_conversation(model_name=model_path.name)
-            system_content = "You are Llampaca, a helpful, friendly local AI personal assistant."
+            system_content = "You are Llampaca, a helpful local AI personal assistant."
             await add_message(active_conversation_id, "system", system_content)
             messages.append({"role": "system", "content": system_content})
 
@@ -252,11 +254,35 @@ async def async_run_chat(model_path, port, ctx, threads, gpu):
         save_config(config)
         sys.exit(1)
         
-    # 4. Connect client and start interactive loop
+    # 4. Connect client and build the agent
     client = LlamaClient(port=server.port)
+
+    # Tools are enabled by default; --no-tools falls back to plain chat.
+    # The registry sandbox root is the directory the user launched us from.
+    registry = None if no_tools else build_default_registry()
+
+    # The agent core asks for confirmation through this callback, and we render its events
+    def confirm_action(prompt_text: str) -> bool:
+        click.echo()  # break out of any partial output line
+        return click.confirm(click.style(f"  {prompt_text}", fg="yellow") + "\n  Allow?")
+
+    agent = Agent(
+        client=client,
+        registry=registry,
+        confirm=confirm_action,
+        model=model_path.name,
+    )
     
+    if messages:
+        agent.messages = messages
+
     click.echo("\n" + "=" * 50)
-    click.echo(f" Interactive Chat Session with {model_path.name}")
+    click.echo(f" Interactive Agent Session with {model_path.name}")
+    if registry:
+        click.echo(f" Tools enabled: {', '.join(registry.names())}")
+        click.echo(f" Workspace: {Path.cwd()}")
+    else:
+        click.echo(" Tools disabled (plain chat mode)")
     click.echo(" Type '/exit' or '/quit' to close the session.")
     click.echo("=" * 50 + "\n")
     
@@ -272,20 +298,37 @@ async def async_run_chat(model_path, port, ctx, threads, gpu):
                 continue
                 
             # Add message to local context and persist to SQLite
-            messages.append({"role": "user", "content": user_input})
             await add_message(active_conversation_id, "user", user_input)
             
             # Print streaming response
             click.echo("Llampaca > ", nl=False)
             response_content = ""
-            for chunk in client.chat_stream(messages, model=model_path.name):
-                click.echo(chunk, nl=False)
-                response_content += chunk
+            try:
+                async for kind, data in agent.send(user_input):
+                    if kind == "text":
+                        click.echo(data, nl=False)
+                        response_content += data
+                    elif kind == "tool_call":
+                        click.echo(click.style(
+                            f"\n  [tool] {data['name']}({data['arguments']})", fg="cyan"
+                        ))
+                    elif kind == "tool_result":
+                        # Show a one-line preview; the full result goes to the model
+                        preview = data["result"].replace("\n", " ")
+                        if len(preview) > 120:
+                            preview = preview[:120] + "..."
+                        click.echo(click.style(f"  [result] {preview}", fg="green"))
+                    elif kind == "warning":
+                        click.echo(click.style(f"\n  [warning] {data}", fg="yellow"))
+                    elif kind == "error":
+                        # Recoverable turn failure: show it in red but keep the session open
+                        click.echo(click.style(f"\n  [error] {data}", fg="red"))
+            except Exception as e:
+                click.echo(click.style(f"\n  [error] Unexpected error: {e}", fg="red"))
             click.echo() # Newline at the end
             
-            # Add response to local context and persist to SQLite
-            messages.append({"role": "assistant", "content": response_content})
-            await add_message(active_conversation_id, "assistant", response_content)
+            if response_content:
+                await add_message(active_conversation_id, "assistant", response_content)
             
     except (KeyboardInterrupt, EOFError):
         click.echo("\nSession interrupted.")
@@ -305,8 +348,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu):
 @click.option("--ctx", type=int, help="Context size")
 @click.option("--threads", type=int, help="Number of CPU threads to use")
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
-def run(model_name, port, ctx, threads, gpu):
-    """Launch llama-server and open an interactive chat session."""
+@click.option("--no-tools", is_flag=True, default=False, help="Disable agent tools (plain chat mode)")
+def run(model_name, port, ctx, threads, gpu, no_tools):
+    """Launch llama-server and open an interactive agent session."""
     config = load_config()
     
     # 1. Resolve model path
@@ -337,7 +381,7 @@ def run(model_name, port, ctx, threads, gpu):
         sys.exit(1)
         
     import asyncio
-    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu))
+    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools))
 
 @main.group()
 def history():
