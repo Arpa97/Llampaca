@@ -5,6 +5,7 @@ import zipfile
 import tempfile
 import shutil
 import requests
+import subprocess
 from pathlib import Path
 from tqdm import tqdm
 # pyrefly: ignore [missing-import]
@@ -13,8 +14,41 @@ from llampaca.config import BIN_DIR, MODELS_DIR
 
 GITHUB_API_URL = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 
+def detect_gpu_type(os_name: str) -> str:
+    """Detect if the system has an AMD, Nvidia, or Apple Silicon/Intel GPU."""
+    if os_name == "darwin":
+        return "metal"
+        
+    if os_name == "win32":
+        try:
+            out = subprocess.check_output(
+                ["powershell", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"],
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            out_lower = out.lower()
+            if "amd" in out_lower or "radeon" in out_lower:
+                return "amd"
+            if "nvidia" in out_lower or "geforce" in out_lower:
+                return "nvidia"
+        except Exception:
+            pass
+            
+    elif os_name.startswith("linux"):
+        try:
+            out = subprocess.check_output(["lspci"], stderr=subprocess.DEVNULL, text=True)
+            out_lower = out.lower()
+            if "amd" in out_lower or "radeon" in out_lower or "ati" in out_lower:
+                return "amd"
+            if "nvidia" in out_lower:
+                return "nvidia"
+        except Exception:
+            pass
+            
+    return "cpu"
+
 def get_platform_details():
-    """Detect current OS and architecture."""
+    """Detect current OS, architecture, and GPU type."""
     os_name = sys.platform
     arch = platform.machine().lower()
     
@@ -26,11 +60,12 @@ def get_platform_details():
     else:
         arch_clean = arch
         
-    return os_name, arch_clean
+    gpu_type = detect_gpu_type(os_name)
+    return os_name, arch_clean, gpu_type
 
-def find_matching_asset(assets, os_name, arch):
+def find_matching_asset(assets, os_name, arch, gpu_type):
     """
-    Find the most suitable asset for the current OS and architecture.
+    Find the most suitable asset for the current OS, architecture, and GPU.
     Supports both .zip and .tar.gz.
     """
     valid_extensions = (".zip", ".tar.gz", ".tgz")
@@ -51,10 +86,16 @@ def find_matching_asset(assets, os_name, arch):
                 
     # Windows
     elif os_name == "win32":
-        # Look for a standard CPU/LLVM build or simple x64
-        # CUDA build can also be searched, but LLVM is the most universal CPU fallback
-        # Let's search in order of preference
-        preferences = ["win-llvm-x64", "win-sycl-x64", "win-x64", "win-llvm"]
+        # Look for GPU-specific packages first if detected
+        preferences = []
+        if gpu_type == "amd":
+            preferences.extend(["win-hip-x64", "win-hip"])
+        elif gpu_type == "nvidia":
+            preferences.extend(["win-cuda-x64", "win-cuda"])
+            
+        # Standard CPU/LLVM fallbacks
+        preferences.extend(["win-llvm-x64", "win-sycl-x64", "win-x64", "win-llvm"])
+        
         for pref in preferences:
             for asset in assets:
                 name = asset["name"].lower()
@@ -68,9 +109,21 @@ def find_matching_asset(assets, os_name, arch):
                 
     # Linux
     elif os_name.startswith("linux"):
+        preferences = []
+        if gpu_type == "amd":
+            preferences.extend(["rocm", "ubuntu-rocm"])
+        elif gpu_type == "nvidia":
+            preferences.extend(["cuda", "ubuntu-cuda"])
+            
+        for pref in preferences:
+            for asset in assets:
+                name = asset["name"].lower()
+                if ("ubuntu" in name or "linux" in name) and pref in name and "x64" in name and name.endswith(valid_extensions):
+                    return asset
+                    
+        # Standard fallback Linux assets
         for asset in assets:
             name = asset["name"].lower()
-            # Typically named llama-<version>-bin-ubuntu-x64.zip or bin-linux-x64.zip
             if ("ubuntu" in name or "linux" in name) and "x64" in name and name.endswith(valid_extensions):
                 return asset
         # Fallback to any linux/ubuntu asset
@@ -104,8 +157,8 @@ def download_llama_binaries() -> bool:
     Download the latest precompiled llama-server and llama-cli binaries.
     Returns True if successful, False otherwise.
     """
-    os_name, arch = get_platform_details()
-    print(f"Detecting system: OS={os_name}, Architecture={arch}")
+    os_name, arch, gpu_type = get_platform_details()
+    print(f"Detecting system: OS={os_name}, Architecture={arch}, GPU={gpu_type}")
     
     print("Fetching latest llama.cpp release metadata from GitHub...")
     try:
@@ -119,7 +172,7 @@ def download_llama_binaries() -> bool:
         return False
         
     assets = release_data.get("assets", [])
-    asset = find_matching_asset(assets, os_name, arch)
+    asset = find_matching_asset(assets, os_name, arch, gpu_type)
     
     if not asset:
         print("Could not find a precompiled binary asset matching your platform on GitHub.")
