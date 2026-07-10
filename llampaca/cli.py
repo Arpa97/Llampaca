@@ -15,6 +15,8 @@ from llampaca.config import (
 from llampaca.engine.downloader import download_llama_binaries, download_hf_model
 from llampaca.engine.server import LlamaServer, is_port_in_use
 from llampaca.engine.client import LlamaClient
+from llampaca.agent import Agent
+from llampaca.tools import build_default_registry
 
 def format_size(bytes_size: int) -> str:
     """Format bytes into human-readable size."""
@@ -152,8 +154,9 @@ def remove_model(filename):
 @click.option("--ctx", type=int, help="Context size")
 @click.option("--threads", type=int, help="Number of CPU threads to use")
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
-def run(model_name, port, ctx, threads, gpu):
-    """Launch llama-server and open an interactive chat session."""
+@click.option("--no-tools", is_flag=True, default=False, help="Disable agent tools (plain chat mode)")
+def run(model_name, port, ctx, threads, gpu, no_tools):
+    """Launch llama-server and open an interactive agent session."""
     config = load_config()
     
     # 1. Resolve model path
@@ -197,41 +200,80 @@ def run(model_name, port, ctx, threads, gpu):
     if not server.start():
         sys.exit(1)
         
-    # 3. Connect client and start interactive loop
+    # 3. Connect client and build the agent
     client = LlamaClient(port=server.port)
-    
+
+    # Tools are enabled by default; --no-tools falls back to plain chat.
+    # The registry sandbox root is the directory the user launched us from.
+    registry = None if no_tools else build_default_registry()
+
+    # The agent core is UI-independent: it asks for confirmation through
+    # this callback, and we render its events in the terminal below.
+    def confirm_action(prompt_text: str) -> bool:
+        click.echo()  # break out of any partial output line
+        return click.confirm(click.style(f"  {prompt_text}", fg="yellow") + "\n  Allow?")
+
+    agent = Agent(
+        client=client,
+        registry=registry,
+        confirm=confirm_action,
+        model=model_path.name,
+    )
+
     click.echo("\n" + "=" * 50)
-    click.echo(f" Interactive Chat Session with {model_path.name}")
+    click.echo(f" Interactive Agent Session with {model_path.name}")
+    if registry:
+        click.echo(f" Tools enabled: {', '.join(registry.names())}")
+        click.echo(f" Workspace: {Path.cwd()}")
+    else:
+        click.echo(" Tools disabled (plain chat mode)")
     click.echo(" Type '/exit' or '/quit' to close the session.")
     click.echo("=" * 50 + "\n")
-    
-    messages = [
-        {"role": "system", "content": "You are Llampaca, a helpful, friendly local AI personal assistant."}
-    ]
-    
+
     try:
         while True:
             user_input = click.prompt("You", prompt_suffix=" > ")
-            
+
             # Command handling
             if user_input.strip().lower() in ["/exit", "/quit"]:
                 break
-                
+
             if not user_input.strip():
                 continue
-                
-            messages.append({"role": "user", "content": user_input})
-            
-            # Print streaming response
+
+            # Run the agent loop for this message and render its events:
+            # streamed text, tool calls, tool results, warnings and errors.
+            # The whole turn is wrapped so that an unexpected exception is
+            # reported and the REPL survives, instead of crashing the process.
             click.echo("Llampaca > ", nl=False)
-            response_content = ""
-            for chunk in client.chat_stream(messages, model=model_path.name):
-                click.echo(chunk, nl=False)
-                response_content += chunk
-            click.echo() # Newline at the end
-            
-            messages.append({"role": "assistant", "content": response_content})
-            
+            try:
+                for kind, data in agent.send(user_input):
+                    if kind == "text":
+                        click.echo(data, nl=False)
+                    elif kind == "tool_call":
+                        click.echo(click.style(
+                            f"\n  [tool] {data['name']}({data['arguments']})", fg="cyan"
+                        ))
+                    elif kind == "tool_result":
+                        # Show a one-line preview; the full result goes to the model
+                        preview = data["result"].replace("\n", " ")
+                        if len(preview) > 120:
+                            preview = preview[:120] + "..."
+                        click.echo(click.style(f"  [result] {preview}", fg="green"))
+                    elif kind == "warning":
+                        click.echo(click.style(f"\n  [warning] {data}", fg="yellow"))
+                    elif kind == "error":
+                        # Recoverable turn failure (e.g. server compute error):
+                        # show it in red but keep the session open.
+                        click.echo(click.style(f"\n  [error] {data}", fg="red"))
+            except (KeyboardInterrupt, EOFError):
+                # Let Ctrl+C / EOF fall through to the outer handler to quit
+                raise
+            except Exception as e:
+                # Last-resort safety net: never let one bad turn kill the REPL
+                click.echo(click.style(f"\n  [error] Unexpected error: {e}", fg="red"))
+            click.echo()  # Newline at the end of the turn
+
     except (KeyboardInterrupt, EOFError):
         click.echo("\nSession interrupted.")
     finally:

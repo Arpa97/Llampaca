@@ -1,0 +1,122 @@
+# Changelog
+
+All notable changes to Llampaca are documented in this file.
+Each entry includes the date, a brief description of the change, and the reason behind it.
+
+## 2026-07-10
+
+### Added — Web search tool (Roadmap item: "DeepSearch / web search integration")
+
+- **`llampaca/tools/web.py`** — New `web_search(query)` tool.
+  - *What:* Runs a web search and returns the top results (title, URL, snippet)
+    so the model can find relevant pages instead of guessing URLs. Uses
+    DuckDuckGo's no-JavaScript "lite" endpoint via HTTP POST (a GET returns an
+    anti-bot challenge), parsing results with the standard library only.
+  - *Why:* With only `fetch_url`, the model had no way to *find* pages: it
+    either guessed (usually wrong) URLs, or tried to scrape Google and got its
+    consent/login wall instead of results. A real search backend that needs no
+    API key or login fits Llampaca's free/local ethos.
+- **`llampaca/agent/loop.py`** — Updated `DEFAULT_SYSTEM_PROMPT` to tell the
+  model to use `web_search` for current/possibly-changed facts instead of
+  answering from memory.
+  - *Why:* Small local models otherwise answer from stale training data; an
+    explicit hint nudges them to search and cite.
+
+### Fixed — Agent session crashed on a mid-turn server error
+
+- **`llampaca/agent/loop.py`** — Reworked error handling in `Agent.send()`.
+  - *What:* Previously ANY streaming exception was assumed to mean "the model
+    rejected the tools parameter", so tools were disabled and the turn retried;
+    if the retry also failed the exception was re-raised, crashing the whole
+    CLI with a traceback. Now:
+    - The tools-unsupported fallback only triggers on a genuine first-contact
+      rejection (tools sent, never yet confirmed working, and no text streamed
+      yet), tracked via the new `_tools_confirmed_working` flag.
+    - Any other failure (server compute/GPU-memory error, dropped connection,
+      etc.) is reported via a new `("error", ...)` event and the turn ends
+      gracefully — the session stays alive.
+    - New `_describe_error()` helper recognizes llama-server "Compute error"
+      (an out-of-GPU-memory symptom on Apple Silicon) and returns actionable
+      guidance (fewer `--gpu` layers, smaller `--ctx`, lighter quant).
+  - *Why:* A real user session died with an `openai.APIError: Compute error.`
+    traceback. Root cause was a Metal GPU out-of-memory in llama-server (an
+    environment/resource issue), but the loop misdiagnosed it as a tools
+    problem and, worse, let it crash the app. A single failed turn must never
+    kill the REPL, and tools that already work must not be silently disabled.
+- **`llampaca/cli.py`** — The `run` REPL now renders the `("error", ...)` event
+  (in red) and wraps each turn in a try/except safety net so no unexpected
+  exception can crash the session.
+  - *Why:* Defense in depth — keep the interactive session alive no matter what
+    a single turn throws.
+
+### Added — Agentic tool-execution loop (Roadmap item: "Agentic tool/skill execution loop")
+
+- **`llampaca/tools/registry.py`** — New `ToolRegistry`/`Tool` classes.
+  - *What:* Registers plain Python functions as agent tools and auto-generates
+    their OpenAI-compatible JSON Schema from type hints + docstrings. Executes
+    tools by name from model-produced JSON arguments, converting every failure
+    (unknown tool, malformed JSON, runtime exception) into an error string.
+  - *Why:* Tool authors should just write a well-documented Python function and
+    get the model-facing schema for free; a broken tool call must never crash
+    the agent loop — the model needs to read the error and adapt.
+- **`llampaca/tools/filesystem.py`** — `read_file`, `write_file`, `list_directory`.
+  - *What:* Filesystem tools sandboxed to the workspace (the directory where
+    `llampaca run` was launched). Paths escaping the sandbox are rejected.
+    `write_file` requires user confirmation.
+  - *Why:* Give the agent real file access while preventing it from touching
+    anything outside the user's working directory.
+- **`llampaca/tools/shell.py`** — `run_shell_command`.
+  - *What:* Runs a shell command (60s timeout), returning exit code + stdout +
+    stderr. Always requires user confirmation.
+  - *Why:* Arbitrary command execution is powerful but dangerous, so it is
+    always gated behind an explicit user approval.
+- **`llampaca/tools/web.py`** — `fetch_url`.
+  - *What:* Downloads a URL and converts HTML to plain text using only the
+    standard library (no BeautifulSoup dependency).
+  - *Why:* Let the agent read documentation/articles without adding heavy
+    dependencies; a full DeepSearch integration remains a separate roadmap item.
+- **`llampaca/tools/__init__.py`** — `build_default_registry()` helper.
+  - *What:* Returns a registry pre-loaded with all built-in tools.
+  - *Why:* Single entry point for the CLI (and future GUI) to get the standard
+    tool set.
+- **`llampaca/agent/loop.py`** — New `Agent` class implementing the agentic loop.
+  - *What:* Sends the conversation + tool definitions to the model, executes any
+    requested tool calls (asking for confirmation on dangerous ones), feeds the
+    results back, and repeats until a final answer or a 10-iteration cap. It is
+    UI-independent: it yields events (`text`, `tool_call`, `tool_result`,
+    `warning`) and asks for confirmation via an injected callback.
+  - *Why:* This is the core that turns Llampaca from a chatbot into an agent.
+    Keeping it UI-independent means the planned GUI/HTTP API can reuse the exact
+    same core without a rewrite.
+
+### Changed
+
+- **`llampaca/engine/client.py`** — Added `chat_stream_events()`.
+  - *What:* Structured streaming that supports the OpenAI `tools` parameter and
+    reassembles tool calls arriving split across many stream chunks. The old
+    text-only `chat_stream()` is kept for plain chat mode.
+  - *Why:* The agent loop needs tool-call data from the stream, which the
+    previous text-only client discarded.
+- **`llampaca/engine/server.py`** — Pass `--jinja` when launching llama-server.
+  - *Why:* The jinja chat template is required for OpenAI-compatible tool
+    calling. It is the default on recent builds but is passed explicitly to
+    support older binaries.
+- **`llampaca/cli.py`** — `run` command now drives the `Agent` and renders its
+  events; added a `--no-tools` flag for plain chat mode.
+  - *Why:* Move conversation logic out of the CLI into the reusable agent core;
+    let users opt out of tools when they just want to chat.
+- **`README.md`** — Documented agent tools, the `--no-tools` flag, the safety
+  model, the updated project structure, and ticked the roadmap item.
+  - *Why:* Keep user-facing docs in sync with the new capability.
+
+### Removed
+
+- **`llampaca/agent/base.py`** — Deleted the empty `LocalAgent` scaffold.
+  - *Why:* Superseded by the fully implemented `Agent` in `agent/loop.py`.
+
+### Added — Developer tooling
+
+- **`.claude/skills/verify/SKILL.md`** — Recipe for building/launching/driving
+  Llampaca end-to-end to verify changes against the real llama-server.
+  - *Why:* Captures the cold-start verification steps so future sessions don't
+    have to rediscover them.
