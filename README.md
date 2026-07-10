@@ -10,7 +10,7 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 ## ✨ Features
 
 - 🔧 **Zero setup** — downloads `llama-server` binaries automatically for your OS and architecture (macOS arm64/Intel, Linux, Windows)
-- 🤖 **GPU accelerated** — uses Apple Metal (`-ngl 99`) on Apple Silicon, CUDA on NVIDIA out of the box
+- 🤖 **GPU accelerated** — uses Apple Metal (`-ngl 99`) on Apple Silicon, CUDA on NVIDIA out or HIP on AMD out zof the box
 - 🔀 **Smart port management** — automatically finds a free port if the default is in use (8080 → 8081 → ...)
 - 🧹 **Orphan-safe** — on startup, kills any leftover `llama-server` processes from crashed previous sessions
 - 📦 **Model management** — download GGUF models from Hugging Face with a single command, or load your own
