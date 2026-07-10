@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:huggingface.co)",
+      "Bash(git checkout *)",
+      "Bash(find . -iname \"CLAUDE.md\" -not -path \"./.git/*\" 2>/dev/null; find ~/.claude -maxdepth 1 -iname \"CLAUDE.md\" 2>/dev/null)",
+      "Read(//Users/umbertodilaudo/.claude/**)",
+      "Bash(git status *)"
+    ]
+  }
+}

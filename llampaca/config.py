@@ -13,7 +13,8 @@ LOGS_DIR = LLAMPACA_DIR / "logs"
 MODEL_PRESETS = {
     "qwen3.5-4b-instruct": {
         "repo": "Benasd/Qwen3.5-4B-Instruct-GGUF",
-        "file": "Qwen3.5-4B-Instruct-Q4_K_M.gguf",
+        # Fixed: old filename "Qwen3.5-4B-Instruct-Q4_K_M.gguf" doesn't exist in the repo (404), causing download failures
+        "file": "Qwen3.5-4B-Q8_0.gguf",  # "Qwen3.5-4B-Instruct-Q4_K_M.gguf" (previous, invalid value)
         "description": "Qwen 3.5 4B Instruct - Excellent balance of performance and footprint (Recommended)",
         "default": True
     },
