@@ -352,5 +352,28 @@ def list_history():
         click.echo(f"Updated At: {item['updated_at']}")
         click.echo("")
 
+@history.command(name="delete")
+@click.argument("conversation_id")
+@click.option("-y", "--yes", is_flag=True, help="Ignora la conferma e cancella direttamente.")
+def delete_history(conversation_id, yes):
+    """Cancella una specifica sessione di chat tramite il suo ID (UUID)."""
+    from llampaca.engine.db import get_conversation, delete_conversation
+    
+    # Verifica l'esistenza della conversazione prima di tentare la rimozione
+    conv = get_conversation(conversation_id)
+    if not conv:
+        click.echo(f"Errore: Nessuna conversazione trovata con l'ID '{conversation_id}'.")
+        sys.exit(1)
+        
+    # Chiedi conferma all'utente a meno che non sia stato specificato il flag -y
+    if not yes:
+        if not click.confirm(f"Sei sicuro di voler eliminare la conversazione '{conv['title']}'?"):
+            click.echo("Operazione annullata.")
+            return
+            
+    # Rimuovi la conversazione (il database gestirà in cascata i messaggi correlati)
+    delete_conversation(conversation_id)
+    click.echo(f"Conversazione eliminata con successo: '{conv['title']}' (ID: {conversation_id})")
+
 if __name__ == "__main__":
     main()

@@ -71,6 +71,8 @@ Type `/exit` or `/quit` to end the session. The server shuts down cleanly and al
 | `llampaca models download` | Download a model from Hugging Face |
 | `llampaca models remove <filename>` | Delete a local model |
 | `llampaca run [model_name]` | Start the server and open an interactive chat session |
+| `llampaca history list` | List all stored conversation sessions |
+| `llampaca history delete <id>` | Delete a conversation session by its ID |
 
 ### `llampaca run` options
 
