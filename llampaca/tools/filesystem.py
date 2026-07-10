@@ -131,6 +131,45 @@ def edit_file(path: str, old_text: str, new_text: str) -> str:
     return f"Successfully edited '{path}' (1 replacement)."
 
 
+def delete_path(path: str) -> str:
+    """
+    Permanently delete a file or an entire directory (including all its
+    contents) from the workspace. This cannot be undone, so use it only when
+    the user explicitly asks to remove something. The user is always asked
+    for confirmation before anything is deleted.
+
+    Args:
+        path: Path of the file or directory to delete, relative to the
+            workspace directory.
+    """
+    import shutil
+
+    resolved = _resolve_in_workspace(path)
+
+    # Extra guards on top of the sandbox: deleting these is catastrophic and
+    # never what the user meant by removing "a file or folder".
+    if resolved == WORKSPACE_ROOT:
+        return "Error: refusing to delete the workspace root directory itself."
+    relative_parts = resolved.relative_to(WORKSPACE_ROOT).parts
+    if relative_parts and relative_parts[0] == ".git":
+        return (
+            "Error: refusing to delete '.git' (or anything inside it) — that "
+            "would destroy the project's version history."
+        )
+
+    if not resolved.exists():
+        return f"Error: '{path}' does not exist."
+
+    if resolved.is_dir():
+        # Count what is about to disappear so the result is informative
+        contained = sum(1 for _ in resolved.rglob("*"))
+        shutil.rmtree(resolved)
+        return f"Deleted directory '{path}' and its {contained} contained item(s)."
+
+    resolved.unlink()
+    return f"Deleted file '{path}'."
+
+
 def list_directory(path: str = ".") -> str:
     """
     List files and subdirectories at a path inside the workspace.
@@ -269,6 +308,8 @@ def register_filesystem_tools(registry) -> None:
     registry.register(list_directory)
     registry.register(find_files)
     registry.register(search_text)
-    # Writing/editing modifies the user's disk: require explicit confirmation
+    # Writing/editing/deleting modifies the user's disk: require explicit
+    # confirmation. Deletion is the most dangerous of all (irreversible).
     registry.register(write_file, requires_confirmation=True)
     registry.register(edit_file, requires_confirmation=True)
+    registry.register(delete_path, requires_confirmation=True)

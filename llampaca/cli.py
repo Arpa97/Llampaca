@@ -223,7 +223,11 @@ def run(model_name, port, ctx, threads, gpu, no_tools):
     click.echo("\n" + "=" * 50)
     click.echo(f" Interactive Agent Session with {model_path.name}")
     if registry:
-        click.echo(f" Tools enabled: {', '.join(registry.names())}")
+        # "native" = the model's chat template handles tools structurally;
+        # "prompt-based" = definitions injected in the system prompt (models
+        # like Gemma whose template has no tool support)
+        mode = "native" if agent.native_tools else "prompt-based"
+        click.echo(f" Tools enabled ({mode}): {', '.join(registry.names())}")
         click.echo(f" Workspace: {Path.cwd()}")
     else:
         click.echo(" Tools disabled (plain chat mode)")

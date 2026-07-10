@@ -5,6 +5,60 @@ Each entry includes the date, a brief description of the change, and the reason 
 
 ## 2026-07-10
 
+### Added — delete_path tool (confirmation-gated deletion)
+
+- **`llampaca/tools/filesystem.py`** — New `delete_path(path)` tool.
+  - *What:* Permanently deletes a file or an entire directory (recursively)
+    inside the workspace. Always requires user confirmation. On top of the
+    sandbox it refuses two catastrophic targets outright: the workspace root
+    itself and `.git` (or anything inside it). Directory deletions report how
+    many contained items were removed.
+  - *Why:* Users asked the agent to clean up files/folders; without a
+    dedicated tool the model fell back on `rm -rf` via `run_shell_command`,
+    which has no sandbox and no `.git` guard. A purpose-built tool keeps
+    deletion inside the workspace with explicit, irreversible-action warnings.
+
+### Fixed — edit_file unusable from prompt-based mode (Gemma)
+
+- **`llampaca/agent/loop.py`** — `_extract_tool_call` now parses candidate
+  JSON with `strict=False`.
+  - *What:* Accepts literal control characters (newlines, tabs) inside JSON
+    string values, which spec-compliant parsing rejects.
+  - *Why:* Prompt-mode models like Gemma routinely emit multi-line tool
+    arguments with raw newlines instead of `\n` escapes — which is exactly the
+    common case for `edit_file`/`write_file` content. Those calls were being
+    silently discarded as "not a tool call", so edits never executed.
+    Reproduced with a unit case (multi-line `old_text`) and verified fixed
+    end-to-end with Gemma editing a Python file.
+
+### Added — Prompt-based tool calling with automatic mode detection
+
+- **`llampaca/agent/loop.py`** — The agent now supports two tool-calling modes
+  and picks one automatically per model.
+  - *What:* NATIVE mode (unchanged) uses the OpenAI `tools` parameter and the
+    server's structured `tool_calls` — used when the model's chat template
+    mentions tools (e.g. the Qwen family). PROMPT-BASED mode — for models like
+    Gemma whose template has no tool support — injects the tool definitions
+    into the system prompt, asks the model to reply with a single JSON object
+    to call a tool, parses that JSON out of the reply text
+    (`_extract_tool_call`, tolerant of ```json fences and surrounding text,
+    strict about naming a registered tool), and feeds results back as
+    user-role messages (these templates reject the "tool" role). The mode is
+    detected at startup by inspecting the server's chat template; if a native
+    request is still rejected at runtime, the agent switches to prompt mode on
+    the fly instead of disabling tools. Streaming is preserved: prompt-mode
+    output is buffered only while it still looks like JSON, so prose streams
+    live and raw tool-call JSON is never shown to the user.
+  - *Why:* Passing `tools` to a model whose template can't render them means
+    the model never sees the definitions and *hallucinates* tool results
+    (observed with Gemma 3 4B inventing file contents). This closes the gap:
+    Qwen-style models keep the most reliable native path, everything else
+    still gets working tools.
+- **`llampaca/engine/client.py`** — New `get_chat_template()` (reads
+  llama-server's `/props` endpoint) used for the mode detection.
+- **`llampaca/cli.py`** — The session header now shows the detected mode:
+  `Tools enabled (native): ...` / `Tools enabled (prompt-based): ...`.
+
 ### Added — edit_file tool; hardened web_search
 
 - **`llampaca/tools/filesystem.py`** — New `edit_file(path, old_text, new_text)`

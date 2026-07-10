@@ -32,7 +32,14 @@
       "Bash(rm -f /tmp/ls4b.log)",
       "Bash(awk '{print \"CPU%=\"$3, \"MEM%=\"$4, \" \"$11, $12, $13, $14}')",
       "Bash(python3 -m llampaca run Qwen3.5-4B-Q8_0.gguf --gpu 0)",
-      "Bash(python3 -c \"import json; print\\(json.load\\(open\\('/Users/umbertodilaudo/.llampaca/config.json'\\)\\)['default_model']\\)\")"
+      "Bash(python3 -c \"import json; print\\(json.load\\(open\\('/Users/umbertodilaudo/.llampaca/config.json'\\)\\)['default_model']\\)\")",
+      "Bash(python3 -m llampaca models download --repo ggml-org/gemma-3-4b-it-GGUF --file gemma-3-4b-it-Q4_K_M.gguf)",
+      "Bash(curl -s http://127.0.0.1:8093/v1/chat/completions -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(curl -s http://127.0.0.1:8093/props)",
+      "Bash(pkill -9 -f \"llama-server.*8093\")",
+      "Bash(rm -f /tmp/gemma.log)",
+      "Bash(python3 -m llampaca run Qwen3-4B-Q4_K_M.gguf)",
+      "Bash(git restore *)"
     ]
   }
 }

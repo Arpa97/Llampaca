@@ -15,6 +15,7 @@ Two levels of API:
 
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
+import requests
 from openai import OpenAI
 
 
@@ -23,10 +24,24 @@ class LlamaClient:
         """
         Initialize the OpenAI-compatible client pointing to the local llama-server.
         """
+        self.port = port
         self.client = OpenAI(
             base_url=f"http://127.0.0.1:{port}/v1",
             api_key="llampaca-local-key"  # No key required, using placeholder
         )
+
+    def get_chat_template(self) -> str:
+        """
+        Fetch the model's chat template from llama-server's /props endpoint
+        (llama-server specific, not part of the OpenAI API).
+
+        The agent inspects it to decide the tool-calling mode: a template that
+        never mentions tools cannot render the OpenAI "tools" parameter, so
+        tool definitions must be injected via the system prompt instead.
+        """
+        response = requests.get(f"http://127.0.0.1:{self.port}/props", timeout=5)
+        response.raise_for_status()
+        return response.json().get("chat_template", "") or ""
 
     def chat_stream(self, messages: List[Dict[str, str]], model: str = "local-model") -> Generator[str, None, None]:
         """
