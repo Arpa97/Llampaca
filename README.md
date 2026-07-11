@@ -1,5 +1,6 @@
 # Llampaca
-<img width="2000" height="2000" alt="Llampaca" src="https://github.com/user-attachments/assets/c4454143-d766-49e2-902c-93e1b8e72956" />
+<img width="1024" height="1024" alt="logo_no_frame" src="https://github.com/user-attachments/assets/86e2bb9e-2f75-4996-9a1b-946f13044620" />
+
 
 > Run your own AI agent locally, for free, on your machine. No cloud. No subscriptions. You own it, and you'll be happy.
 
