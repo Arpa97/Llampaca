@@ -274,7 +274,13 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
     )
     
     if messages:
-        agent.messages = messages
+        # Keep the system prompt the Agent built in __init__: it carries the
+        # current date and — in prompt-based mode (e.g. Gemma) — the tool
+        # definitions themselves. Replacing it with the generic system message
+        # stored in the DB would strip those instructions and silently break
+        # prompt-mode tool calling, so only the actual conversation turns
+        # (user/assistant) are restored from the database.
+        agent.messages.extend(m for m in messages if m.get("role") != "system")
 
     click.echo("\n" + "=" * 50)
     click.echo(f" Interactive Agent Session with {model_path.name}")

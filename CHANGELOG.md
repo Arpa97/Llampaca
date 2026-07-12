@@ -3,6 +3,29 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-12]
+
+### Fixed — prompt-based tools broken by DB conversation restore
+
+- **`llampaca/cli.py`** — Conversation restore no longer replaces the agent's
+  system prompt.
+  - *What:* `async_run_chat` used to do `agent.messages = messages`, where
+    `messages` always starts with the generic system message stored in the
+    database ("You are Llampaca, a helpful local AI personal assistant.").
+    That overwrote the system prompt `Agent.__init__` had just built — which
+    carries the current date and, in prompt-based mode, the tool definitions
+    themselves. Now only the actual conversation turns (user/assistant) are
+    appended after the agent-built system message.
+  - *Why:* On models whose chat template has no tool support (e.g. Gemma),
+    tools work by injecting their definitions into the system prompt. The
+    overwrite silently stripped them, so Gemma never saw any tool and
+    prompt-based tool calling stopped working after the async/DB features
+    were merged. Native-mode models (e.g. Qwen) were unaffected because
+    their tools travel in the API `tools` parameter. This was a semantic
+    conflict between two features developed in parallel (DB persistence on
+    main, prompt-based tool calling on umberto): git merged them cleanly
+    because the code paths never touch the same lines.
+
 ## [2026-07-10]
 
 ### Added — delete_path tool (confirmation-gated deletion)
