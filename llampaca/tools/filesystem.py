@@ -55,12 +55,19 @@ def _resolve_in_workspace(path: str) -> Path:
     return resolved
 
 
-def read_file(path: str) -> str:
+def read_file(path: str, start_line: int = 0, max_lines: int = 0) -> str:
     """
-    Read a text file from the workspace and return its content.
+    Read a text file from the workspace and return its content. To read only
+    part of a large file, pass start_line (and optionally max_lines): use this
+    to jump straight to a line number reported by search_text, or to continue
+    reading a file that was truncated, instead of re-reading it from the start.
 
     Args:
         path: Path of the file to read, relative to the workspace directory.
+        start_line: First line to read, 1-indexed. Omit or use 0 to read from
+            the beginning of the file.
+        max_lines: How many lines to read starting at start_line. Omit or use
+            0 to read to the end of the file (still capped in size).
     """
     resolved = _resolve_in_workspace(path)
     if not resolved.exists():
@@ -70,9 +77,59 @@ def read_file(path: str) -> str:
 
     # errors="replace" so binary junk doesn't raise, it just shows up mangled
     content = resolved.read_text(encoding="utf-8", errors="replace")
-    if len(content) > MAX_READ_CHARS:
-        content = content[:MAX_READ_CHARS] + f"\n... [truncated: file is {len(content)} characters]"
-    return content
+
+    # Fast path: whole-file read (no range requested). Preserves the exact
+    # previous behaviour, so a model that ignores the new optional parameters
+    # sees no change at all.
+    if start_line <= 0 and max_lines <= 0:
+        if len(content) > MAX_READ_CHARS:
+            # Cut on a line boundary so the model can continue cleanly from
+            # the next line instead of mid-token, and tell it where to resume.
+            head = content[:MAX_READ_CHARS].rsplit("\n", 1)[0]
+            next_line = head.count("\n") + 2  # 1-indexed line after the cut
+            return (
+                head
+                + f"\n... [truncated: file has {content.count(chr(10)) + 1} lines, "
+                f"{len(content)} characters. To continue, call read_file with "
+                f"start_line={next_line}.]"
+            )
+        return content
+
+    # --- Range read ---------------------------------------------------
+    lines = content.splitlines()
+    total_lines = len(lines)
+
+    # Clamp start_line into [1, total_lines]. A model that overshoots the end
+    # of the file gets a clear message rather than a confusing empty result.
+    first = max(1, start_line)
+    if first > total_lines:
+        return (
+            f"Error: start_line {start_line} is past the end of '{path}', "
+            f"which has {total_lines} lines."
+        )
+
+    last = total_lines if max_lines <= 0 else min(total_lines, first + max_lines - 1)
+    selected = "\n".join(lines[first - 1:last])
+
+    # The size cap applies to ranges too: a model can ask for 100000 lines.
+    truncated_by_size = False
+    if len(selected) > MAX_READ_CHARS:
+        selected = selected[:MAX_READ_CHARS].rsplit("\n", 1)[0]
+        last = first + selected.count("\n")  # actual last line we return
+        truncated_by_size = True
+
+    # Header states which slice this is: without it the model has no way to
+    # map the text back to line numbers (for a follow-up edit_file or a
+    # further range read).
+    header = f"[lines {first}-{last} of {total_lines} in '{path}']"
+    footer = ""
+    if last < total_lines:
+        reason = "size cap reached" if truncated_by_size else "end of requested range"
+        footer = (
+            f"\n... [{reason}: {total_lines - last} more lines in the file. "
+            f"To continue, call read_file with start_line={last + 1}.]"
+        )
+    return f"{header}\n{selected}{footer}"
 
 
 def write_file(path: str, content: str) -> str:

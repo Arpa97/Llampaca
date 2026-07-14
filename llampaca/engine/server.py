@@ -171,6 +171,12 @@ class LlamaServer:
             # prompt — the slowest phase on local hardware.
             "--cache-reuse", "256"
         ]
+        # Deliberately NOT passed: --flash-attn / -fa. Recent llama.cpp
+        # builds default it to 'auto' (enabled wherever the backend supports
+        # it), so passing it adds nothing there — while on older builds the
+        # flag was a bare boolean, so passing the new "-fa auto" syntax would
+        # make the server fail to start. The default gives us flash attention
+        # for free on every binary that has it.
         
         # Configure GPU layers
         # For llama.cpp, if gpu_layers is -1 (auto), we default to offloading all layers (e.g. 99) 

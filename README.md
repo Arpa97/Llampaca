@@ -95,7 +95,7 @@ During a `llampaca run` session the model can call these built-in tools:
 
 | Tool | Description | Asks confirmation? |
 |---|---|---|
-| `read_file` | Read a text file from the workspace | No |
+| `read_file` | Read a text file from the workspace (optionally just a range of lines) | No |
 | `list_directory` | List files in a workspace directory | No |
 | `find_files` | Find files by glob pattern (e.g. `*.py`) across the workspace | No |
 | `search_text` | Search text inside workspace files (grep-like, `file:line` results) | No |

@@ -5,6 +5,28 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-14]
 
+### Added — `read_file` can read a range of lines
+
+- **`llampaca/tools/filesystem.py`** — `read_file` takes two new *optional*
+  parameters, `start_line` (1-indexed) and `max_lines`.
+  - *What:* Omitting both keeps the previous behaviour byte-for-byte (read
+    from the start, truncate at `MAX_READ_CHARS`), so a model that ignores
+    them sees no change. With them, the model reads a window of the file:
+    the result is prefixed with `[lines A-B of N in 'path']` so it can map
+    the text back to line numbers, and whenever more lines remain the footer
+    names the exact `start_line` to resume from. Truncation now also cuts on
+    a line boundary (instead of mid-line) and carries the same resume hint.
+    Out-of-range starts return an explicit error rather than empty output;
+    the size cap and the workspace sandbox apply to ranged reads too. No
+    change to the tool registration: the JSON schema is generated from the
+    type hints, so `path` stays the only required parameter.
+  - *Why:* A big file was previously all-or-nothing: `read_file` truncated at
+    the cap and the model had no way to reach the rest, so a line number
+    reported by `search_text` (`file:line`) was unusable — it could not read
+    around it. That is the core coding loop on a small context window: search
+    → read just that region → `edit_file`. Reading whole files instead of the
+    relevant window is also what makes the context fill up in the first place.
+
 ### Added — context-budget management in the agent loop
 
 - **`llampaca/agent/loop.py`** — The agent now trims its own history before
@@ -61,6 +83,17 @@ This project adheres to Semantic Versioning and complies with development loggin
     round-trip; prefix caching makes each round-trip pay only for the new
     tokens. Recent builds default to true — passing it explicitly protects
     against older binaries and documents the dependency.
+
+### Decided — flash attention flag intentionally NOT added
+
+- **`llampaca/engine/server.py`** — Comment documenting why `-fa` is not
+  passed at launch, despite being considered for prefill speed.
+  - *Why:* Verified against the installed binary: recent llama.cpp builds
+    default `--flash-attn` to `auto` (enabled wherever the backend supports
+    it), so the flag would add nothing — while older builds used a bare
+    boolean `-fa`, so the new `-fa auto` syntax would make them fail to
+    start. Flash attention is exact (same output, faster algorithm), and the
+    `auto` default already provides it on every capable binary.
 
 ## [2026-07-12]
 
