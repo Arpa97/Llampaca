@@ -93,6 +93,15 @@ class LlamaClient:
             "model": model,
             "messages": messages,
             "stream": True,
+            # llama-server extension (passed via extra_body because it is not
+            # part of the OpenAI API): reuse the KV cache of the common
+            # prompt prefix between requests. The agent loop re-sends the
+            # whole history on every tool round-trip, so without this every
+            # iteration would re-process the entire prompt from scratch.
+            # Recent llama-server builds default to true; passing it
+            # explicitly protects against older binaries and makes the
+            # dependency visible.
+            "extra_body": {"cache_prompt": True},
         }
         # Only include the tools parameter when there are tools: sending an
         # empty list can confuse some server versions.

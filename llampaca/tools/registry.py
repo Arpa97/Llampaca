@@ -32,11 +32,16 @@ _PYTHON_TYPE_TO_JSON = {
     bool: "boolean",
 }
 
-# Hard cap on the size of a tool result sent back to the model.
+# Default cap on the size of a tool result sent back to the model.
 # Local models have small context windows (a few thousand tokens), so a
 # single huge tool result (e.g. reading a big file) could evict the whole
 # conversation. Anything longer is truncated with an explicit marker so the
 # model knows the output is partial.
+#
+# This is only the fallback for registries built without an explicit cap:
+# the CLI passes a cap proportional to the actual context size instead
+# (see build_default_registry / cli.py), so bigger contexts allow bigger
+# tool results and smaller contexts stay protected.
 MAX_TOOL_RESULT_CHARS = 8000
 
 
@@ -116,8 +121,17 @@ class Tool:
 class ToolRegistry:
     """Holds the set of tools available to an Agent and executes them."""
 
-    def __init__(self):
+    def __init__(self, max_result_chars: int = MAX_TOOL_RESULT_CHARS):
+        """
+        Args:
+            max_result_chars: Hard cap (in characters) on the size of a tool
+                result returned to the model; longer results are truncated
+                with an explicit marker. Callers that know the model's
+                context size should scale this accordingly (a character is
+                roughly a quarter of a token).
+        """
         self._tools: Dict[str, Tool] = {}
+        self.max_result_chars = max_result_chars
 
     def register(
         self,
@@ -220,9 +234,9 @@ class ToolRegistry:
 
         result_str = str(result)
         # Truncate oversized results to protect the small local context window
-        if len(result_str) > MAX_TOOL_RESULT_CHARS:
+        if len(result_str) > self.max_result_chars:
             result_str = (
-                result_str[:MAX_TOOL_RESULT_CHARS]
+                result_str[:self.max_result_chars]
                 + f"\n... [truncated: output was {len(result_str)} characters]"
             )
         return result_str

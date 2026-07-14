@@ -259,7 +259,16 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
 
     # Tools are enabled by default; --no-tools falls back to plain chat.
     # The registry sandbox root is the directory the user launched us from.
-    registry = None if no_tools else build_default_registry()
+    #
+    # The cap on a single tool result scales with the context window instead
+    # of being a fixed number: numerically, ctx-in-tokens == chars works out
+    # to ~25% of the window (1 token ≈ 4 chars), so one big read_file can
+    # never swamp the whole context, whatever --ctx the user picked.
+    # server.context_size (not the raw --ctx flag, which may be None) is the
+    # resolved value actually passed to llama-server.
+    registry = None if no_tools else build_default_registry(
+        max_result_chars=server.context_size
+    )
 
     # The agent core asks for confirmation through this callback, and we render its events
     def confirm_action(prompt_text: str) -> bool:
@@ -271,6 +280,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         registry=registry,
         confirm=confirm_action,
         model=model_path.name,
+        # Lets the agent trim old history before the prompt outgrows the
+        # window, and powers the context-usage indicator after each turn.
+        context_size=server.context_size,
     )
     
     if messages:
@@ -336,7 +348,17 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
             except Exception as e:
                 click.echo(click.style(f"\n  [error] Unexpected error: {e}", fg="red"))
             click.echo() # Newline at the end
-            
+
+            # Context-usage indicator: how much of the model's window is
+            # still free after this turn. The estimate is heuristic
+            # (chars/4), hence the "~". Rendered dim so it reads as chrome,
+            # not as part of the model's answer.
+            used_tokens, total_tokens = agent.context_usage()
+            free_percent = max(0, 100 - (used_tokens * 100 // total_tokens))
+            click.echo(click.style(
+                f"  [context: ~{free_percent}% free]", dim=True
+            ))
+
             if response_content:
                 await add_message(active_conversation_id, "assistant", response_content)
             

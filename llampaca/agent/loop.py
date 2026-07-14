@@ -54,6 +54,34 @@ from llampaca.tools.registry import ToolRegistry
 # message. Prevents a confused model from looping on tool calls forever.
 MAX_ITERATIONS = 10
 
+# --- Context budget management -----------------------------------------
+# The conversation history grows forever, but the model's context window is
+# fixed (llama-server's -c). If the prompt outgrows it, llama-server starts
+# dropping tokens from the *front* of the prompt — which is the system
+# prompt, i.e. the agent's identity and (in prompt-based tool mode) the tool
+# instructions themselves. To prevent that, the agent trims its own history
+# before each request, always keeping the system prompt pinned.
+#
+# Trimming uses two watermarks (hysteresis) instead of one threshold on
+# purpose: llama-server caches the KV state of the common prompt prefix
+# between requests, and every trim changes that prefix, forcing a full
+# re-computation of the prompt. Trimming down to a *lower* watermark in one
+# go means the prefix then stays stable for many turns (cache hits) before
+# the next trim, instead of invalidating the cache on every single turn.
+CONTEXT_HIGH_WATERMARK = 0.80  # trim when the history exceeds this fraction
+CONTEXT_LOW_WATERMARK = 0.60   # ...and cut it down to this fraction
+
+# Rough tokens-per-character ratio used for budget estimates. Exact token
+# counts would require a round-trip to the server's /tokenize endpoint per
+# message; a chars/4 estimate is standard, cheap, and accurate enough for
+# watermark decisions (the 20% headroom above the high watermark absorbs
+# the estimation error).
+CHARS_PER_TOKEN = 4
+
+# Fixed per-message overhead, in tokens: every message costs a few extra
+# tokens for its role marker and the chat template's framing around it.
+MESSAGE_OVERHEAD_TOKENS = 4
+
 DEFAULT_SYSTEM_PROMPT = (
     "You are Llampaca, a helpful local AI personal assistant running entirely "
     "on the user's machine. You can use the available tools to read and write "
@@ -90,6 +118,7 @@ class Agent:
         confirm: Optional[Callable[[str], Any]] = None,
         model: str = "local-model",
         max_iterations: int = MAX_ITERATIONS,
+        context_size: int = 4096,
     ):
         """
         Args:
@@ -105,12 +134,16 @@ class Agent:
             model: Model name passed through to the server (informational
                 for llama-server, which serves a single model).
             max_iterations: Cap on tool round-trips per user message.
+            context_size: The model's context window in tokens (llama-server's
+                -c value). Used to trim old history before it overflows and
+                to report context usage to the UI.
         """
         self.client = client
         self.registry = registry
         self.confirm = confirm
         self.model = model
         self.max_iterations = max_iterations
+        self.context_size = context_size
         self.tools_enabled = registry is not None and len(registry.names()) > 0
 
         # Becomes True the first time a native-tools request succeeds. Once
@@ -171,6 +204,18 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
 
         for _ in range(self.max_iterations):
+            # Keep the history inside the context budget before *every*
+            # request, not just once per user message: tool results appended
+            # mid-turn can overflow the window too.
+            dropped = self._trim_history()
+            if dropped:
+                yield (
+                    "warning",
+                    f"Context window almost full: dropped the {dropped} oldest "
+                    "message(s) from the conversation to make room. The system "
+                    "prompt and recent turns are kept.",
+                )
+
             prompt_mode = self.tools_enabled and not self.native_tools
             tools = (
                 self.registry.definitions()
@@ -296,6 +341,89 @@ class Agent:
             f"Stopped after {self.max_iterations} tool iterations without a "
             "final answer. You can ask the model to continue.",
         )
+
+    # ------------------------------------------------------------------
+    # Context budget helpers
+    # ------------------------------------------------------------------
+
+    def _estimate_tokens(self) -> int:
+        """
+        Estimate how many tokens the next request will occupy in the model's
+        context window: the full message history plus, in native tool mode,
+        the tool definitions the chat template renders into the prompt.
+
+        Uses the chars/4 heuristic (see CHARS_PER_TOKEN) — cheap and close
+        enough for watermark decisions; no server round-trip needed.
+        """
+        total = 0
+        for message in self.messages:
+            content = message.get("content") or ""
+            total += len(content) // CHARS_PER_TOKEN + MESSAGE_OVERHEAD_TOKENS
+            # Assistant messages can carry structured tool calls (native
+            # mode); their JSON is rendered into the prompt too.
+            if message.get("tool_calls"):
+                total += len(json.dumps(message["tool_calls"])) // CHARS_PER_TOKEN
+        # In native mode the tool definitions travel with every request and
+        # the template renders them into the prompt. (In prompt-based mode
+        # they are already inside the system prompt, counted above.)
+        if self.tools_enabled and self.native_tools:
+            total += (
+                len(json.dumps(self.registry.definitions())) // CHARS_PER_TOKEN
+            )
+        return total
+
+    def context_usage(self) -> Tuple[int, int]:
+        """
+        Report the estimated context occupancy for UI display.
+
+        Returns:
+            (estimated_used_tokens, context_size) — the caller can derive a
+            percentage from these. The estimate is heuristic (chars/4), so
+            it should be presented as approximate.
+        """
+        return self._estimate_tokens(), self.context_size
+
+    def _trim_history(self) -> int:
+        """
+        Drop the oldest conversation turns when the history approaches the
+        context limit, so llama-server never truncates the prompt itself
+        (which would eat the system prompt first — fatal in prompt-based
+        tool mode, where it carries the tool instructions).
+
+        Hysteresis: trimming only starts above CONTEXT_HIGH_WATERMARK, but
+        then cuts all the way down to CONTEXT_LOW_WATERMARK. This trades one
+        big prompt-cache invalidation every N turns for stable cache hits in
+        between (see the watermark constants for the full rationale).
+
+        Never dropped: the system prompt (messages[0]) and the most recent
+        message (the input the model is about to answer).
+
+        Returns:
+            Number of messages dropped (0 if no trimming was needed).
+        """
+        high_budget = int(self.context_size * CONTEXT_HIGH_WATERMARK)
+        if self._estimate_tokens() <= high_budget:
+            return 0
+
+        low_budget = int(self.context_size * CONTEXT_LOW_WATERMARK)
+        dropped = 0
+        # messages[0] is the pinned system prompt; messages[-1] is the
+        # current input — both untouchable, hence the > 2 guard.
+        while len(self.messages) > 2 and self._estimate_tokens() > low_budget:
+            removed = self.messages.pop(1)
+            dropped += 1
+            # Native mode: a "tool" result message is only valid while the
+            # assistant message carrying the matching tool_call is present.
+            # Dropping the call but keeping the result would make the server
+            # reject the request, so orphaned results go with it.
+            if removed.get("tool_calls"):
+                while (
+                    len(self.messages) > 2
+                    and self.messages[1].get("role") == "tool"
+                ):
+                    self.messages.pop(1)
+                    dropped += 1
+        return dropped
 
     # ------------------------------------------------------------------
     # Prompt-based tool mode helpers

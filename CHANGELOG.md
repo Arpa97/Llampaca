@@ -3,6 +3,65 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-14]
+
+### Added — context-budget management in the agent loop
+
+- **`llampaca/agent/loop.py`** — The agent now trims its own history before
+  every request instead of letting the prompt outgrow the context window.
+  - *What:* New `Agent(context_size=...)` parameter, a chars/4 token estimator
+    (`_estimate_tokens`), and `_trim_history()` with two watermarks: trimming
+    starts above 80% of the window and cuts down to 60%, always keeping the
+    system prompt (messages[0]) and the latest message pinned. In native tool
+    mode, dropping an assistant message that carried `tool_calls` also drops
+    its now-orphaned `tool` result messages, which the server would otherwise
+    reject. A `warning` event tells the UI how many messages were dropped.
+    `context_usage()` exposes (estimated tokens, context size) for display.
+  - *Why:* The history grew unboundedly; on overflow llama-server truncates
+    the prompt from the front — the system prompt first, which in prompt-based
+    tool mode carries the tool instructions themselves, silently breaking the
+    session. The hysteresis (80→60) exists for speed: each trim changes the
+    prompt prefix and invalidates llama-server's prompt cache, so trimming in
+    one big cut every N turns beats trimming a little on every turn.
+
+### Changed — tool-result cap now scales with the context window
+
+- **`llampaca/tools/registry.py`**, **`llampaca/tools/__init__.py`** — The cap
+  on a single tool result is a per-registry setting instead of a fixed 8000
+  characters; `build_default_registry(max_result_chars=...)` forwards it.
+  - *What:* `ToolRegistry(max_result_chars=...)`, default unchanged (8000).
+  - *Why:* 8000 chars ≈ 2000 tokens — half the default 4096 window, so one
+    `read_file` could swamp the whole context; with a bigger `--ctx` the fixed
+    cap was instead needlessly strict.
+
+- **`llampaca/cli.py`** — Wires the resolved context size into both pieces:
+  `build_default_registry(max_result_chars=server.context_size)` (numerically
+  ≈ 25% of the window in tokens) and `Agent(context_size=server.context_size)`.
+  Uses `server.context_size` — the value actually passed to llama-server —
+  rather than the raw `--ctx` flag, which may be None.
+
+### Added — context-usage indicator in the chat UI
+
+- **`llampaca/cli.py`** — After each turn the CLI prints a dim
+  `[context: ~NN% free]` line based on `Agent.context_usage()`.
+  - *Why:* The user asked to see how much context remains during a session;
+    the estimate is heuristic (chars/4), hence the "~".
+
+### Changed — prompt-cache friendliness (tool-calling speed)
+
+- **`llampaca/engine/server.py`** — llama-server is launched with
+  `--cache-reuse 256`, enabling KV-cache chunk reuse via context shifting when
+  a prompt only partially matches the cached prefix.
+  - *Why:* History trimming changes the prompt prefix; without cache reuse
+    every trim would force reprocessing the entire prompt (the slowest phase
+    on local hardware).
+- **`llampaca/engine/client.py`** — `chat_stream_events` now sends
+  `extra_body={"cache_prompt": true}` (a llama-server extension) explicitly.
+  - *Why:* The agent loop re-sends the whole history on every tool
+    round-trip; prefix caching makes each round-trip pay only for the new
+    tokens. Recent builds default to true — passing it explicitly protects
+    against older binaries and documents the dependency.
+
 ## [2026-07-12]
 
 ### Changed — steer the model to compute exact answers via the shell

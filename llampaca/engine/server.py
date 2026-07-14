@@ -162,7 +162,14 @@ class LlamaServer:
             "--port", str(self.port),
             "-c", str(self.context_size),
             "-t", str(self.n_threads),
-            "--jinja"
+            "--jinja",
+            # Reuse KV-cache chunks (of at least 256 tokens) via context
+            # shifting when a new prompt only partially matches the cached
+            # prefix. This matters because the agent trims old history when
+            # the context fills up: a trim changes the prompt prefix, and
+            # without cache reuse each trim would force recomputing the whole
+            # prompt — the slowest phase on local hardware.
+            "--cache-reuse", "256"
         ]
         
         # Configure GPU layers
