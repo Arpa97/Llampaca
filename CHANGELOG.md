@@ -5,6 +5,34 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-12]
 
+### Changed — steer the model to compute exact answers via the shell
+
+- **`llampaca/agent/loop.py`** — `DEFAULT_SYSTEM_PROMPT` now tells the model it
+  cannot see individual characters or do reliable mental arithmetic, and that
+  it must use `run_shell_command` for anything requiring exactness (counting
+  characters/words/lines, reversing or sorting text, arithmetic).
+  - *What:* A behavioural nudge only. No new tool: `run_shell_command` already
+    existed in `llampaca/tools/shell.py`, already gated behind
+    `requires_confirmation=True`.
+  - *Why:* LLMs tokenize text, so questions like "count the o's in this
+    sentence" are answered by guessing and are usually wrong. The prompt
+    previously said the model *could* run shell commands but never suggested
+    using them for this class of task, so it never did.
+
+### Changed — tool confirmation now shows the code verbatim
+
+- **`llampaca/agent/loop.py`** — New `Agent._format_confirmation()`; the
+  confirmation prompt no longer dumps the raw JSON arguments.
+  - *What:* Decodes the arguments JSON and prints each one unescaped, with
+    multi-line values (shell scripts, file contents) rendered as an indented
+    block. Falls back to the raw JSON if it cannot be parsed, so the user is
+    never shown less than what will actually run. Output is plain text, so it
+    stays UI-agnostic and the confirm callback signature is unchanged.
+  - *Why:* Shell commands reached the user JSON-escaped and collapsed onto one
+    line (`{"command": "echo \"x\" | grep -o o | wc -l"}`), which is exactly
+    the wrong format for a prompt whose entire purpose is letting the user vet
+    code before it executes on their machine.
+
 ### Fixed — prompt-based tools broken by DB conversation restore
 
 - **`llampaca/cli.py`** — Conversation restore no longer replaces the agent's

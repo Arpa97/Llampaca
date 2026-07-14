@@ -44,7 +44,9 @@
       "Bash(python3 -c \"import llampaca, inspect; print\\(llampaca.__file__\\)\")",
       "Read(//private/tmp/**)",
       "Bash(python3 -c \"import llampaca; print\\('da altra cwd importa da:', llampaca.__file__\\)\")",
-      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pip install -e .)"
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pip install -e .)",
+      "Bash(python3 -m compileall -q llampaca/)",
+      "Bash(python3 -)"
     ]
   }
 }

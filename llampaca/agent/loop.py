@@ -61,6 +61,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "fetch web pages. When the user asks about current events or facts that may "
     "have changed since your training, use web_search to find up-to-date "
     "information rather than answering from memory, and cite what you found. "
+    # Language models tokenize text, so they cannot reliably see individual
+    # characters and are notoriously bad at counting them or at exact
+    # arithmetic. The shell can do both perfectly, so we steer the model to
+    # compute these answers instead of guessing them.
+    "You cannot see individual characters in text and you cannot do reliable "
+    "arithmetic in your head. For anything that must be exact — counting "
+    "characters, letters, words or lines, reversing or sorting text, and "
+    "arithmetic — do not guess: use run_shell_command to compute the answer, "
+    "then report the computed result. "
     "Use tools when they help you answer accurately; answer directly when you "
     "don't need them. Be concise."
 )
@@ -383,7 +392,7 @@ class Agent:
                     f"Tool '{name}' requires user confirmation, but no "
                     "confirmation mechanism is available. Action not executed."
                 )
-            prompt = f"The agent wants to run tool '{name}' with arguments: {arguments_json}"
+            prompt = self._format_confirmation(name, arguments_json)
 
             if inspect.iscoroutinefunction(self.confirm):
                 confirmed = await self.confirm(prompt)
@@ -394,6 +403,41 @@ class Agent:
                 return "The user declined to execute this action."
 
         return self.registry.execute(name, arguments_json)
+
+    @staticmethod
+    def _format_confirmation(name: str, arguments_json: str) -> str:
+        """
+        Render a tool call as human-readable text for the confirmation prompt.
+
+        The raw arguments arrive as a JSON string, so a shell command reaches
+        us escaped and on a single line (\\n, \\", ...). The user is being
+        asked to vet code before it runs on their machine, so it must be shown
+        exactly as it will execute: this decodes the JSON and prints each
+        argument verbatim, preserving newlines and quoting.
+
+        Returns UI-agnostic plain text — the CLI styles it, a future GUI can
+        render it differently. Falls back to the raw JSON if it can't be
+        parsed, so the user never sees *less* than what will run.
+        """
+        try:
+            args = json.loads(arguments_json, strict=False)
+        except (json.JSONDecodeError, TypeError):
+            return f"The agent wants to run tool '{name}' with arguments: {arguments_json}"
+
+        if not isinstance(args, dict) or not args:
+            return f"The agent wants to run tool '{name}' with arguments: {arguments_json}"
+
+        lines = [f"The agent wants to run tool '{name}':"]
+        for key, value in args.items():
+            text = value if isinstance(value, str) else json.dumps(value)
+            if "\n" in text:
+                # Multi-line values (scripts, file contents) get their own
+                # indented block so the user can read every line.
+                indented = "\n".join(f"    | {ln}" for ln in text.split("\n"))
+                lines.append(f"  {key}:\n{indented}")
+            else:
+                lines.append(f"  {key}: {text}")
+        return "\n".join(lines)
 
     @staticmethod
     def _describe_error(exc: Exception) -> str:
