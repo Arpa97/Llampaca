@@ -3,6 +3,80 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-16]
+
+### Fixed — `/attach` crashed the whole session when `pypdf` was missing
+
+- **`llampaca/attachments.py`** — The lazy `pypdf` / `python-docx` imports
+  are now wrapped: a missing package raises `AttachmentError` with the
+  exact fix ("pip install pypdf") instead of `ModuleNotFoundError`.
+  - *Why:* The new dependencies had been installed in one Python
+    environment while the user's `llampaca` entry point ran from another
+    (a conda env created before this feature): `/attach file.pdf` killed
+    the entire chat session with a traceback. The text-file path worked,
+    masking the problem, because plain text needs no extractor library.
+
+- **`llampaca/cli.py`** — The `/attach` handler now also catches generic
+  `Exception` (one red `[attach error]` line, session keeps running), not
+  just `AttachmentError`.
+  - *Why:* Same incident, second lesson — no extractor bug should ever be
+    able to take down the conversation; `/attach` is chrome, not the chat.
+
+## [2026-07-15]
+
+### Added — `/attach`: attach a PDF/Word/text file to the chat (phase 1)
+
+- **`llampaca/attachments.py`** (new) — Text extraction and budgeting for
+  user attachments.
+  - *What:* `extract_text()` dispatches on extension: PDF via `pypdf` (with
+    `--- Page N ---` markers, empty-password decryption attempt, and a
+    dedicated "no text layer (scanned document?)" error), `.docx` via
+    `python-docx` (paragraphs + tables as pipe-separated rows), and a
+    whitelist of plain-text extensions read verbatim. All failures raise
+    `AttachmentError` with a user-facing, actionable message (e.g. legacy
+    `.doc` → "re-save as .docx"). `attachment_token_budget()` caps an
+    attachment at 35% of the context window (`ATTACH_MAX_CONTEXT_FRACTION`),
+    using the same chars/4 estimate as the agent loop;
+    `build_attachment_block()` frames the text with begin/end markers naming
+    the file. Extractor libraries are imported lazily so the CLI never pays
+    for them until a file is actually attached.
+  - *Why:* First step of the attachment roadmap (direct injection for small
+    files; RAG for large ones is phase 2). The hard 35% budget exists
+    because silently truncating a document is worse than refusing it — the
+    model would answer confidently from half a contract. Oversized files
+    are rejected with the budget numbers and the `--ctx` suggestion until
+    phase 2 lands.
+
+- **`llampaca/cli.py`** — New `/attach <path>` command in the interactive
+  session.
+  - *What:* `/attach` extracts the file (path `~`-expanded, resolved against
+    the launch directory, deliberately NOT workspace-sandboxed: the path is
+    typed by the user, not chosen by the model) and *stages* it; the staged
+    block is merged into the user's **next** message (documents first,
+    request last), with the total of all staged attachments held under the
+    same 35% budget. Feedback lines show estimated tokens and budget usage;
+    errors are shown in red and never kill the session. The session header
+    now advertises the command.
+  - *Why (merge instead of a separate history message):* Gemma-style chat
+    templates hard-reject consecutive `user` messages ("Conversation roles
+    must alternate..."), verified empirically on llama.cpp b10001 — a
+    standalone attachment message followed by the user's question would 400
+    on every prompt-mode model. One combined user turn works with every
+    template.
+  - *Why (the "content included below, do NOT use tools" hint in the
+    block):* verified in a live session that without it the 4B models hunt
+    for the attached file with `read_file`/`search_text` in the workspace
+    instead of reading the text already in their prompt.
+
+- **`pyproject.toml`** — Added `pypdf>=4.0.0` and `python-docx>=1.1.0` to
+  the dependencies.
+
+- **`tests/test_attachments.py`** (new) — 15 tests: extraction round-trips
+  for text/PDF/docx (the PDF fixture is assembled programmatically with a
+  byte-exact xref so the test is hermetic), every error path (missing file,
+  directory, unsupported/legacy extension, corrupt PDF/docx, empty file),
+  budget math, and the attachment-block framing.
+
 ## [2026-07-14]
 
 ### Added — `read_file` can read a range of lines

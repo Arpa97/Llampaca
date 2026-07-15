@@ -16,6 +16,7 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 - 🧹 **Orphan-safe** — on startup, kills any leftover `llama-server` processes from crashed previous sessions
 - 📦 **Model management** — download GGUF models from Hugging Face with a single command, or load your own
 - 💬 **Interactive chat** — streaming terminal chat session with any loaded model
+- 📎 **File attachments** — attach a PDF, Word or text file to the conversation with `/attach` and ask questions about it
 - 🤖 **Agentic tool use** — the model can read/write workspace files, run shell commands (with your confirmation) and fetch web pages, via native OpenAI-compatible tool calling
 - 🏗️ **Extensible** — register any Python function as a tool; MCP integration coming soon
 
@@ -62,6 +63,20 @@ llampaca run
 ```
 
 Type `/exit` or `/quit` to end the session. The server shuts down cleanly and all resources are released.
+
+### 5. Attach a document (optional)
+
+Inside a chat session you can attach a file and ask questions about it:
+
+```
+You > /attach ~/Documents/contract.pdf
+  [attached] contract.pdf (~1200 tokens, attachment budget 84% used). It will be sent together with your next message.
+You > What is the termination notice period?
+```
+
+- Supported formats: **PDF** (text layer, no OCR), **Word** (`.docx`), and plain-text files (`.txt`, `.md`, `.csv`, source code, ...)
+- The extracted text is injected into your next message, so the model reads the document directly — no tools involved
+- An attachment may occupy at most **35% of the context window**; larger files are rejected with the exact numbers (attach a smaller file or raise `--ctx`). Retrieval (RAG) for big documents is on the roadmap.
 
 ---
 
@@ -138,6 +153,7 @@ llampaca/
 ├── __main__.py           # python -m llampaca entrypoint
 ├── cli.py                # Click-based CLI commands
 ├── config.py             # Paths, defaults, and model presets
+├── attachments.py        # /attach: PDF/Word/text extraction and context budgeting
 ├── engine/
 │   ├── downloader.py     # GitHub binary + Hugging Face model downloader
 │   ├── server.py         # llama-server subprocess manager (PID tracking, port scanning)
@@ -229,6 +245,7 @@ Llampaca automatically:
 - [x] Conversation history — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
 - [x] Agentic tool/skill execution loop (filesystem, shell, web tools with confirmation gating)
 - [x] Web search integration (DuckDuckGo, no API key) — deeper "DeepSearch" (multi-step research) still to come
+- [x] File attachments (`/attach` — PDF/Word/text, direct injection) — RAG for documents larger than the context window still to come
 - [ ] MCP (Model Context Protocol) integration
 - [ ] GUI (desktop application packaging)
 - [ ] One-click installer (no Python required)

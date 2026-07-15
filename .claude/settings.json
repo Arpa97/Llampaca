@@ -48,7 +48,29 @@
       "Bash(python3 -m compileall -q llampaca/)",
       "Bash(python3 -)",
       "Bash(python3 -c \"import llampaca.cli, llampaca.engine.server, llampaca.engine.client; print\\('imports OK'\\)\")",
-      "Bash(grep -iA2 \"flash\")"
+      "Bash(grep -iA2 \"flash\")",
+      "Bash(git submodule *)",
+      "Bash(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('LATEST TAG:', d['tag_name']\\); print\\('PUBLISHED:', d['published_at']\\); print\\('ASSETS:'\\); [print\\(' ', a['name']\\) for a in d['assets']]\")",
+      "Bash(curl -s https://api.github.com/repos/ggml-org/llama.cpp/releases/latest -o /private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/25c25a23-757e-405f-9a7b-e96d95c5dbd5/scratchpad/rel.json)",
+      "Bash(.venv/bin/python -)",
+      "Bash(curl -sL -r 0-2000 \"https://github.com/ggml-org/llama.cpp/releases/download/b10001/cudart-llama-bin-win-cuda-12.4-x64.zip\")",
+      "Bash(grep -iE \"\\\\.\\(dll|exe\\)$\")",
+      "Bash(ls -la ~/.llampaca/models/)",
+      "Bash(curl -s http://127.0.0.1:8199/props)",
+      "Bash(curl -s http://127.0.0.1:8199/v1/chat/completions -H 'Content-Type: application/json' -d '{ *)",
+      "Bash(kill 28634)",
+      "Bash(curl -s --max-time 2 http://127.0.0.1:8199/health)",
+      "Bash(python3 -m pip install pypdf python-docx)",
+      "Bash(python3 -c \"import pypdf, docx; print\\('pypdf', pypdf.__version__\\); print\\('python-docx OK'\\)\")",
+      "Bash(python3 -m pytest tests/test_attachments.py -v)",
+      "Bash(python3 -m pytest tests/ -v)",
+      "Bash(python3 -m llampaca history list)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pip install pypdf python-docx)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c \"import pypdf, docx; print\\('conda env OK: pypdf', pypdf.__version__\\)\")",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pytest tests/test_attachments.py -q)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -v)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca run *)"
     ]
   }
 }

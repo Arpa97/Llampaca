@@ -305,20 +305,109 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         click.echo(f" Workspace: {Path.cwd()}")
     else:
         click.echo(" Tools disabled (plain chat mode)")
+    click.echo(" Type '/attach <file>' to attach a document (PDF, Word, text).")
     click.echo(" Type '/exit' or '/quit' to close the session.")
     click.echo("=" * 50 + "\n")
-    
+
+    # Attachment support for /attach. This import is cheap (pypdf and
+    # python-docx are lazily imported inside the extractors, not here).
+    from llampaca.attachments import (
+        AttachmentError,
+        attachment_token_budget,
+        build_attachment_block,
+        estimate_tokens,
+        extract_text,
+    )
+
+    # Attachments staged by /attach and not yet sent. Each entry is
+    # (filename, extracted_text). They are merged into the *next* user
+    # message instead of being appended to the history on their own:
+    # Gemma-style chat templates reject two consecutive "user" messages
+    # ("Conversation roles must alternate..."), so a standalone attachment
+    # message followed by the user's question would fail server-side in
+    # prompt mode. One combined user turn works with every template.
+    pending_attachments = []
+
     try:
         while True:
             user_input = click.prompt("You", prompt_suffix=" > ")
-            
+
             # Command handling
             if user_input.strip().lower() in ["/exit", "/quit"]:
                 break
-                
+
             if not user_input.strip():
                 continue
-                
+
+            # --- /attach <path>: stage a document for the next message ---
+            if user_input.strip().lower().startswith("/attach"):
+                raw_arg = user_input.strip()[len("/attach"):].strip()
+                if not raw_arg:
+                    click.echo("Usage: /attach <path-to-file>  (PDF, .docx, or plain text)")
+                    continue
+
+                # Expand ~ and resolve relative paths against the launch
+                # directory. No workspace sandbox here on purpose: the path
+                # is typed by the user, not chosen by the model.
+                attach_path = Path(raw_arg).expanduser()
+                if not attach_path.is_absolute():
+                    attach_path = Path.cwd() / attach_path
+
+                try:
+                    text = extract_text(attach_path)
+                except AttachmentError as e:
+                    click.echo(click.style(f"  [attach error] {e}", fg="red"))
+                    continue
+                except Exception as e:
+                    # Defensive net: a bug in an extractor (or in one of its
+                    # libraries) must cost the user one red line, never the
+                    # whole session — /attach is chrome, not the chat itself.
+                    click.echo(click.style(
+                        f"  [attach error] Unexpected error while extracting "
+                        f"'{attach_path.name}': {e}", fg="red"
+                    ))
+                    continue
+
+                # Enforce the phase-1 size budget on the *total* staged
+                # content: two attachments that individually fit but jointly
+                # overflow would starve the conversation just the same.
+                budget = attachment_token_budget(server.context_size)
+                staged_tokens = sum(estimate_tokens(t) for _, t in pending_attachments)
+                new_tokens = estimate_tokens(text)
+                if staged_tokens + new_tokens > budget:
+                    click.echo(click.style(
+                        f"  [attach error] '{attach_path.name}' is too large: "
+                        f"~{new_tokens} tokens"
+                        + (f" (+{staged_tokens} already staged)" if staged_tokens else "")
+                        + f" exceeds the attachment budget of ~{budget} tokens "
+                        f"(35% of the {server.context_size}-token context). "
+                        "Attach a smaller file or relaunch with a larger --ctx.",
+                        fg="red",
+                    ))
+                    continue
+
+                pending_attachments.append((attach_path.name, text))
+                used_percent = (staged_tokens + new_tokens) * 100 // budget
+                click.echo(click.style(
+                    f"  [attached] {attach_path.name} (~{new_tokens} tokens, "
+                    f"attachment budget {used_percent}% used). "
+                    "It will be sent together with your next message.",
+                    fg="cyan",
+                ))
+                continue
+
+            # Merge any staged attachments into this message: document(s)
+            # first, the user's request last, as one single user turn.
+            if pending_attachments:
+                blocks = "\n\n".join(
+                    build_attachment_block(name, text)
+                    for name, text in pending_attachments
+                )
+                user_input = f"{blocks}\n\n{user_input}"
+                names = ", ".join(name for name, _ in pending_attachments)
+                pending_attachments = []
+                click.echo(click.style(f"  [sending with attachments: {names}]", dim=True))
+
             # Add message to local context and persist to SQLite
             await add_message(active_conversation_id, "user", user_input)
             
