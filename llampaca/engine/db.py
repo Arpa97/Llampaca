@@ -83,6 +83,55 @@ async def get_db_connection(db_path: Path = None):
             migration_needed = True
         if migration_needed:
             await conn.commit()
+
+        # RAG tables (attachments too large for direct injection). Created
+        # unconditionally with IF NOT EXISTS so both fresh and pre-existing
+        # databases get them — table creation is idempotent and cheap, so it
+        # doubles as its own migration.
+        #
+        # documents: one row per indexed attachment, owned by a conversation
+        # (ON DELETE CASCADE: deleting a chat deletes its index — the reason
+        # these tables live in history.db in the first place).
+        # embedder_name/embedding_dim record which model produced the
+        # vectors: vectors from different embedders are not comparable, so
+        # the pipeline checks these before searching and re-indexes on
+        # mismatch instead of silently ranking garbage.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                pages INTEGER,
+                embedder_name TEXT NOT NULL,
+                embedding_dim INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+        """)
+        # chunks: the retrieval units. "embedding" is the raw float32 BLOB
+        # written by rag.serialize_vector; "page" is the page the chunk
+        # starts on (NULL for sources without pages); "position" preserves
+        # document order for display/debugging.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL,
+                page INTEGER,
+                position INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+            );
+        """)
+        # The only query pattern is "all chunks of the documents of one
+        # conversation": index both foreign keys.
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_conversation ON documents(conversation_id);"
+        )
+        await conn.commit()
     except Exception:
         await conn.close()
         raise
@@ -240,4 +289,107 @@ async def update_conversation_summary(
         await conn.execute(
             "UPDATE conversations SET summary = ?, last_summarized_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
             (summary, last_summarized_message_id, conversation_id)
+        )
+
+# ----------------------------------------------------------------------
+# RAG document index (attachments too large for direct injection)
+# ----------------------------------------------------------------------
+
+async def add_document(
+    conversation_id: str,
+    filename: str,
+    pages: int,
+    embedder_name: str,
+    embedding_dim: int,
+    db_path: Path = None,
+) -> int:
+    """
+    Register an indexed attachment for a conversation.
+
+    Args:
+        pages: Page count of the source (None/0 for pageless sources).
+        embedder_name: The embedding model file that produced the vectors.
+        embedding_dim: Vector dimension — stored so the pipeline can detect
+            an embedder change and re-index instead of comparing
+            incompatible vectors.
+
+    Returns:
+        The new document's integer id (chunks reference it).
+    """
+    async with get_db_connection(db_path) as conn:
+        cursor = await conn.execute(
+            "INSERT INTO documents (conversation_id, filename, pages, embedder_name, embedding_dim)"
+            " VALUES (?, ?, ?, ?, ?);",
+            (conversation_id, filename, pages, embedder_name, embedding_dim)
+        )
+        return cursor.lastrowid
+
+
+async def add_chunks(document_id: int, chunks: list, db_path: Path = None) -> None:
+    """
+    Store the retrieval chunks of a document in one transaction.
+
+    Args:
+        chunks: Dicts with keys "text", "page", "position" (as produced by
+            rag.chunk_text) plus "embedding": the raw float32 BLOB from
+            rag.serialize_vector. One transaction for all chunks: a
+            document must be indexed entirely or not at all — a partial
+            index would silently return incomplete search results.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.executemany(
+            "INSERT INTO chunks (document_id, page, position, text, embedding)"
+            " VALUES (?, ?, ?, ?, ?);",
+            [
+                (document_id, c["page"], c["position"], c["text"], c["embedding"])
+                for c in chunks
+            ]
+        )
+
+
+async def list_documents(conversation_id: str, db_path: Path = None) -> list:
+    """
+    The indexed documents of a conversation (metadata only, no chunks),
+    oldest first. Used to tell the model what is searchable and to detect
+    embedder mismatches on resume.
+    """
+    async with get_db_connection(db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT id, filename, pages, embedder_name, embedding_dim, created_at"
+            " FROM documents WHERE conversation_id = ? ORDER BY id ASC;",
+            (conversation_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_conversation_chunks(conversation_id: str, db_path: Path = None) -> list:
+    """
+    All retrieval chunks of all documents of a conversation, with their
+    filename attached — the exact input rag.top_k expects. The whole set is
+    loaded in memory by design: ~100 chunks x 4 KB per document, so even
+    ten attached documents are a few MB (see rag.py on why brute-force).
+    """
+    async with get_db_connection(db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT chunks.id, chunks.document_id, chunks.page, chunks.position,"
+            "       chunks.text, chunks.embedding, documents.filename"
+            " FROM chunks JOIN documents ON chunks.document_id = documents.id"
+            " WHERE documents.conversation_id = ?"
+            " ORDER BY chunks.document_id ASC, chunks.position ASC;",
+            (conversation_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_document(document_id: int, db_path: Path = None) -> None:
+    """
+    Remove one indexed document (its chunks go with it via CASCADE).
+    Used when re-indexing after an embedder change.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.execute(
+            "DELETE FROM documents WHERE id = ?;",
+            (document_id,)
         )

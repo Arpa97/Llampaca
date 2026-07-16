@@ -10,7 +10,17 @@ MODELS_DIR = LLAMPACA_DIR / "models"
 LOGS_DIR = LLAMPACA_DIR / "logs"
 DB_PATH = LLAMPACA_DIR / "history.db"
 
-# Recommended model presets
+# Recommended model presets.
+# The "kind" field separates chat models (loaded by `llampaca run`) from
+# embedding models (loaded by the RAG indexing pipeline); presets without a
+# "kind" are chat models. Embedding presets carry the model-specific details
+# the pipeline must respect:
+#   - "pooling": llama-server's --pooling mode for this architecture
+#     (wrong pooling produces meaningless vectors WITHOUT any error);
+#   - "query_prefix"/"document_prefix": asymmetric instruction prefixes.
+#     Queries and documents must be embedded with *different* framing for
+#     retrieval-tuned models — omitting them silently degrades similarity
+#     quality, so they live here, next to the model they belong to.
 MODEL_PRESETS = {
     "qwen3.5-4b-instruct": {
         "repo": "Benasd/Qwen3.5-4B-Instruct-GGUF",
@@ -30,6 +40,23 @@ MODEL_PRESETS = {
         "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
         "description": "Llama 3.2 3B Instruct - Meta's lightweight general-purpose model",
         "default": False
+    },
+    "qwen3-embedding-0.6b": {
+        "repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
+        "file": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+        "description": "Qwen 3 Embedding 0.6B - Multilingual embedder for document search/RAG (not a chat model)",
+        "default": False,
+        "kind": "embedding",
+        # Qwen3-Embedding uses last-token pooling (its GGUF is trained that
+        # way); llama-server's default (mean/none) would return garbage.
+        "pooling": "last",
+        # Qwen3-Embedding retrieval format: the QUERY carries an instruction,
+        # the documents are embedded bare. Wording taken from the model card.
+        "query_prefix": (
+            "Instruct: Given a web search query, retrieve relevant passages "
+            "that answer the query\nQuery: "
+        ),
+        "document_prefix": "",
     }
 }
 
@@ -39,8 +66,26 @@ DEFAULT_CONFIG = {
     "server_port": 8080,
     "context_size": 4096,
     "n_threads": max(1, os.cpu_count() - 2 if os.cpu_count() else 4),
-    "gpu_layers": -1  # -1 means auto (enable metal/cuda if supported)
+    "gpu_layers": -1,  # -1 means auto (enable metal/cuda if supported)
+    # Embedding (RAG) settings. embedding_model may be a preset name or a
+    # GGUF filename in MODELS_DIR, same resolution rules as default_model.
+    # The embedding server starts on its own port range so it never races
+    # the chat server's auto-increment scan (8080, 8081, ...).
+    "embedding_model": "qwen3-embedding-0.6b",
+    "embedding_port": 8180
 }
+
+
+def get_preset_for_file(filename: str) -> dict | None:
+    """
+    Reverse lookup: the preset entry whose "file" matches a GGUF filename,
+    or None. Used to recover per-model metadata (pooling, prefixes) when
+    the config stores a plain filename instead of a preset name.
+    """
+    for preset in MODEL_PRESETS.values():
+        if preset["file"] == filename:
+            return preset
+    return None
 
 def ensure_dirs():
     """Ensure that all necessary application directories exist."""

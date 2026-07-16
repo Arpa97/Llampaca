@@ -160,6 +160,43 @@ class LlamaClient:
 
         yield ("message", message)
 
+    async def embed(
+        self,
+        texts: List[str],
+        model: str = "local-embedder",
+        batch_size: int = 32,
+    ) -> List[List[float]]:
+        """
+        Embed a list of texts against a llama-server started with
+        --embedding, via the OpenAI-compatible /v1/embeddings endpoint.
+
+        Returns one vector per input text, in the same order as the input.
+
+        Notes:
+            - Batching: requests are sent in slices of batch_size texts.
+              One text = one chunk (~500 tokens), so a batch stays well
+              within the embedding server's context; slicing keeps any
+              single HTTP request from carrying hundreds of chunks when a
+              large document is indexed.
+            - Order: the API tags each result with an "index" relative to
+              its request; results are re-sorted by it defensively, then
+              offset by the slice position, so the output order is
+              guaranteed even if the server were to reply out of order.
+            - Prefixes: query/document instruction prefixes are NOT applied
+              here — the caller owns them (they are model-specific and
+              asymmetric; see the embedding preset in config.py).
+        """
+        vectors: List[List[float]] = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            response = await self.client.embeddings.create(
+                model=model,
+                input=batch,
+            )
+            ordered = sorted(response.data, key=lambda item: item.index)
+            vectors.extend([item.embedding for item in ordered])
+        return vectors
+
     async def get_models(self) -> List[str]:
         """
         Query the active llama-server for available models.

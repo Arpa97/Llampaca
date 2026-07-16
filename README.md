@@ -142,6 +142,7 @@ The active mode is shown in the session header (`Tools enabled (native): ...`).
 | `qwen3.5-4b-instruct` | ~4.2 GB | **Recommended** — best balance of speed and quality |
 | `qwen2.5-coder-1.5b-instruct` | ~1 GB | Very fast, excellent for coding tasks |
 | `llama3.2-3b-instruct` | ~2 GB | General purpose, Meta's lightweight model |
+| `qwen3-embedding-0.6b` | ~640 MB | Multilingual embedder for document search/RAG (not a chat model) |
 
 ---
 

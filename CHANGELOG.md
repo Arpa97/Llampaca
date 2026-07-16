@@ -5,6 +5,105 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-16]
 
+### Added — RAG core: chunking, vector storage and search (phase 2, milestone 2)
+
+- **`llampaca/rag.py`** (new) — Pure-logic RAG core, no I/O.
+  - *What:* `chunk_text()` splits extracted document text into ~500-token
+    chunks with ~15% overlap, packing whole paragraphs (a hit that starts
+    mid-sentence is much harder for the chat model to use) and hard-
+    splitting only degenerate paragraphs longer than a whole chunk. The
+    `--- Page N ---` markers produced by the PDF extractor are consumed
+    and become per-chunk page attribution. `serialize_vector()` /
+    `deserialize_vector()` store embeddings as little-endian float32
+    BLOBs. `top_k()` ranks chunk rows by cosine similarity in numpy
+    (proper normalization, zero-vector guards, and rows with a mismatched
+    embedding dimension are skipped rather than crashing or mis-ranking).
+  - *Why (brute force, no vector index):* a document is ~100 chunks;
+    exhaustive cosine over a few hundred 1024-dim float32 vectors is a
+    sub-millisecond matrix product. sqlite-vec/FAISS would add a native
+    dependency to speed up something already instant; the one-BLOB-per-
+    chunk format does not preclude adopting one later.
+
+- **`llampaca/engine/db.py`** — New `documents` and `chunks` tables in
+  history.db, created idempotently (CREATE TABLE IF NOT EXISTS on every
+  connection, doubling as migration for existing databases), with CRUD:
+  `add_document`, `add_chunks` (single transaction: a document is indexed
+  entirely or not at all), `list_documents`, `get_conversation_chunks`
+  (join with filenames — the exact `top_k` input), `delete_document`.
+  - *What (schema):* documents belong to a conversation with ON DELETE
+    CASCADE (deleting a chat deletes its index — the reason the tables
+    live in history.db); chunks belong to a document, also CASCADE.
+    `embedder_name`/`embedding_dim` are recorded so the pipeline detects
+    embedder changes and re-indexes instead of comparing incompatible
+    vectors.
+
+- **`pyproject.toml`** — Added `numpy>=1.26.0` (installed in both Python
+  environments, per the conda-env lesson of 2026-07-16).
+
+- **`tests/test_rag.py`** (new) — 17 tests: chunker (bounds, overlap
+  actually repeating the previous tail, page attribution across chunks,
+  marker consumption, giant-paragraph hard split, empty input),
+  serialization roundtrip, top_k (ranking, magnitude invariance, k>n,
+  zero-vector and dimension-mismatch edges), and the document tables
+  (roundtrip usable directly by top_k, conversation scoping, both CASCADE
+  paths).
+
+- Verified live end-to-end (milestones 1+2 composed): a synthetic 6-page
+  Italian document → 12 chunks → real embeddings → stored and reloaded
+  through the db layer → the query "chi paga le spese dell'ascensore del
+  condominio?" ranks both page-3 (condominium) chunks first (cosine 0.754
+  / 0.721) far above the distractors (0.270).
+
+### Added — Embedding infrastructure for RAG (phase 2, milestone 1)
+
+- **`llampaca/config.py`** — New preset `qwen3-embedding-0.6b`
+  (Qwen/Qwen3-Embedding-0.6B-GGUF, Q8_0, ~640 MB) with a new `kind:
+  "embedding"` preset field, plus per-model retrieval metadata: `pooling`
+  ("last" for Qwen3-Embedding) and the asymmetric `query_prefix` /
+  `document_prefix` instruction strings. New config keys `embedding_model`
+  and `embedding_port` (8180). New helper `get_preset_for_file()` for
+  filename→preset reverse lookup.
+  - *Why:* Chosen embedder for the RAG pipeline (best multilingual quality
+    in its size class — documents will often be Italian). Pooling and
+    prefixes live next to the model they belong to because getting either
+    wrong degrades retrieval silently, with no error anywhere.
+
+- **`llampaca/engine/server.py`** — `LlamaServer(embedding=True,
+  pooling=...)` runs llama-server as an embedding server; command-line
+  construction factored into `_build_command()`.
+  - *What:* Embedding mode uses `--embedding --pooling <mode>
+    --ubatch-size == -c` (2048 default) on its own port range (8180+), with
+    its own `llama-server-embed-<port>` pid/log files (still matching the
+    orphan-cleanup glob). None of the chat flags (--jinja, --cache-reuse,
+    -fa, KV quantization) are passed. `cleanup_orphans()` is skipped in
+    embedding mode.
+  - *Why (skip cleanup):* the embedding server starts lazily while the chat
+    server is already running — running cleanup there would kill the chat
+    server mid-session. The chat server, always first, keeps doing cleanup
+    for both roles.
+
+- **`llampaca/engine/client.py`** — New `LlamaClient.embed(texts,
+  batch_size=32)` on the OpenAI-compatible /v1/embeddings endpoint:
+  batched, order-preserving (results re-sorted by index defensively).
+  Prefixes are the caller's job — they are model-specific and asymmetric.
+
+- **`llampaca/cli.py`** — `models download` now routes the downloaded file
+  to the right config key by preset kind: embedding models set
+  `embedding_model`, everything else sets `default_model` as before.
+  - *Why:* Downloading the embedder must not hijack the *chat* default —
+    `llampaca run` would try to converse with a model that cannot generate.
+
+- **`tests/test_embedding.py`** (new) — 9 tests: preset completeness,
+  chat-vs-embedding command lines, embedding-mode defaults (port range,
+  context, pid naming), configurable pooling, and `embed()` batching/order
+  guarantees against a fake endpoint.
+
+- Verified live on this machine: server starts on 8180, vectors are
+  1024-dim, and an Italian query ("quando scade il contratto di affitto?")
+  ranks the lease-contract sentence far above two distractors (cosine 0.755
+  vs 0.271/0.111). Chat session re-verified unaffected after the
+  `_build_command()` refactor.
+
 ### Added — Transparent context window summarization with SQLite persistence
 
 - **`llampaca/engine/db.py`** — Added `summary` and `last_summarized_message_id` columns to `conversations` table with auto-migration. Added `update_conversation_summary` function and returned `id` for messages in `get_conversation`.

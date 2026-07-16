@@ -87,15 +87,38 @@ def cleanup_orphans():
             pass
 
 class LlamaServer:
-    def __init__(self, model_path: Path, port: int = None, context_size: int = None, n_threads: int = None, gpu_layers: int = None):
+    def __init__(self, model_path: Path, port: int = None, context_size: int = None,
+                 n_threads: int = None, gpu_layers: int = None,
+                 embedding: bool = False, pooling: str = "last"):
+        """
+        Args:
+            embedding: Run llama-server as an *embedding* server instead of a
+                chat server (--embedding). Used by the RAG pipeline as a
+                second, lazily-started instance alongside the chat server.
+            pooling: Pooling mode for embedding mode (llama-server's
+                --pooling). Model-specific — e.g. "last" for Qwen3-Embedding,
+                "mean" for bge-style models. Wrong pooling silently produces
+                meaningless vectors, so the value comes from the model preset.
+                Ignored in chat mode.
+        """
         config = load_config()
-        
+
         self.model_path = Path(model_path)
-        self.port = port or config.get("server_port", 8080)
-        self.context_size = context_size or config.get("context_size", 4096)
+        self.embedding = embedding
+        self.pooling = pooling
+        if embedding:
+            # Dedicated defaults for embedding mode: its own port range (so
+            # it never races the chat server's auto-increment scan) and a
+            # small context — chunks are ~500 tokens, 2048 is ample, and a
+            # smaller context keeps the extra RAM footprint negligible.
+            self.port = port or config.get("embedding_port", 8180)
+            self.context_size = context_size or 2048
+        else:
+            self.port = port or config.get("server_port", 8080)
+            self.context_size = context_size or config.get("context_size", 4096)
         self.n_threads = n_threads or config.get("n_threads", 4)
         self.gpu_layers = gpu_layers if gpu_layers is not None else config.get("gpu_layers", -1)
-        
+
         # Determine the binary path
         custom_binary = config.get("llama_server_path", "")
         if custom_binary:
@@ -105,12 +128,82 @@ class LlamaServer:
             if sys.platform == "win32":
                 binary_name += ".exe"
             self.binary_path = BIN_DIR / binary_name
-            
+
         self.process = None
-        self.log_file_path = LOGS_DIR / f"llama-server-{self.port}.log"
-        self.pid_file_path = LOGS_DIR / f"llama-server-{self.port}.pid"
+        # Distinct file names per role, both still matching the
+        # "llama-server-*" glob that cleanup_orphans() scans.
+        prefix = "llama-server-embed" if embedding else "llama-server"
+        self._file_prefix = prefix
+        self.log_file_path = LOGS_DIR / f"{prefix}-{self.port}.log"
+        self.pid_file_path = LOGS_DIR / f"{prefix}-{self.port}.pid"
         from llampaca.engine import db
         self.db = db
+
+    def _build_command(self) -> list:
+        """
+        Assemble the llama-server command line for this instance's role.
+
+        Chat mode: jinja chat template (tool calling), prompt-cache reuse,
+        flash attention and q8_0 KV-cache quantization — all about long
+        generative conversations.
+
+        Embedding mode: --embedding with the model's pooling type. None of
+        the chat flags apply (there is no KV-cache reuse or generation), so
+        the command stays minimal on purpose: fewer flags, fewer ways an
+        older binary can refuse to start.
+        """
+        cmd = [
+            str(self.binary_path),
+            "-m", str(self.model_path),
+            "--port", str(self.port),
+            "-c", str(self.context_size),
+            "-t", str(self.n_threads),
+        ]
+
+        if self.embedding:
+            cmd.extend([
+                "--embedding",
+                "--pooling", self.pooling,
+                # One chunk must fit in a single physical batch or the
+                # server rejects the request: keep ubatch == context.
+                "--ubatch-size", str(self.context_size),
+            ])
+        else:
+            cmd.extend([
+                # --jinja enables the model's jinja chat template, which is
+                # required for OpenAI-compatible tool calling (the agent
+                # loop depends on it). It is the default on recent
+                # llama.cpp builds but we pass it explicitly to support
+                # older binaries.
+                "--jinja",
+                # Reuse KV-cache chunks (of at least 256 tokens) via context
+                # shifting when a new prompt only partially matches the
+                # cached prefix. This matters because the agent trims old
+                # history when the context fills up: a trim changes the
+                # prompt prefix, and without cache reuse each trim would
+                # force recomputing the whole prompt — the slowest phase on
+                # local hardware.
+                "--cache-reuse", "256",
+                # Enable Flash Attention to speed up self-attention
+                # computation (especially for large prompts/contexts) and
+                # reduce memory footprint.
+                "-fa", "on",
+                # Quantize Key-Value cache to 8-bit (q8_0) to halve its
+                # VRAM/RAM footprint, preventing memory paging/swapping and
+                # keeping generation speeds fast as the context fills.
+                "-ctk", "q8_0",
+                "-ctv", "q8_0",
+            ])
+
+        # Configure GPU layers
+        # For llama.cpp, if gpu_layers is -1 (auto), we default to offloading
+        # all layers (e.g. 99) to utilize Apple Silicon Metal or CUDA if
+        # available.
+        ngl = 99 if self.gpu_layers == -1 else self.gpu_layers
+        if ngl > 0:
+            cmd.extend(["-ngl", str(ngl)])
+
+        return cmd
 
     def is_binary_available(self) -> bool:
         """Check if the llama-server binary exists and is executable."""
@@ -130,8 +223,12 @@ class LlamaServer:
             print(f"Error: Model file not found at {self.model_path}.")
             return False
 
-        # Kill any orphaned llama-server processes from previous sessions
-        cleanup_orphans()
+        # Kill any orphaned llama-server processes from previous sessions.
+        # Only the CHAT server does this, because it is the first to start
+        # in a session: by the time an embedding server starts lazily, the
+        # chat server is already running — cleanup here would kill it.
+        if not self.embedding:
+            cleanup_orphans()
 
         # Check if the port is in use, and automatically find the next available port
         original_port = self.port
@@ -148,44 +245,11 @@ class LlamaServer:
         if self.port != original_port:
             print(f"Port {original_port} is already in use. Automatically switched to port {self.port}.")
             # Update log and PID file paths with the resolved port
-            self.log_file_path = LOGS_DIR / f"llama-server-{self.port}.log"
-            self.pid_file_path = LOGS_DIR / f"llama-server-{self.port}.pid"
+            self.log_file_path = LOGS_DIR / f"{self._file_prefix}-{self.port}.log"
+            self.pid_file_path = LOGS_DIR / f"{self._file_prefix}-{self.port}.pid"
 
-        # Build command arguments
-        # --jinja enables the model's jinja chat template, which is required
-        # for OpenAI-compatible tool calling (the agent loop depends on it).
-        # It is the default on recent llama.cpp builds but we pass it
-        # explicitly to support older binaries.
-        cmd = [
-            str(self.binary_path),
-            "-m", str(self.model_path),
-            "--port", str(self.port),
-            "-c", str(self.context_size),
-            "-t", str(self.n_threads),
-            "--jinja",
-            # Reuse KV-cache chunks (of at least 256 tokens) via context
-            # shifting when a new prompt only partially matches the cached
-            # prefix. This matters because the agent trims old history when
-            # the context fills up: a trim changes the prompt prefix, and
-            # without cache reuse each trim would force recomputing the whole
-            # prompt — the slowest phase on local hardware.
-            "--cache-reuse", "256",
-            # Enable Flash Attention to speed up self-attention computation
-            # (especially for large prompts/contexts) and reduce memory footprint.
-            "-fa", "on",
-            # Quantize Key-Value cache to 8-bit (q8_0) to halve its VRAM/RAM footprint,
-            # preventing memory paging/swapping and keeping generation speeds fast
-            # as the context window fills.
-            "-ctk", "q8_0",
-            "-ctv", "q8_0"
-        ]
-        
-        # Configure GPU layers
-        # For llama.cpp, if gpu_layers is -1 (auto), we default to offloading all layers (e.g. 99) 
-        # to utilize Apple Silicon Metal or CUDA if available.
-        ngl = 99 if self.gpu_layers == -1 else self.gpu_layers
-        if ngl > 0:
-            cmd.extend(["-ngl", str(ngl)])
+        # Build the role-specific command line (chat vs embedding)
+        cmd = self._build_command()
 
         print(f"Starting llama-server on port {self.port}...")
         print(f"Command: {' '.join(cmd)}")

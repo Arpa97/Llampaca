@@ -122,12 +122,25 @@ def download_model(preset, repo, file):
             
     try:
         download_hf_model(repo_id, filename)
-        
-        # Set downloaded model as default
+
+        # Update the config key matching the model's role. An embedding
+        # model must never become the *chat* default: `llampaca run` would
+        # try to converse with a model that cannot generate text. The kind
+        # is recovered from the preset table by filename, which also covers
+        # downloads made via --repo/--file for a known preset file.
+        from llampaca.config import get_preset_for_file
+        preset_info = get_preset_for_file(filename)
+        kind = (preset_info or {}).get("kind", "chat")
+
         config = load_config()
-        config["default_model"] = filename
-        save_config(config)
-        click.echo(f"Successfully downloaded and set '{filename}' as the default model.")
+        if kind == "embedding":
+            config["embedding_model"] = filename
+            save_config(config)
+            click.echo(f"Successfully downloaded '{filename}' and set it as the embedding model (for document search/RAG).")
+        else:
+            config["default_model"] = filename
+            save_config(config)
+            click.echo(f"Successfully downloaded and set '{filename}' as the default model.")
     except Exception as e:
         click.echo(f"Error downloading model: {e}", err=True)
         sys.exit(1)

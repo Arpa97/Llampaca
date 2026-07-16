@@ -71,8 +71,18 @@
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pytest tests/test_attachments.py -q)",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -v)",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca run *)",
-      "Bash(python3 -m venv /private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/25c25a23-757e-405f-9a7b-e96d95c5dbd5/scratchpad/fresh-venv)",
-      "Bash(/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/25c25a23-757e-405f-9a7b-e96d95c5dbd5/scratchpad/fresh-venv/bin/pip install *)"
+      "Bash(git merge-base *)",
+      "Bash(xargs git log --oneline -1)",
+      "Bash(git cherry-pick *)",
+      "Bash(git stash *)",
+      "Bash(grep -rn *)",
+      "Bash(curl -s \"https://huggingface.co/api/models/Qwen/Qwen3-Embedding-0.6B-GGUF/tree/main\")",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca models *)",
+      "Bash(python3 -m pip install -q numpy)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pip install -q numpy)",
+      "Bash(python3 -c \"import numpy; print\\('system:', numpy.__version__\\)\")",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c \"import numpy; print\\('conda: ', numpy.__version__\\)\")",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -q)"
     ]
   }
 }
