@@ -525,6 +525,69 @@ def run(model_name, port, ctx, threads, gpu, no_tools):
     import asyncio
     asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools))
 
+@main.command(name="serve")
+@click.argument("model_name", required=False)
+@click.option("--port", type=int, help="Port to run llama-server on")
+@click.option("--ctx", type=int, help="Context size")
+@click.option("--threads", type=int, help="Number of CPU threads to use")
+@click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
+def serve(model_name, port, ctx, threads, gpu):
+    """Start the llama-server model API in the foreground without opening a chat session."""
+    config = load_config()
+    
+    # 1. Resolve model path
+    if not model_name:
+        model_name = config.get("default_model", "")
+        if model_name in MODEL_PRESETS:
+            model_name = MODEL_PRESETS[model_name]["file"]
+            
+    if not model_name:
+        click.echo("Error: No default model configured, and no model specified.")
+        click.echo("Please download a model using: llampaca models download")
+        sys.exit(1)
+        
+    model_path = MODELS_DIR / model_name
+    if not model_path.exists():
+        model_path = Path(model_name)
+        if not model_path.exists():
+            if model_name in MODEL_PRESETS:
+                preset_file = MODEL_PRESETS[model_name]["file"]
+                model_path = MODELS_DIR / preset_file
+                
+    if not model_path.exists():
+        click.echo(f"Error: Model '{model_name}' could not be resolved to a file path.")
+        click.echo(f"Looked in {MODELS_DIR} and current working directory.")
+        sys.exit(1)
+        
+    # Resolve parameters
+    port = port or config.get("server_port", 8080)
+    ctx = ctx or 32768
+    threads = threads or config.get("n_threads", 4)
+    gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
+    
+    # 2. Instantiate and start LlamaServer
+    from llampaca.engine.server import LlamaServer
+    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu)
+    
+    click.echo(f"Starting llama-server on port {port}...")
+    import asyncio
+    if not asyncio.run(server.start()):
+        click.echo("Failed to start llama-server.")
+        sys.exit(1)
+        
+    click.echo(f"llama-server is up and running on port {port}!")
+    click.echo("Press Ctrl+C to stop the server.")
+    
+    import time
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        click.echo("\nShutting down llama-server...")
+    finally:
+        server.stop()
+        click.echo("Server stopped. Goodbye!")
+
 @main.group()
 def history():
     """Gestisci lo storico delle chat."""
@@ -568,6 +631,12 @@ def delete_history(conversation_id, yes):
     # Rimuovi la conversazione (il database gestirà in cascata i messaggi correlati)
     asyncio.run(delete_conversation(conversation_id))
     click.echo(f"Conversazione eliminata con successo: '{conv['title']}' (ID: {conversation_id})")
+
+@main.command(name="mcp")
+def run_mcp_server():
+    """Avvia Llampaca come MCP Server per integrarlo con VSCode o Claude Desktop."""
+    from llampaca.engine.mcp_server import main as start_mcp
+    start_mcp()
 
 if __name__ == "__main__":
     main()

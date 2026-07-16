@@ -19,6 +19,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "pypdf>=4.0.0",
     "python-docx>=1.1.0",
+    "mcp>=1.0.0",
 ]
 
 [project.scripts]

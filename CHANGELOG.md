@@ -5,6 +5,20 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-16]
 
+### Added — Model Context Protocol (MCP) Server support for VSCode integration
+
+- **`pyproject.toml`** — Added `mcp>=1.0.0` dependency.
+  - *Why:* Enables using the official Anthropic MCP SDK in python to implement a stdio-based MCP server.
+
+- **`llampaca/engine/mcp_server.py`** — Implemented MCP server initialization using `FastMCP` that dynamically maps all registered tools from Llampaca's registry.
+  - *Why:* Exposes the filesystem, web search, and shell tools of Llampaca to external AI clients.
+
+- **`llampaca/cli.py`** — Added `llampaca mcp` Click command to start the MCP server, and `llampaca serve` command to run the local LLM server in the foreground without opening a chat session.
+  - *Why:* Gives a clean and dedicated way to start either the tool server or the LLM server separately, which is ideal for external VSCode integration.
+
+- **`tests/test_mcp_server.py`** — Created new unit tests verifying the MCP server creation and correct mapping of all registry tools.
+  - *Why:* Ensures functionality and protects against mapping regressions.
+
 ### Added — Transparent context window summarization with SQLite persistence
 
 - **`llampaca/engine/db.py`** — Added `summary` and `last_summarized_message_id` columns to `conversations` table with auto-migration. Added `update_conversation_summary` function and returned `id` for messages in `get_conversation`.
