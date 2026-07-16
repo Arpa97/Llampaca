@@ -22,6 +22,19 @@ This project adheres to Semantic Versioning and complies with development loggin
 - **`tests/test_summary.py`** — Created new unit tests verifying the migration, context trimming, LLM call mock, and safety active window.
   - *Why:* Validates the functionality and prevents regressions.
 
+### Changed — verify skill now documents the two Python environments
+
+- **`.claude/skills/verify/SKILL.md`** — Documents that the user's real
+  `llampaca` entry point is the conda env
+  (`~/miniconda3/envs/llampaca`, editable install), not system `python3`;
+  new dependencies must be installed in BOTH, and end-to-end verification
+  must use the conda binary. Example commands updated accordingly (plus:
+  the leading `1` line for the session-selection menu, and an `/attach`
+  example).
+  - *Why:* The skill only mentioned system `python3`; verification against
+    it passed while the user's real environment lacked the new `pypdf`
+    dependency — the direct cause of the `/attach` crash fixed below.
+
 ### Fixed — `/attach` crashed the whole session when `pypdf` was missing
 
 - **`llampaca/attachments.py`** — The lazy `pypdf` / `python-docx` imports
