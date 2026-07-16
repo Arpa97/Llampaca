@@ -16,6 +16,9 @@ This project adheres to Semantic Versioning and complies with development loggin
 - **`llampaca/cli.py`** — Updated chat initialization to load summary and filter active history. Associated DB message IDs to in-memory messages. Handled `summary_updated` event to write back to SQLite.
   - *Why:* Connects the database persistence with the Agent context trimming logic seamlessly.
 
+- **`llampaca/engine/server.py`** — Added `-fa on` (Flash Attention) and `-ctk q8_0` / `-ctv q8_0` (Key-Value cache quantization) to `llama-server` start options.
+  - *Why:* Dramatically optimizes memory usage and speed when the context window fills up, preventing VRAM swapping and slow quadratically scaled attention computations.
+
 - **`tests/test_summary.py`** — Created new unit tests verifying the migration, context trimming, LLM call mock, and safety active window.
   - *Why:* Validates the functionality and prevents regressions.
 

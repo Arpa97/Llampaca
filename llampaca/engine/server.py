@@ -169,14 +169,16 @@ class LlamaServer:
             # the context fills up: a trim changes the prompt prefix, and
             # without cache reuse each trim would force recomputing the whole
             # prompt — the slowest phase on local hardware.
-            "--cache-reuse", "256"
+            "--cache-reuse", "256",
+            # Enable Flash Attention to speed up self-attention computation
+            # (especially for large prompts/contexts) and reduce memory footprint.
+            "-fa", "on",
+            # Quantize Key-Value cache to 8-bit (q8_0) to halve its VRAM/RAM footprint,
+            # preventing memory paging/swapping and keeping generation speeds fast
+            # as the context window fills.
+            "-ctk", "q8_0",
+            "-ctv", "q8_0"
         ]
-        # Deliberately NOT passed: --flash-attn / -fa. Recent llama.cpp
-        # builds default it to 'auto' (enabled wherever the backend supports
-        # it), so passing it adds nothing there — while on older builds the
-        # flag was a bare boolean, so passing the new "-fa auto" syntax would
-        # make the server fail to start. The default gives us flash attention
-        # for free on every binary that has it.
         
         # Configure GPU layers
         # For llama.cpp, if gpu_layers is -1 (auto), we default to offloading all layers (e.g. 99) 
