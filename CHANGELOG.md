@@ -5,6 +5,38 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-16]
 
+### Fixed — embedding server crashed on real (larger) documents
+
+- **`llampaca/engine/server.py`** — Embedding mode now passes `--parallel 1`
+  and its default context is 4096 (was 2048).
+  - *Why:* Found via a real crash reproduced by the user: attaching a
+    10-page/~9100-token PDF (20 chunks) crashed the embedding server with
+    `failed to find a memory slot for batch of size 1906` followed by a
+    fatal `GGML_ASSERT` abort — surfacing to the CLI as an opaque
+    "Connection error" during indexing. Root cause, found in the server's
+    own log (`llama-server-embed-*.log`): `--parallel` defaults to `-1`
+    (auto), which picked 4 slots, splitting `-c` between them
+    (`n_ctx_slot = context_size / n_slots` = 2048/4 = 512 tokens per
+    slot) — too small for chunks whose REAL token count (observed up to
+    630) ran over the chars/4 estimate used to size them at ~500. A single
+    slot gives every request the full context; the pipeline embeds one
+    batch at a time per session anyway, so no concurrency is lost. The
+    earlier milestone 1-4 live checks never hit this because their test
+    documents were small enough (6-12 chunks) to fit under a 512-token
+    slot even split 4 ways — this bug needed a bigger, more realistic
+    document to surface.
+  - *Verified:* recreated the exact crashing document (10 pages, ~9114
+    tokens, 20 chunks) and re-ran the same `/attach` + question twice:
+    indexing now succeeds both times, and a question that explicitly
+    referenced "il documento allegato" correctly triggered
+    `search_documents` and answered right, citing page 6 ("ogni 200
+    chilometri"). A first, more loosely-phrased question made the 4B
+    model reach for `web_search` instead — expected small-model phrasing
+    sensitivity, not a regression from this fix.
+- **`tests/test_embedding.py`** — Updated the two assertions tied to the
+  old defaults (context 2048 → 4096) and added a check that `--parallel 1`
+  is present in the embedding command line.
+
 ### Fixed — conversations no longer titled "[Attached file: ..." (phase 2, milestone 5)
 
 - **`llampaca/engine/db.py`**, **`llampaca/cli.py`** — `add_message()`

@@ -109,10 +109,13 @@ class LlamaServer:
         if embedding:
             # Dedicated defaults for embedding mode: its own port range (so
             # it never races the chat server's auto-increment scan) and a
-            # small context — chunks are ~500 tokens, 2048 is ample, and a
-            # smaller context keeps the extra RAM footprint negligible.
+            # context sized for a single chunk (target ~500 tokens, but
+            # the real tokenizer can run over the chars/4 estimate — 4096
+            # leaves comfortable headroom) served to ONE parallel slot
+            # (see --parallel in _build_command) so the chunk never has to
+            # share it.
             self.port = port or config.get("embedding_port", 8180)
-            self.context_size = context_size or 2048
+            self.context_size = context_size or 4096
         else:
             self.port = port or config.get("server_port", 8080)
             self.context_size = context_size or config.get("context_size", 4096)
@@ -167,6 +170,18 @@ class LlamaServer:
                 # One chunk must fit in a single physical batch or the
                 # server rejects the request: keep ubatch == context.
                 "--ubatch-size", str(self.context_size),
+                # llama-server's default --parallel is -1 (auto), which
+                # picked 4 slots in practice, splitting -c between them
+                # (n_ctx_slot = context_size / n_slots = 2048/4 = 512).
+                # RAG chunks target ~500 tokens but the real tokenizer can
+                # run over that (observed up to 630 for a 500-token-
+                # estimate chunk), so a 512-token slot was too small: the
+                # server logged "failed to find a memory slot" and then
+                # hard-crashed on an internal assert. A single slot gives
+                # each request the FULL context; the indexing pipeline
+                # embeds one batch at a time anyway; no concurrent
+                # embedding requests are expected in one session.
+                "--parallel", "1",
             ])
         else:
             cmd.extend([

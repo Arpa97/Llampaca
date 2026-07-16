@@ -73,14 +73,19 @@ class TestServerCommand(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--pooling") + 1], "last")
         # Chunks must fit one physical batch.
         self.assertIn("--ubatch-size", cmd)
+        # A single parallel slot: llama-server's default (auto) picked 4
+        # slots in practice, splitting -c between them (n_ctx_slot =
+        # context_size / n_slots) — too small for a single ~500-700 token
+        # chunk, causing "failed to find a memory slot" and a hard crash.
+        self.assertEqual(cmd[cmd.index("--parallel") + 1], "1")
         # None of the chat-only flags belong in embedding mode.
         for flag in ("--jinja", "--cache-reuse", "-fa", "-ctk", "-ctv"):
             self.assertNotIn(flag, cmd)
 
     def test_embedding_mode_defaults(self):
         server = LlamaServer(model_path=Path("/tmp/fake.gguf"), embedding=True)
-        # Own port range and small dedicated context (chunks are ~500 tok).
-        self.assertEqual(server.context_size, 2048)
+        # Own port range and a context sized for one chunk on one slot.
+        self.assertEqual(server.context_size, 4096)
         self.assertNotEqual(server.port, DEFAULT_CONFIG["server_port"])
         # Distinct pid/log names so both servers can track their own files,
         # while still matching the cleanup_orphans() "llama-server-*" glob.

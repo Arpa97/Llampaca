@@ -84,7 +84,13 @@
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c \"import numpy; print\\('conda: ', numpy.__version__\\)\")",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -q)",
       "Bash(python3 -m pytest tests/test_embedding.py::TestEmbeddingService::test_index_document_roundtrip -q)",
-      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca history *)"
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca history *)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -)",
+      "Bash(ls -t /Users/umbertodilaudo/.llampaca/logs/llama-server-embed-*.log | head -3)",
+      "Read(//Users/umbertodilaudo/Desktop/**)"
+    ],
+    "additionalDirectories": [
+      "/Users/umbertodilaudo/.llampaca/logs"
     ]
   }
 }
