@@ -82,6 +82,13 @@ class EmbeddingService:
         self.query_prefix = preset.get("query_prefix", "")
         self.document_prefix = preset.get("document_prefix", "")
 
+        # Independent of the chat model's GPU setting — see
+        # "embedding_gpu_layers" in config.py for why the default is 0
+        # (CPU-only): a 0.6B model doesn't need Metal/CUDA to embed a few
+        # short chunks quickly, and keeping it off the GPU leaves the full
+        # thermal/VRAM budget to the chat model.
+        self.gpu_layers = config.get("embedding_gpu_layers", 0)
+
     @property
     def started(self) -> bool:
         """Whether the embedding server is currently running."""
@@ -115,6 +122,7 @@ class EmbeddingService:
             model_path=model_path,
             embedding=True,
             pooling=self.pooling,
+            gpu_layers=self.gpu_layers,
         )
         if not await server.start():
             raise EmbeddingUnavailable(

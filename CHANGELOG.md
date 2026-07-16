@@ -5,6 +5,36 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-16]
 
+### Changed — embedding server runs CPU-only by default (independent of the chat model's GPU setting)
+
+- **`llampaca/config.py`** — New `embedding_gpu_layers` config key, default
+  `0`.
+- **`llampaca/engine/embedding.py`** — `EmbeddingService` reads
+  `embedding_gpu_layers` and passes it explicitly to `LlamaServer(...,
+  gpu_layers=...)`, instead of letting the embedding server silently
+  inherit the chat model's `gpu_layers` (it previously fell through to the
+  same config default because nothing was passed).
+  - *Why:* User-reported heat/slowdown while the RAG path was active. Root
+    cause: both llama-server processes (chat model AND the 0.6B embedder)
+    were requesting full Metal offload (`-ngl 99`) simultaneously — two
+    GPU-accelerated inference processes competing for the same unified
+    memory and thermal budget on an 8 GB Mac. The embedder is small enough
+    that CPU is plenty fast for embedding a handful of short chunks, so
+    running it off Metal frees the GPU/thermal budget entirely for the
+    chat model, where offload actually matters for interactive generation
+    speed. `embedding_gpu_layers` can still be raised (e.g. `-1` for auto)
+    on a machine with GPU/RAM to spare.
+- **`tests/test_embedding.py`** — 2 new tests: `embedding_gpu_layers`
+  defaults to 0 in `DEFAULT_CONFIG`; `LlamaServer(embedding=True,
+  gpu_layers=0)._build_command()` emits no `-ngl` flag at all (not `-ngl
+  0`) — llama-server then never touches Metal/CUDA for that process.
+  `EmbeddingService.gpu_layers` also covered directly.
+- Verified live: with an oversized attachment, the chat server's logged
+  command still carries `-ngl 99` while the embedding server's now omits
+  `-ngl` entirely — indexing and search_documents still worked correctly
+  (question answered right: "potatura degli ulivi ... tra febbraio e
+  marzo").
+
 ### Fixed — embedding server crashed on real (larger) documents
 
 - **`llampaca/engine/server.py`** — Embedding mode now passes `--parallel 1`

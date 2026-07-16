@@ -81,7 +81,17 @@ DEFAULT_CONFIG = {
     # The embedding server starts on its own port range so it never races
     # the chat server's auto-increment scan (8080, 8081, ...).
     "embedding_model": "qwen3-embedding-0.6b",
-    "embedding_port": 8180
+    "embedding_port": 8180,
+    # GPU layers for the embedding server, resolved INDEPENDENTLY from the
+    # chat model's "gpu_layers" (they are two separate llama-server
+    # processes and can run on different backends). Default 0 (CPU-only):
+    # a 0.6B model embeds a handful of short chunks fast enough on CPU
+    # alone, and running it off Metal/CUDA frees the GPU and the thermal
+    # budget for the chat model, which is where GPU offload actually
+    # matters for interactive token-generation speed. Set to -1 (auto) or
+    # a specific layer count here to offload it too, e.g. on a machine
+    # with GPU/RAM to spare.
+    "embedding_gpu_layers": 0
 }
 
 

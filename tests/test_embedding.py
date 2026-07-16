@@ -43,6 +43,10 @@ class TestEmbeddingPreset(unittest.TestCase):
         self.assertNotEqual(
             DEFAULT_CONFIG["embedding_port"], DEFAULT_CONFIG["server_port"]
         )
+        # CPU-only by default: independent from the chat model's GPU
+        # setting, so both servers running at once don't double up on
+        # Metal/CUDA load and heat/throttle the machine.
+        self.assertEqual(DEFAULT_CONFIG["embedding_gpu_layers"], 0)
 
     def test_get_preset_for_file_reverse_lookup(self):
         preset = get_preset_for_file("Qwen3-Embedding-0.6B-Q8_0.gguf")
@@ -95,6 +99,14 @@ class TestServerCommand(unittest.TestCase):
     def test_pooling_is_configurable(self):
         cmd = self._cmd(embedding=True, pooling="mean", port=9100)
         self.assertEqual(cmd[cmd.index("--pooling") + 1], "mean")
+
+    def test_cpu_only_omits_ngl_flag(self):
+        # gpu_layers=0 must produce NO "-ngl" flag at all (not "-ngl 0"):
+        # llama-server then simply never touches Metal/CUDA for this
+        # process, which is the whole point of running the embedder
+        # CPU-only while the chat model keeps the GPU.
+        cmd = self._cmd(embedding=True, pooling="last", port=9100, gpu_layers=0)
+        self.assertNotIn("-ngl", cmd)
 
 
 class TestClientEmbed(unittest.IsolatedAsyncioTestCase):
@@ -231,6 +243,13 @@ class TestEmbeddingService(unittest.IsolatedAsyncioTestCase):
         rows = await get_conversation_chunks(self.conv_id, db_path=self.db_path)
         self.assertEqual(len(rows), 1)
         self.assertEqual(len(rows[0]["embedding"]), 8 * 4)  # float32
+
+    async def test_gpu_layers_defaults_to_cpu_only(self):
+        # Independent of the chat model's own "gpu_layers": the embedder
+        # must default to CPU (0) regardless of what the chat model uses.
+        from llampaca.engine.embedding import EmbeddingService
+        service = EmbeddingService(db_path=self.db_path)
+        self.assertEqual(service.gpu_layers, 0)
 
     async def test_stop_is_idempotent_without_start(self):
         from llampaca.engine.embedding import EmbeddingService
