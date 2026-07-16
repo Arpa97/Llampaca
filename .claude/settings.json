@@ -82,7 +82,9 @@
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pip install -q numpy)",
       "Bash(python3 -c \"import numpy; print\\('system:', numpy.__version__\\)\")",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c \"import numpy; print\\('conda: ', numpy.__version__\\)\")",
-      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -q)"
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -q)",
+      "Bash(python3 -m pytest tests/test_embedding.py::TestEmbeddingService::test_index_document_roundtrip -q)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca history *)"
     ]
   }
 }

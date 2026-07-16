@@ -75,8 +75,9 @@ You > What is the termination notice period?
 ```
 
 - Supported formats: **PDF** (text layer, no OCR), **Word** (`.docx`), and plain-text files (`.txt`, `.md`, `.csv`, source code, ...)
-- The extracted text is injected into your next message, so the model reads the document directly — no tools involved
-- An attachment may occupy at most **35% of the context window**; larger files are rejected with the exact numbers (attach a smaller file or raise `--ctx`). Retrieval (RAG) for big documents is on the roadmap.
+- **Small files** (up to ~35% of the context window): the extracted text is injected into your next message, so the model reads the document directly — no tools involved
+- **Large files**: the document is automatically **indexed for search** (RAG): it is chunked, embedded with a local embedding model, and stored in SQLite; the model then reads it through the `search_documents` tool, retrieving only the passages relevant to each question. Requires the embedding model (`llampaca models download --preset qwen3-embedding-0.6b`, ~640 MB) — a second, lightweight `llama-server` instance starts automatically the first time it is needed
+- Indexed documents **survive the session**: resume the conversation and they are searchable again without re-attaching. Deleting the conversation deletes its index.
 
 ---
 
@@ -120,6 +121,7 @@ During a `llampaca run` session the model can call these built-in tools:
 | `run_shell_command` | Run a shell command on your machine | **Yes** |
 | `web_search` | Search the web (DuckDuckGo, no API key) and return top results | No |
 | `fetch_url` | Download a web page as plain text | No |
+| `search_documents` | Search inside indexed attachments (only active when the conversation has documents indexed via `/attach`) | No |
 
 Safety model:
 - **Workspace sandbox** — file tools can only touch paths inside the directory where you launched `llampaca run`; anything else (e.g. `../../etc/passwd`) is rejected
@@ -155,17 +157,20 @@ llampaca/
 ├── cli.py                # Click-based CLI commands
 ├── config.py             # Paths, defaults, and model presets
 ├── attachments.py        # /attach: PDF/Word/text extraction and context budgeting
+├── rag.py                # RAG core: chunking, vector serialization, cosine top-k
 ├── engine/
 │   ├── downloader.py     # GitHub binary + Hugging Face model downloader
-│   ├── server.py         # llama-server subprocess manager (PID tracking, port scanning)
-│   └── client.py         # OpenAI-compatible streaming client (text + tool call streaming)
+│   ├── server.py         # llama-server subprocess manager (chat + embedding modes)
+│   ├── client.py         # OpenAI-compatible streaming client (text, tool calls, embeddings)
+│   └── embedding.py      # EmbeddingService: lazy embedding-server lifecycle + indexing
 ├── agent/
 │   └── loop.py           # Agentic execution loop (UI-independent, event-based)
 └── tools/
     ├── registry.py       # Tool registry: JSON schema generation from Python functions
     ├── filesystem.py     # read_file / write_file / list_directory (sandboxed)
     ├── shell.py          # run_shell_command (confirmation-gated)
-    └── web.py            # fetch_url (HTML → plain text)
+    ├── web.py            # fetch_url (HTML → plain text)
+    └── documents.py      # search_documents (RAG retrieval over indexed attachments)
 ```
 
 ### Application Data
@@ -246,7 +251,7 @@ Llampaca automatically:
 - [x] Conversation history — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server` (create/list/load/delete conversations)
 - [x] Agentic tool/skill execution loop (filesystem, shell, web tools with confirmation gating)
 - [x] Web search integration (DuckDuckGo, no API key) — deeper "DeepSearch" (multi-step research) still to come
-- [x] File attachments (`/attach` — PDF/Word/text, direct injection) — RAG for documents larger than the context window still to come
+- [x] File attachments (`/attach` — PDF/Word/text): direct injection for small files, automatic RAG (local embeddings + `search_documents` tool) for documents larger than the context budget
 - [ ] MCP (Model Context Protocol) integration
 - [ ] GUI (desktop application packaging)
 - [ ] One-click installer (no Python required)

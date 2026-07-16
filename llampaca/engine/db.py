@@ -167,12 +167,20 @@ async def create_conversation(model_name: str, title: str = "New Conversation", 
         
     return conv_id
 
-async def add_message(conversation_id: str, role: str, content: str, db_path: Path = None) -> int:
+async def add_message(conversation_id: str, role: str, content: str, db_path: Path = None,
+                      title_snippet: str = None) -> int:
     """
     Add a message to a conversation.
     Updates the 'updated_at' timestamp of the conversation.
     If it's the first user message and the conversation still has the default title,
     it automatically updates the title using a snippet of the message content.
+
+    Args:
+        title_snippet: Optional override for the text the auto-title is cut
+            from. Used when `content` is a merged message (attachment blocks
+            or index notes + the user's question): titling from `content`
+            would name the conversation "[Attached file: ...", so the CLI
+            passes the user's own words here instead.
     """
     async with get_db_connection(db_path) as conn:
         # Insert the message
@@ -205,7 +213,8 @@ async def add_message(conversation_id: str, role: str, content: str, db_path: Pa
                 row = await cursor.fetchone()
                 if row and row["title"] == "New Conversation":
                     # Generate a nice, clean title from the message snippet
-                    snippet = content.strip().replace("\n", " ")
+                    # (or from the explicit override, see title_snippet).
+                    snippet = (title_snippet or content).strip().replace("\n", " ")
                     if len(snippet) > 40:
                         snippet = snippet[:37].rstrip() + "..."
                     if snippet:
@@ -393,3 +402,31 @@ async def delete_document(document_id: int, db_path: Path = None) -> None:
             "DELETE FROM documents WHERE id = ?;",
             (document_id,)
         )
+
+
+def get_conversation_chunks_sync(conversation_id: str, db_path: Path = None) -> list:
+    """
+    Synchronous twin of get_conversation_chunks, for the search_documents
+    TOOL: the tool registry executes tools as plain sync functions from
+    inside the agent's running event loop, where the aiosqlite variant
+    cannot be awaited (and asyncio.run() would raise). A read-only stdlib
+    sqlite3 query is safe alongside the async writers thanks to WAL mode.
+    Kept here, next to the async version, so the SQL lives in one file.
+    """
+    import sqlite3
+
+    path = db_path if db_path is not None else DB_PATH
+    conn = sqlite3.connect(str(path), timeout=5.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT chunks.id, chunks.document_id, chunks.page, chunks.position,"
+            "       chunks.text, chunks.embedding, documents.filename"
+            " FROM chunks JOIN documents ON chunks.document_id = documents.id"
+            " WHERE documents.conversation_id = ?"
+            " ORDER BY chunks.document_id ASC, chunks.position ASC;",
+            (conversation_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()

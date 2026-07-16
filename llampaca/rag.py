@@ -26,7 +26,10 @@ import numpy as np
 
 # Reuse the same chars-per-token heuristic as the agent loop and the
 # attachment budget, so every token estimate in the codebase agrees.
-from llampaca.agent.loop import CHARS_PER_TOKEN
+# Imported from config (not agent.loop) to avoid an import cycle: this
+# module is imported by tools/documents.py, which the agent loop's own
+# import chain reaches through the tools package.
+from llampaca.config import CHARS_PER_TOKEN
 
 # Chunk sizing, in (estimated) tokens.
 #
@@ -131,6 +134,18 @@ def chunk_text(text: str) -> List[Dict[str, Any]]:
     # final flush that leftover must not become a chunk of its own — it is
     # pure repetition of text already emitted.
     return chunks
+
+
+def count_pages(text: str) -> Optional[int]:
+    """
+    The page count of an extracted document, from its "--- Page N ---"
+    markers (None for pageless sources). Counted on the SOURCE text, not
+    on chunk attribution: a chunk's page is the page it *starts* on, so
+    the max over chunks undercounts whenever trailing pages merge into an
+    earlier-starting chunk.
+    """
+    pages = [int(match) for match in _PAGE_MARKER.findall(text)]
+    return max(pages) if pages else None
 
 
 def _paragraphs_with_pages(text: str) -> List[Tuple[Optional[int], str]]:

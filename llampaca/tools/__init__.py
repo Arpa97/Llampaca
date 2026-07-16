@@ -10,6 +10,10 @@ from llampaca.tools.registry import Tool, ToolRegistry
 from llampaca.tools.filesystem import register_filesystem_tools
 from llampaca.tools.shell import register_shell_tools
 from llampaca.tools.web import register_web_tools
+# search_documents is exported but deliberately NOT part of
+# build_default_registry: it is registered dynamically, only for sessions
+# whose conversation has indexed attachments (see tools/documents.py).
+from llampaca.tools.documents import register_document_tools, make_query_embedder
 
 
 def build_default_registry(max_result_chars: int = None) -> ToolRegistry:
@@ -36,4 +40,10 @@ def build_default_registry(max_result_chars: int = None) -> ToolRegistry:
     return registry
 
 
-__all__ = ["Tool", "ToolRegistry", "build_default_registry"]
+__all__ = [
+    "Tool",
+    "ToolRegistry",
+    "build_default_registry",
+    "register_document_tools",
+    "make_query_embedder",
+]

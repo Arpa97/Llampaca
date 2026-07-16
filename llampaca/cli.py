@@ -318,6 +318,65 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
             active_messages.append(m)
         agent.messages.extend(active_messages)
 
+    # --- RAG plumbing for large attachments ------------------------------
+    # The embedding server is LAZY: EmbeddingService() only resolves the
+    # configured model; nothing starts until activate_document_search()
+    # runs — at the first over-budget /attach, or right below when the
+    # resumed conversation already has indexed documents.
+    from llampaca.engine.embedding import EmbeddingService, EmbeddingUnavailable
+    from llampaca.engine.db import list_documents
+    from llampaca.tools import register_document_tools
+
+    embedding_service = EmbeddingService()
+    search_tool_active = False
+
+    async def activate_document_search() -> None:
+        """
+        Bring the document-search machinery up: start the embedding server
+        (lazy, idempotent) and register the search_documents tool exactly
+        once, refreshing the agent so prompt-mode models get the updated
+        system prompt. Must run from this async context because the sync
+        tool cannot start the async server itself.
+        """
+        nonlocal search_tool_active
+        await embedding_service.ensure_started()
+        if search_tool_active or registry is None:
+            return
+        register_document_tools(
+            registry,
+            embed_query=embedding_service.query_embedder(),
+            conversation_id=active_conversation_id,
+        )
+        agent.refresh_tools()
+        search_tool_active = True
+
+    # Resuming a conversation that already has indexed documents: activate
+    # the search tool now, so the model can keep answering questions about
+    # them. (This is the one case where the embedding server starts at
+    # session open — the indexed documents signal the intent to use it.)
+    if registry:
+        indexed_docs = await list_documents(active_conversation_id)
+        if indexed_docs:
+            mismatched = [
+                d for d in indexed_docs
+                if d["embedder_name"] != embedding_service.model_file
+            ]
+            if mismatched:
+                click.echo(click.style(
+                    "  [warning] Some indexed documents were built with a "
+                    f"different embedding model ({mismatched[0]['embedder_name']}); "
+                    "their search results will be unavailable until you "
+                    "re-attach them.", fg="yellow",
+                ))
+            try:
+                await activate_document_search()
+                doc_names = ", ".join(d["filename"] for d in indexed_docs)
+                click.echo(f"Indexed documents available for search: {doc_names}")
+            except EmbeddingUnavailable as e:
+                click.echo(click.style(
+                    f"  [warning] Document search unavailable: {e}", fg="yellow"
+                ))
+
     click.echo("\n" + "=" * 50)
     click.echo(f" Interactive Agent Session with {model_path.name}")
     if registry:
@@ -351,6 +410,11 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
     # message followed by the user's question would fail server-side in
     # prompt mode. One combined user turn works with every template.
     pending_attachments = []
+    # Notes about documents that were INDEXED instead of injected (too
+    # large for the budget). Merged into the next user message the same
+    # way, but they carry only a pointer ("use search_documents"), never
+    # the document text — that is the whole point of indexing.
+    pending_index_notes = []
 
     try:
         while True:
@@ -392,21 +456,66 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                     ))
                     continue
 
-                # Enforce the phase-1 size budget on the *total* staged
-                # content: two attachments that individually fit but jointly
-                # overflow would starve the conversation just the same.
+                # The size budget decides the strategy: within it, the text
+                # is injected directly (phase 1); beyond it, the document
+                # gets INDEXED and the model searches it instead (RAG). The
+                # check is on the *total* staged content: two attachments
+                # that individually fit but jointly overflow would starve
+                # the conversation just the same.
                 budget = attachment_token_budget(server.context_size)
                 staged_tokens = sum(estimate_tokens(t) for _, t in pending_attachments)
                 new_tokens = estimate_tokens(text)
                 if staged_tokens + new_tokens > budget:
+                    if no_tools:
+                        # Indexing is useless without the search tool: the
+                        # model could never read the document back.
+                        click.echo(click.style(
+                            f"  [attach error] '{attach_path.name}' is too large "
+                            f"(~{new_tokens} tokens vs a budget of ~{budget}) and "
+                            "tools are disabled (--no-tools), so it cannot be "
+                            "indexed for search either. Attach a smaller file or "
+                            "relaunch without --no-tools.", fg="red",
+                        ))
+                        continue
+
                     click.echo(click.style(
-                        f"  [attach error] '{attach_path.name}' is too large: "
-                        f"~{new_tokens} tokens"
-                        + (f" (+{staged_tokens} already staged)" if staged_tokens else "")
-                        + f" exceeds the attachment budget of ~{budget} tokens "
-                        f"(35% of the {server.context_size}-token context). "
-                        "Attach a smaller file or relaunch with a larger --ctx.",
-                        fg="red",
+                        f"  [indexing] {attach_path.name}: ~{new_tokens} tokens — "
+                        f"too large for direct injection (budget ~{budget}), "
+                        "indexing for search instead...", fg="cyan",
+                    ))
+                    try:
+                        # Order matters: activate first (starts the embedding
+                        # server lazily and registers the tool), then index.
+                        await activate_document_search()
+                        info = await embedding_service.index_document(
+                            active_conversation_id, attach_path.name, text
+                        )
+                    except EmbeddingUnavailable as e:
+                        click.echo(click.style(f"  [attach error] {e}", fg="red"))
+                        continue
+                    except Exception as e:
+                        # Same defensive net as extraction: an indexing bug
+                        # costs one red line, never the session.
+                        click.echo(click.style(
+                            f"  [attach error] Unexpected error while indexing "
+                            f"'{attach_path.name}': {e}", fg="red",
+                        ))
+                        continue
+
+                    pages_part = f", {info['pages']} pages" if info["pages"] else ""
+                    # The model must learn the document exists and how to
+                    # reach it; the note rides along with the next message
+                    # (same merge rule as direct attachments).
+                    pending_index_notes.append(
+                        f"[Attached and indexed: {attach_path.name} "
+                        f"({info['chunks']} searchable passages{pages_part}). "
+                        "This document is NOT in your context: use the "
+                        "search_documents tool to read passages from it.]"
+                    )
+                    click.echo(click.style(
+                        f"  [indexed] {attach_path.name}: {info['chunks']} chunks"
+                        f"{pages_part}. The model can now search inside it; a "
+                        "note will be sent with your next message.", fg="cyan",
                     ))
                     continue
 
@@ -420,20 +529,34 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                 ))
                 continue
 
-            # Merge any staged attachments into this message: document(s)
-            # first, the user's request last, as one single user turn.
-            if pending_attachments:
-                blocks = "\n\n".join(
+            # The user's own words, captured BEFORE any merge below: used
+            # for auto-titling, so a conversation is never titled
+            # "[Attached file: ..." after a first message with attachments.
+            question_text = user_input
+
+            # Merge any staged attachments and index notes into this
+            # message: document(s)/note(s) first, the user's request last,
+            # as one single user turn (see pending_attachments above).
+            if pending_attachments or pending_index_notes:
+                parts = [
                     build_attachment_block(name, text)
                     for name, text in pending_attachments
-                )
-                user_input = f"{blocks}\n\n{user_input}"
+                ]
+                parts.extend(pending_index_notes)
                 names = ", ".join(name for name, _ in pending_attachments)
+                if pending_index_notes:
+                    suffix = f"{len(pending_index_notes)} indexed document note(s)"
+                    names = f"{names}, {suffix}" if names else suffix
+                user_input = "\n\n".join(parts + [user_input])
                 pending_attachments = []
+                pending_index_notes = []
                 click.echo(click.style(f"  [sending with attachments: {names}]", dim=True))
 
             # Add message to local context and persist to SQLite
-            user_msg_id = await add_message(active_conversation_id, "user", user_input)
+            user_msg_id = await add_message(
+                active_conversation_id, "user", user_input,
+                title_snippet=question_text,
+            )
             
             # Print streaming response
             click.echo("Llampaca > ", nl=False)
@@ -493,8 +616,11 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         config["active_conversation_id"] = ""
         save_config(config)
         
-        # Shutdown server
+        # Shutdown servers: the chat server and, if the session ever
+        # indexed or searched documents, the embedding server too
+        # (stop() is a no-op when it never started).
         server.stop()
+        embedding_service.stop()
         click.echo("Goodbye!")
 
 @main.command()

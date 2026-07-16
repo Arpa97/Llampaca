@@ -2,6 +2,15 @@ import os
 import json
 from pathlib import Path
 
+# Rough tokens-per-character ratio used for budget estimates everywhere in
+# the codebase (agent history trimming, attachment budgets, RAG chunk
+# sizing). Exact token counts would require a round-trip to the server's
+# /tokenize endpoint; chars/4 is standard, cheap, and accurate enough for
+# threshold decisions. Lives here — the dependency-free leaf module — so
+# low-level modules (rag, attachments) can share it with the agent without
+# import cycles.
+CHARS_PER_TOKEN = 4
+
 # Base directory for the application
 LLAMPACA_DIR = Path.home() / ".llampaca"
 CONFIG_PATH = LLAMPACA_DIR / "config.json"

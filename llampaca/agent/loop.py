@@ -75,12 +75,13 @@ MIN_ACTIVE_WINDOW = 6
 CONTEXT_HIGH_WATERMARK = 0.80  # trim when the history exceeds this fraction
 CONTEXT_LOW_WATERMARK = 0.60   # ...and cut it down to this fraction
 
-# Rough tokens-per-character ratio used for budget estimates. Exact token
-# counts would require a round-trip to the server's /tokenize endpoint per
-# message; a chars/4 estimate is standard, cheap, and accurate enough for
-# watermark decisions (the 20% headroom above the high watermark absorbs
-# the estimation error).
-CHARS_PER_TOKEN = 4
+# Rough tokens-per-character ratio used for budget estimates (the 20%
+# headroom above the high watermark absorbs the estimation error). The
+# constant lives in config.py so that low-level modules (rag, attachments)
+# can share the same heuristic without importing this module — this
+# re-export keeps existing `from llampaca.agent.loop import CHARS_PER_TOKEN`
+# users working.
+from llampaca.config import CHARS_PER_TOKEN
 
 # Fixed per-message overhead, in tokens: every message costs a few extra
 # tokens for its role marker and the chat template's framing around it.
@@ -180,16 +181,17 @@ class Agent:
         # free. Applied to custom prompts too, since the problem is the same.
         base_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         today = datetime.now().strftime("%A, %d %B %Y")
-        dated_prompt = f"{base_prompt} Today's date is {today}."
-
-        # In prompt-based mode the tool definitions live in the system prompt
-        if self.tools_enabled and not self.native_tools:
-            dated_prompt += "\n\n" + self._tool_instructions()
+        # The tool-free part of the system prompt, kept on the instance so
+        # the full prompt can be REBUILT whenever the tool set or the tool
+        # mode changes mid-session (refresh_tools, _switch_to_prompt_mode).
+        # Rebuilding from this base — instead of appending to messages[0] —
+        # keeps those operations idempotent: no duplicated tool sections.
+        self._base_system_prompt = f"{base_prompt} Today's date is {today}."
 
         # Full conversation history, in OpenAI messages format.
         # Kept on the instance so multiple send() calls form one conversation.
         self.messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": dated_prompt}
+            {"role": "system", "content": self._system_prompt_content()}
         ]
 
     async def send(
@@ -532,13 +534,51 @@ class Agent:
             "results: if you need one, emit the JSON and wait."
         )
 
+    def _system_prompt_content(self) -> str:
+        """
+        The full system prompt for the CURRENT tool mode and tool set:
+        the dated base prompt plus, in prompt-based mode only, the tool
+        instructions (in native mode the tools travel as a request
+        parameter instead). Single source of truth for messages[0] —
+        __init__, refresh_tools() and _switch_to_prompt_mode() all build
+        it from here, so mode/tool changes can never stack duplicates.
+        """
+        content = self._base_system_prompt
+        if self.tools_enabled and not self.native_tools:
+            content += "\n\n" + self._tool_instructions()
+        return content
+
+    def refresh_tools(self) -> None:
+        """
+        Re-sync the agent after the tool registry changed mid-session —
+        e.g. search_documents activated by the first indexed attachment.
+
+        Native mode needs nothing: definitions() is read from the registry
+        on every request, so the next call already carries the new set.
+        Prompt-based mode keeps the definitions inside messages[0], which
+        is rebuilt here.
+
+        Either way, changing the tool set changes the rendered prompt
+        prefix, so the next request pays one full prompt re-processing
+        (llama-server's prefix cache misses). That is a per-change cost by
+        design — callers should change the registry when something real
+        happens (a document was indexed), not speculatively.
+        """
+        self.tools_enabled = (
+            self.registry is not None and len(self.registry.names()) > 0
+        )
+        if not self.native_tools:
+            self.messages[0]["content"] = self._system_prompt_content()
+
     def _switch_to_prompt_mode(self) -> None:
         """
         Runtime fallback: native tools turned out to be unsupported, so
-        inject the tool instructions into the system prompt and flip the mode.
+        flip the mode and rebuild the system prompt with the tool
+        instructions included (rebuild, not append: see
+        _system_prompt_content on idempotence).
         """
         self.native_tools = False
-        self.messages[0]["content"] += "\n\n" + self._tool_instructions()
+        self.messages[0]["content"] = self._system_prompt_content()
 
     def _extract_tool_call(self, text: str) -> Optional[Tuple[str, str]]:
         """

@@ -5,6 +5,133 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-16]
 
+### Fixed — conversations no longer titled "[Attached file: ..." (phase 2, milestone 5)
+
+- **`llampaca/engine/db.py`**, **`llampaca/cli.py`** — `add_message()`
+  takes an optional `title_snippet`; the CLI passes the user's own words,
+  captured before attachment blocks / index notes are merged into the
+  message, so auto-titling names the conversation after the question.
+  - *Why:* a first message carrying an attachment was titled from the
+    merged content — "[Attached and indexed: manuale_grande..." instead of
+    the actual question. Verified live: the test session is now titled
+    "Secondo il documento, ogni quanti chi...".
+
+### Verified — RAG end-to-end with a real multi-page PDF (phase 2, milestone 5)
+
+- A generated 8-page PDF (~17k extractable chars, distinct topic per page)
+  attached in a real session: indexed as "12 chunks, 8 pages", the model
+  called search_documents, the result cited the right page
+  (`[manuale_grande.pdf, p.6 | relevance ...]`) and the answer was correct
+  ("la catena va lubrificata ogni 200 chilometri"). This exercises PDF
+  page attribution through the whole pipeline, not just in unit tests.
+
+- **`.claude/skills/verify/SKILL.md`** — Documents the RAG verification
+  flow: the piped-session example, the exact line sequence to look for
+  ([indexing] → embed-server start → [indexed] → [tool] search_documents →
+  two shutdown lines), the embed-server log name, and the note that the
+  embedding server starting at session open on resume is intended.
+
+### Added — /attach now indexes oversized documents for search (phase 2, milestone 4)
+
+- **`llampaca/engine/embedding.py`** (new) — `EmbeddingService`: per-session
+  owner of the embedding llama-server lifecycle and of the indexing
+  pipeline (text → chunks → embeddings → documents/chunks tables).
+  - *What:* Construction is cheap (resolves the configured embedding model
+    + its pooling/prefix metadata, no server). `ensure_started()` is the
+    LAZY start — nothing runs until the first over-budget /attach or a
+    resume of a conversation with indexed documents. `index_document()`
+    chunks, embeds (document prefix applied), stores, and returns the
+    numbers for the CLI's feedback lines. `query_embedder()` hands the
+    search tool its sync embed callable (only after start: the sync tool
+    cannot start the async server itself). All user-facing failures raise
+    `EmbeddingUnavailable` with the fix in the message (e.g. the exact
+    `models download` command).
+
+- **`llampaca/cli.py`** — The over-budget `/attach` branch now indexes
+  instead of rejecting.
+  - *What:* `[indexing]` feedback → lazy server start → `index_document`
+    → a NOTE (never the text) staged for the next user message ("this
+    document is NOT in your context: use search_documents") → the tool
+    registered once per session + `agent.refresh_tools()`. On session
+    resume, conversations with indexed documents reactivate the tool at
+    open (with a warning listing documents built by a different embedder).
+    With `--no-tools`, oversized attachments are still rejected — indexing
+    would be useless if the model can never search. Both servers stopped
+    in the shutdown path.
+
+- **`llampaca/rag.py`** — New `count_pages()` (page count from the source
+  text's markers). Found by a failing test: the previous max-over-chunks
+  logic undercounted whenever trailing pages merged into an
+  earlier-starting chunk.
+
+- **`tests/test_embedding.py`** — 4 new EmbeddingService tests: missing
+  model → actionable EmbeddingUnavailable, query_embedder before start →
+  RuntimeError, full index_document roundtrip against a faked embedding
+  client (prefix reaches the embedder, metadata recorded, float32 BLOBs
+  stored), stop() idempotent without start.
+
+- Verified live end-to-end on the fragile path (gemma-3-4b, prompt-based
+  tools): a 26 KB text attached with /attach → indexed into 20 chunks with
+  the embedding server starting lazily mid-session → the model called
+  search_documents and answered correctly ("le spese si ripartiscono in
+  base ai millesimi, articolo 12"); resuming the same conversation
+  reactivated the index without re-attaching and answered a new question
+  correctly. Both servers shut down at exit in both runs.
+
+### Added — search_documents tool and dynamic tool activation (phase 2, milestone 3)
+
+- **`llampaca/tools/documents.py`** (new) — The only model-facing piece of
+  the RAG pipeline.
+  - *What:* `register_document_tools(registry, embed_query,
+    conversation_id, db_path)` registers `search_documents(query, top_k=4)`:
+    embeds the query (sync HTTP via the `make_query_embedder(port,
+    query_prefix)` factory, which owns the model's asymmetric query
+    prefix), reads the conversation's chunks fresh from the database on
+    every call (documents attached mid-session are immediately
+    searchable), ranks with rag.top_k, and returns provenance-labeled
+    blocks (`[file, p.N | relevance 0.75]`). top_k clamped to 1-8. All
+    failure modes return model-readable error strings: no documents
+    indexed, embedding server unreachable, index/embedder dimension
+    mismatch ("re-attach to re-index").
+  - *Why (sync, and a sync db read):* the tool registry executes tools as
+    plain sync functions inside the agent's running event loop, where
+    aiosqlite cannot be awaited — hence the new read-only
+    `get_conversation_chunks_sync()` in **`llampaca/engine/db.py`**
+    (stdlib sqlite3, safe next to the async writers thanks to WAL).
+  - *Why (not in build_default_registry):* small models call tools more
+    reliably the fewer they see; the tool is registered dynamically only
+    when a conversation actually has indexed documents.
+
+- **`llampaca/agent/loop.py`** — Dynamic tool activation.
+  - *What:* New `Agent.refresh_tools()`: re-syncs `tools_enabled` and, in
+    prompt-based mode, rebuilds `messages[0]` from the stored tool-free
+    base prompt via the new single source of truth
+    `_system_prompt_content()`. `_switch_to_prompt_mode()` now rebuilds
+    through the same path instead of appending (`+=`), making both
+    operations idempotent — no duplicated tool sections no matter how
+    often they run. Native mode needs nothing: definitions are read from
+    the registry on every request.
+  - *Compatibility:* the summarization feature injects the conversation
+    summary into a transient per-request copy (`messages_to_send`), never
+    into `messages[0]`, so the rebuild composes with it safely (verified).
+
+- **`llampaca/config.py`** — `CHARS_PER_TOKEN` moved here (the
+  dependency-free leaf module) with a re-export from `agent/loop.py`.
+  - *Why:* `tools/__init__` → `documents` → `rag` → `agent.loop` →
+    `tools.registry` was a circular import chain, caught by the test
+    suite; the shared heuristic belongs below all of them.
+
+- **`tests/test_search_tool.py`** (new) — 11 tests: schema generation,
+  formatted hits with provenance, top_k clamping, all three tool error
+  modes, and refresh_tools in both modes (adds new tool in prompt mode,
+  leaves the prompt alone in native mode, idempotence of refresh and of
+  the mode switch, tools_enabled resync).
+
+- Verified live: search_documents executed through the registry (JSON
+  arguments, like the agent does) against a real embedding server ranks
+  the page-3 condominium chunk first (relevance 0.70) for "come si
+  dividono le spese dell'ascensore?".
+
 ### Added — RAG core: chunking, vector storage and search (phase 2, milestone 2)
 
 - **`llampaca/rag.py`** (new) — Pure-logic RAG core, no I/O.

@@ -139,5 +139,100 @@ class TestClientEmbed(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([len(c) for c in calls], [32, 32, 6])
 
 
+class TestEmbeddingService(unittest.IsolatedAsyncioTestCase):
+    """
+    EmbeddingService (milestone 4): resolution errors, lifecycle guards,
+    and indexing against a faked embedding client + a temp database.
+    """
+
+    async def asyncSetUp(self):
+        import os
+        import tempfile
+        from llampaca.engine.db import init_db, create_conversation
+
+        self._fd, temp_path = tempfile.mkstemp(suffix=".db")
+        self.db_path = Path(temp_path)
+        await init_db(self.db_path)
+        self.conv_id = await create_conversation(
+            model_name="m", db_path=self.db_path
+        )
+        self._os = os
+
+    async def asyncTearDown(self):
+        self._os.close(self._fd)
+        if self.db_path.exists():
+            self.db_path.unlink()
+
+    def _service_with_fake_server(self, dim=8):
+        """A service faked into the 'started' state: no real server."""
+        from types import SimpleNamespace
+        from llampaca.engine.embedding import EmbeddingService
+
+        service = EmbeddingService(db_path=self.db_path)
+        service.document_prefix = "DOC: "
+        service._server = SimpleNamespace(port=1, stop=lambda: None)
+
+        embedded = []
+
+        class FakeClient:
+            async def embed(self, texts, **kwargs):
+                embedded.extend(texts)
+                return [[float(len(t))] * dim for t in texts]
+
+        service._client = FakeClient()
+        return service, embedded
+
+    async def test_missing_model_raises_unavailable(self):
+        from llampaca.engine.embedding import (
+            EmbeddingService, EmbeddingUnavailable,
+        )
+        service = EmbeddingService(db_path=self.db_path)
+        service.model_file = "does-not-exist.gguf"
+        with self.assertRaises(EmbeddingUnavailable) as ctx:
+            await service.ensure_started()
+        # The message must carry the fix, not just the problem.
+        self.assertIn("models download", str(ctx.exception))
+
+    async def test_query_embedder_requires_started_server(self):
+        from llampaca.engine.embedding import EmbeddingService
+        service = EmbeddingService(db_path=self.db_path)
+        with self.assertRaises(RuntimeError):
+            service.query_embedder()
+
+    async def test_index_document_roundtrip(self):
+        from llampaca.engine.db import list_documents, get_conversation_chunks
+
+        service, embedded = self._service_with_fake_server()
+        service.model_file = "fake-embedder.gguf"
+        text = (
+            "--- Page 1 ---\nPrimo paragrafo del documento.\n\n"
+            "--- Page 2 ---\nSecondo paragrafo, altra pagina."
+        )
+        info = await service.index_document(self.conv_id, "doc.pdf", text)
+
+        # Info block feeds the CLI's [indexed] line.
+        self.assertEqual(info["chunks"], 1)  # tiny text: one chunk
+        self.assertEqual(info["pages"], 2)
+        self.assertEqual(info["dim"], 8)
+
+        # The document prefix must reach the embedder.
+        self.assertTrue(embedded[0].startswith("DOC: "))
+
+        # Stored: document metadata records the embedder for the
+        # compatibility check, chunks carry the vectors.
+        docs = await list_documents(self.conv_id, db_path=self.db_path)
+        self.assertEqual(docs[0]["embedder_name"], "fake-embedder.gguf")
+        self.assertEqual(docs[0]["embedding_dim"], 8)
+        rows = await get_conversation_chunks(self.conv_id, db_path=self.db_path)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]["embedding"]), 8 * 4)  # float32
+
+    async def test_stop_is_idempotent_without_start(self):
+        from llampaca.engine.embedding import EmbeddingService
+        service = EmbeddingService(db_path=self.db_path)
+        service.stop()  # never started: must be a silent no-op
+        self.assertFalse(service.started)
+
+
 if __name__ == "__main__":
     unittest.main()

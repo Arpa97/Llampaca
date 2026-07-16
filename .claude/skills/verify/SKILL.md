@@ -56,6 +56,12 @@ printf '1\nSay hello\n/exit\n' | $LLAMPACA run --no-tools 2>&1 | tail -10
 
 # Attachment flow (/attach stages a file; it is sent with the next message)
 printf '1\n/attach README.md\nWhat is the attached file about?\n/exit\n' | $LLAMPACA run 2>&1 | tail -15
+
+# RAG flow: a file over the attachment budget (~35% of --ctx) is INDEXED
+# instead of injected — a second llama-server (embedding) starts lazily
+# mid-session, then the model must call the search_documents tool.
+# Needs the embedding model: llampaca models download --preset qwen3-embedding-0.6b
+printf '1\n/attach /path/to/big-file.pdf\nAsk something specific about its content\n/exit\n' | $LLAMPACA run 2>&1 | tail -25
 ```
 
 Model load takes ~10s; give commands a generous timeout (300s is safe).
@@ -66,6 +72,15 @@ Model load takes ~10s; give commands a generous timeout (300s is safe).
 - `[result] ...` green lines = tool executed, one-line preview
 - Confirmation prompts appear for `write_file` and `run_shell_command`
 - Server logs: `~/.llampaca/logs/llama-server-<port>.log`
+- RAG flow, in order: `[indexing] file: ~N tokens — too large...` →
+  embedding server startup lines (port 8180) → `[indexed] file: N chunks,
+  N pages` → after the question, `[tool] search_documents({...})` with a
+  `[result] Top K passages ... [file, p.N | relevance 0.xx]` → TWO
+  "Shutting down llama-server..." lines at exit (chat + embedding).
+  Embedding server log: `~/.llampaca/logs/llama-server-embed-<port>.log`.
+  Resuming a conversation with indexed docs prints "Indexed documents
+  available for search: ..." at session open (embedding server starts
+  right away in that case — that is intended, not a bug).
 
 ## Gotchas
 
