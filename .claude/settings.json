@@ -70,7 +70,9 @@
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c \"import pypdf, docx; print\\('conda env OK: pypdf', pypdf.__version__\\)\")",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pytest tests/test_attachments.py -q)",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -v)",
-      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca run *)"
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca run *)",
+      "Bash(python3 -m venv /private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/25c25a23-757e-405f-9a7b-e96d95c5dbd5/scratchpad/fresh-venv)",
+      "Bash(/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/25c25a23-757e-405f-9a7b-e96d95c5dbd5/scratchpad/fresh-venv/bin/pip install *)"
     ]
   }
 }
