@@ -5,6 +5,20 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-16]
 
+### Added — Transparent context window summarization with SQLite persistence
+
+- **`llampaca/engine/db.py`** — Added `summary` and `last_summarized_message_id` columns to `conversations` table with auto-migration. Added `update_conversation_summary` function and returned `id` for messages in `get_conversation`.
+  - *Why:* Storing the summary and message pointers in SQLite ensures that the full conversation history remains in the database (for GUI display) while allowing the Agent to reload only the active messages.
+
+- **`llampaca/agent/loop.py`** — Updated `Agent` constructor to support `summary`. Made `_trim_history` asynchronous and integrated non-streaming LLM summarization. Added `MIN_ACTIVE_WINDOW = 6` safety window constraint. Yielded `summary_updated` event instead of showing warning messages.
+  - *Why:* Keeps the LLM context usage stable in long chats transparently without displaying warnings or deleting actual messages from history.
+
+- **`llampaca/cli.py`** — Updated chat initialization to load summary and filter active history. Associated DB message IDs to in-memory messages. Handled `summary_updated` event to write back to SQLite.
+  - *Why:* Connects the database persistence with the Agent context trimming logic seamlessly.
+
+- **`tests/test_summary.py`** — Created new unit tests verifying the migration, context trimming, LLM call mock, and safety active window.
+  - *Why:* Validates the functionality and prevents regressions.
+
 ### Fixed — `/attach` crashed the whole session when `pypdf` was missing
 
 - **`llampaca/attachments.py`** — The lazy `pypdf` / `python-docx` imports
