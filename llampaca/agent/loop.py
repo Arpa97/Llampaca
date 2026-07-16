@@ -54,6 +54,10 @@ from llampaca.tools.registry import ToolRegistry
 # message. Prevents a confused model from looping on tool calls forever.
 MAX_ITERATIONS = 10
 
+# Minimum number of recent messages (turns) that are guaranteed to remain
+# in the active context window and never get trimmed/summarized.
+MIN_ACTIVE_WINDOW = 6
+
 # --- Context budget management -----------------------------------------
 # The conversation history grows forever, but the model's context window is
 # fixed (llama-server's -c). If the prompt outgrows it, llama-server starts
@@ -119,6 +123,7 @@ class Agent:
         model: str = "local-model",
         max_iterations: int = MAX_ITERATIONS,
         context_size: int = 4096,
+        summary: Optional[str] = None,
     ):
         """
         Args:
@@ -137,6 +142,7 @@ class Agent:
             context_size: The model's context window in tokens (llama-server's
                 -c value). Used to trim old history before it overflows and
                 to report context usage to the UI.
+            summary: Optional conversation summary loaded from the database.
         """
         self.client = client
         self.registry = registry
@@ -144,6 +150,7 @@ class Agent:
         self.model = model
         self.max_iterations = max_iterations
         self.context_size = context_size
+        self.summary = summary
         self.tools_enabled = registry is not None and len(registry.names()) > 0
 
         # Becomes True the first time a native-tools request succeeds. Once
@@ -185,36 +192,37 @@ class Agent:
             {"role": "system", "content": dated_prompt}
         ]
 
-    async def send(self, user_input: str) -> AsyncGenerator[Tuple[str, Any], None]:
+    async def send(
+        self,
+        user_input: str,
+        message_id: Optional[int] = None,
+    ) -> AsyncGenerator[Tuple[str, Any], None]:
         """
         Process one user message through the agent loop, yielding events as
         they happen so the UI can render progress live.
 
         Events yielded (as (kind, data) tuples):
-            ("text", str)         — chunk of assistant text, render as it arrives
-            ("tool_call", dict)   — the model requested a tool:
-                                     {"name": ..., "arguments": <json str>}
-            ("tool_result", dict) — a tool finished:
-                                     {"name": ..., "result": <str>}
-            ("warning", str)      — non-fatal problem (e.g. tool mode switched,
-                                     iteration cap reached)
-            ("error", str)        — the model/server failed this turn; the
-                                     session stays alive so the user can retry
+            ("text", str)             — chunk of assistant text, render as it arrives
+            ("tool_call", dict)       — the model requested a tool:
+                                         {"name": ..., "arguments": <json str>}
+            ("tool_result", dict)     — a tool finished:
+                                         {"name": ..., "result": <str>}
+            ("warning", str)          — non-fatal problem (e.g. tool mode switched,
+                                         iteration cap reached)
+            ("error", str)            — the model/server failed this turn; the
+                                         session stays alive so the user can retry
+            ("summary_updated", dict) — the conversation summary was updated:
+                                         {"summary": <str>, "last_summarized_message_id": <int>}
         """
-        self.messages.append({"role": "user", "content": user_input})
+        self.messages.append({"role": "user", "content": user_input, "id": message_id})
 
         for _ in range(self.max_iterations):
             # Keep the history inside the context budget before *every*
             # request, not just once per user message: tool results appended
             # mid-turn can overflow the window too.
-            dropped = self._trim_history()
-            if dropped:
-                yield (
-                    "warning",
-                    f"Context window almost full: dropped the {dropped} oldest "
-                    "message(s) from the conversation to make room. The system "
-                    "prompt and recent turns are kept.",
-                )
+            dropped, new_summary, last_id = await self._trim_history()
+            if dropped > 0 and new_summary is not None:
+                yield ("summary_updated", {"summary": new_summary, "last_summarized_message_id": last_id})
 
             prompt_mode = self.tools_enabled and not self.native_tools
             tools = (
@@ -222,6 +230,26 @@ class Agent:
                 if self.tools_enabled and self.native_tools
                 else None
             )
+
+            # Build messages_to_send: sanitizing keys to only standard OpenAI fields,
+            # and injecting the summary into the system prompt.
+            messages_to_send = []
+            for i, msg in enumerate(self.messages):
+                clean_msg = {"role": msg["role"], "content": msg["content"]}
+                if "tool_calls" in msg:
+                    clean_msg["tool_calls"] = msg["tool_calls"]
+                if "name" in msg:
+                    clean_msg["name"] = msg["name"]
+                if "tool_call_id" in msg:
+                    clean_msg["tool_call_id"] = msg["tool_call_id"]
+                
+                # Inject summary in system prompt
+                if i == 0 and self.summary:
+                    clean_msg["content"] = msg["content"] + (
+                        "\n\n[Nota: Di seguito un riassunto della parte precedente della conversazione, "
+                        f"archiviata per ragioni di spazio. Usala come contesto se necessario:\n{self.summary}]"
+                    )
+                messages_to_send.append(clean_msg)
 
             # --- 1. Query the model (streaming) -------------------------
             assistant_message: Optional[Dict[str, Any]] = None
@@ -234,7 +262,7 @@ class Agent:
             buffering = prompt_mode
             try:
                 async for kind, data in self.client.chat_stream_events(
-                    self.messages, model=self.model, tools=tools
+                    messages_to_send, model=self.model, tools=tools
                 ):
                     if kind == "text":
                         produced_text = True
@@ -383,7 +411,7 @@ class Agent:
         """
         return self._estimate_tokens(), self.context_size
 
-    def _trim_history(self) -> int:
+    async def _trim_history(self) -> Tuple[int, Optional[str], Optional[int]]:
         """
         Drop the oldest conversation turns when the history approaches the
         context limit, so llama-server never truncates the prompt itself
@@ -395,22 +423,25 @@ class Agent:
         big prompt-cache invalidation every N turns for stable cache hits in
         between (see the watermark constants for the full rationale).
 
-        Never dropped: the system prompt (messages[0]) and the most recent
-        message (the input the model is about to answer).
+        Never dropped: the system prompt (messages[0]), the most recent messages
+        guaranteed by MIN_ACTIVE_WINDOW, and the current input.
 
         Returns:
-            Number of messages dropped (0 if no trimming was needed).
+            Tuple of (dropped_count, new_summary, last_summarized_id)
         """
         high_budget = int(self.context_size * CONTEXT_HIGH_WATERMARK)
         if self._estimate_tokens() <= high_budget:
-            return 0
+            return 0, None, None
 
         low_budget = int(self.context_size * CONTEXT_LOW_WATERMARK)
         dropped = 0
-        # messages[0] is the pinned system prompt; messages[-1] is the
-        # current input — both untouchable, hence the > 2 guard.
-        while len(self.messages) > 2 and self._estimate_tokens() > low_budget:
+        removed_messages = []
+        
+        # messages[0] is system prompt; the last MIN_ACTIVE_WINDOW messages are untouchable
+        # to ensure recent conversation context remains intact.
+        while len(self.messages) > (1 + MIN_ACTIVE_WINDOW) and self._estimate_tokens() > low_budget:
             removed = self.messages.pop(1)
+            removed_messages.append(removed)
             dropped += 1
             # Native mode: a "tool" result message is only valid while the
             # assistant message carrying the matching tool_call is present.
@@ -418,12 +449,66 @@ class Agent:
             # reject the request, so orphaned results go with it.
             if removed.get("tool_calls"):
                 while (
-                    len(self.messages) > 2
+                    len(self.messages) > (1 + MIN_ACTIVE_WINDOW)
                     and self.messages[1].get("role") == "tool"
                 ):
-                    self.messages.pop(1)
+                    orphaned = self.messages.pop(1)
+                    removed_messages.append(orphaned)
                     dropped += 1
-        return dropped
+                    
+        if not removed_messages:
+            return 0, None, None
+
+        # Find the last message with a database ID in the removed chunk
+        last_id = None
+        for msg in removed_messages:
+            if "id" in msg and msg["id"] is not None:
+                last_id = msg["id"]
+
+        # Generate the new summary by calling the LLM
+        new_summary = None
+        chat_turns = [m for m in removed_messages if m["role"] in ("user", "assistant")]
+        if chat_turns:
+            summary_instructions = (
+                "Sei un assistente specializzato nel riassumere conversazioni. "
+                "Aggiorna la sinossi precedente includendo le informazioni rilevanti contenute "
+                "nei nuovi messaggi di seguito. Mantieni la sinossi concisa ed evidenzia accordi, "
+                "fatti chiave o modifiche. Rispondi SOLO con la sinossi aggiornata."
+            )
+            
+            prompt_msgs = [
+                {"role": "system", "content": summary_instructions}
+            ]
+            if self.summary:
+                prompt_msgs.append({
+                    "role": "user",
+                    "content": f"Sinossi precedente:\n{self.summary}"
+                })
+            
+            transcript_lines = []
+            for msg in chat_turns:
+                transcript_lines.append(f"{msg['role'].upper()}: {msg['content']}")
+            transcript = "\n".join(transcript_lines)
+            
+            prompt_msgs.append({
+                "role": "user",
+                "content": f"Nuovi messaggi da integrare:\n{transcript}"
+            })
+            
+            try:
+                # Use LlamaClient's OpenAI client under the hood for a non-streaming call
+                response = await self.client.client.chat.completions.create(
+                    model=self.model,
+                    messages=prompt_msgs,
+                    stream=False,
+                )
+                new_summary = response.choices[0].message.content.strip()
+                self.summary = new_summary
+            except Exception:
+                # Fallback to current summary in case of model error
+                new_summary = self.summary
+
+        return dropped, new_summary, last_id
 
     # ------------------------------------------------------------------
     # Prompt-based tool mode helpers

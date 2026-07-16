@@ -157,7 +157,8 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         list_conversations,
         create_conversation,
         add_message,
-        get_conversation
+        get_conversation,
+        update_conversation_summary
     )
     
     # Retrieve existing conversations to see if we can offer a resume option
@@ -209,9 +210,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                 click.echo(f"Warning: Stored model '{conv_data['model_name']}' not found in {MODELS_DIR}.")
                 click.echo(f"Falling back to current model '{model_path.name}'.")
                 
-            # Reload messages into active memory
+            # Reload messages into active memory, retaining the SQLite ID
             for msg in conv_data["messages"]:
-                messages.append({"role": msg["role"], "content": msg["content"]})
+                messages.append({"role": msg["role"], "content": msg["content"], "id": msg.get("id")})
                 
             click.echo(f"\nResumed conversation: \"{conv_data['title']}\"")
             click.echo("--- Recent History ---")
@@ -275,6 +276,13 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         click.echo()  # break out of any partial output line
         return click.confirm(click.style(f"  {prompt_text}", fg="yellow") + "\n  Allow?")
 
+    # Retrieve summary metadata if we resumed a conversation
+    summary = None
+    last_summarized_id = None
+    if "conv_data" in locals() and conv_data:
+        summary = conv_data.get("summary")
+        last_summarized_id = conv_data.get("last_summarized_message_id")
+
     agent = Agent(
         client=client,
         registry=registry,
@@ -283,16 +291,19 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         # Lets the agent trim old history before the prompt outgrows the
         # window, and powers the context-usage indicator after each turn.
         context_size=server.context_size,
+        summary=summary,
     )
     
     if messages:
-        # Keep the system prompt the Agent built in __init__: it carries the
-        # current date and — in prompt-based mode (e.g. Gemma) — the tool
-        # definitions themselves. Replacing it with the generic system message
-        # stored in the DB would strip those instructions and silently break
-        # prompt-mode tool calling, so only the actual conversation turns
-        # (user/assistant) are restored from the database.
-        agent.messages.extend(m for m in messages if m.get("role") != "system")
+        # Load only the active (un-summarized) messages into the agent's memory
+        active_messages = []
+        for m in messages:
+            if m.get("role") == "system":
+                continue
+            if last_summarized_id is not None and m.get("id") is not None and m["id"] <= last_summarized_id:
+                continue
+            active_messages.append(m)
+        agent.messages.extend(active_messages)
 
     click.echo("\n" + "=" * 50)
     click.echo(f" Interactive Agent Session with {model_path.name}")
@@ -409,13 +420,13 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                 click.echo(click.style(f"  [sending with attachments: {names}]", dim=True))
 
             # Add message to local context and persist to SQLite
-            await add_message(active_conversation_id, "user", user_input)
+            user_msg_id = await add_message(active_conversation_id, "user", user_input)
             
             # Print streaming response
             click.echo("Llampaca > ", nl=False)
             response_content = ""
             try:
-                async for kind, data in agent.send(user_input):
+                async for kind, data in agent.send(user_input, message_id=user_msg_id):
                     if kind == "text":
                         click.echo(data, nl=False)
                         response_content += data
@@ -429,6 +440,13 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                         if len(preview) > 120:
                             preview = preview[:120] + "..."
                         click.echo(click.style(f"  [result] {preview}", fg="green"))
+                    elif kind == "summary_updated":
+                        # Persist the updated summary to SQLite
+                        await update_conversation_summary(
+                            active_conversation_id,
+                            data["summary"],
+                            data["last_summarized_message_id"]
+                        )
                     elif kind == "warning":
                         click.echo(click.style(f"\n  [warning] {data}", fg="yellow"))
                     elif kind == "error":
@@ -449,7 +467,10 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
             ))
 
             if response_content:
-                await add_message(active_conversation_id, "assistant", response_content)
+                assistant_msg_id = await add_message(active_conversation_id, "assistant", response_content)
+                # Assign the database ID to the assistant's message in memory
+                if agent.messages and agent.messages[-1]["role"] == "assistant":
+                    agent.messages[-1]["id"] = assistant_msg_id
             
     except (KeyboardInterrupt, EOFError):
         click.echo("\nSession interrupted.")

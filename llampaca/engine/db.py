@@ -43,6 +43,8 @@ async def get_db_connection(db_path: Path = None):
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     model_name TEXT NOT NULL,
+                    summary TEXT DEFAULT NULL,
+                    last_summarized_message_id INTEGER DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -67,6 +69,23 @@ async def get_db_connection(db_path: Path = None):
             except OSError:
                 pass
             raise
+            
+    # Run migrations for existing databases to ensure they have the new columns
+    try:
+        cursor = await conn.execute("PRAGMA table_info(conversations);")
+        columns = [row["name"] for row in await cursor.fetchall()]
+        migration_needed = False
+        if "summary" not in columns:
+            await conn.execute("ALTER TABLE conversations ADD COLUMN summary TEXT DEFAULT NULL;")
+            migration_needed = True
+        if "last_summarized_message_id" not in columns:
+            await conn.execute("ALTER TABLE conversations ADD COLUMN last_summarized_message_id INTEGER DEFAULT NULL;")
+            migration_needed = True
+        if migration_needed:
+            await conn.commit()
+    except Exception:
+        await conn.close()
+        raise
             
     try:
         yield conn
@@ -156,7 +175,7 @@ async def get_conversation(conversation_id: str, db_path: Path = None) -> dict:
     async with get_db_connection(db_path) as conn:
         # Fetch conversation metadata
         cursor = await conn.execute(
-            "SELECT id, title, model_name, created_at, updated_at FROM conversations WHERE id = ?;",
+            "SELECT id, title, model_name, summary, last_summarized_message_id, created_at, updated_at FROM conversations WHERE id = ?;",
             (conversation_id,)
         )
         conv_row = await cursor.fetchone()
@@ -167,7 +186,7 @@ async def get_conversation(conversation_id: str, db_path: Path = None) -> dict:
         
         # Fetch conversation messages in ascending order
         cursor = await conn.execute(
-            "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC;",
+            "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC;",
             (conversation_id,)
         )
         rows = await cursor.fetchall()
@@ -182,7 +201,7 @@ async def list_conversations(db_path: Path = None) -> list:
     """
     async with get_db_connection(db_path) as conn:
         cursor = await conn.execute(
-            "SELECT id, title, model_name, created_at, updated_at FROM conversations ORDER BY updated_at DESC;"
+            "SELECT id, title, model_name, summary, last_summarized_message_id, created_at, updated_at FROM conversations ORDER BY updated_at DESC;"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -206,4 +225,19 @@ async def update_conversation_title(conversation_id: str, title: str, db_path: P
         await conn.execute(
             "UPDATE conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
             (title, conversation_id)
+        )
+
+async def update_conversation_summary(
+    conversation_id: str,
+    summary: str,
+    last_summarized_message_id: int,
+    db_path: Path = None
+) -> None:
+    """
+    Update the conversation summary and the ID of the last summarized message.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.execute(
+            "UPDATE conversations SET summary = ?, last_summarized_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (summary, last_summarized_message_id, conversation_id)
         )
