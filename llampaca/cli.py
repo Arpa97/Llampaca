@@ -271,6 +271,20 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         max_result_chars=server.context_size
     )
 
+    mcp_manager = None
+    if registry is not None:
+        from llampaca.config import load_mcp_config
+        mcp_config = load_mcp_config()
+        mcp_servers_config = mcp_config.get("mcp_servers", {})
+        legacy_mcp = config.get("mcp_servers", {})
+        if legacy_mcp:
+            mcp_servers_config = {**legacy_mcp, **mcp_servers_config}
+
+        if mcp_servers_config:
+            from llampaca.engine.mcp_client import McpClientManager
+            mcp_manager = McpClientManager(mcp_servers_config)
+            await mcp_manager.start(registry)
+
     # The agent core asks for confirmation through this callback, and we render its events
     def confirm_action(prompt_text: str) -> bool:
         click.echo()  # break out of any partial output line
@@ -479,7 +493,10 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         config = load_config()
         config["active_conversation_id"] = ""
         save_config(config)
-        
+
+        if mcp_manager:
+            await mcp_manager.stop()
+
         # Shutdown server
         server.stop()
         click.echo("Goodbye!")
@@ -637,6 +654,338 @@ def run_mcp_server():
     """Avvia Llampaca come MCP Server per integrarlo con VSCode o Claude Desktop."""
     from llampaca.engine.mcp_server import main as start_mcp
     start_mcp()
+@main.group(name="integrations")
+def integrations():
+    """Gestisci le integrazioni esterne MCP (Model Context Protocol)."""
+    pass
+
+@integrations.command(name="list")
+def integrations_list():
+    """Elenca le integrazioni MCP esterne configurate."""
+    from llampaca.config import load_mcp_config, load_config
+    mcp_config = load_mcp_config()
+    config = load_config()
+    
+    servers = mcp_config.get("mcp_servers", {})
+    legacy_servers = config.get("mcp_servers", {})
+    
+    if not servers and not legacy_servers:
+        click.echo("Nessuna integrazione MCP configurata.")
+        return
+        
+    if servers:
+        click.echo("=== Integrazioni MCP (mcp_config.json) ===")
+        for name, cfg in servers.items():
+            click.echo(f"  Nome: {name}")
+            click.echo(f"    Comando: {cfg.get('command')}")
+            click.echo(f"    Argomenti: {cfg.get('args', [])}")
+            if cfg.get("env"):
+                click.echo(f"    Env: {list(cfg.get('env').keys())}")
+            click.echo("")
+            
+    if legacy_servers:
+        click.echo("=== Integrazioni MCP Legacy (config.json) ===")
+        for name, cfg in legacy_servers.items():
+            click.echo(f"  Nome: {name}")
+            click.echo(f"    Comando: {cfg.get('command')}")
+            click.echo(f"    Argomenti: {cfg.get('args', [])}")
+            if cfg.get("env"):
+                click.echo(f"    Env: {list(cfg.get('env').keys())}")
+            click.echo("")
+
+@integrations.command(name="browse")
+@click.option("--repo", help="Specifica l'URL del repository da navigare.")
+def integrations_browse(repo):
+    """Sfoglia i server MCP disponibili nei repository ed installali."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    import requests
+    
+    mcp_config = load_mcp_config()
+    registries = mcp_config.get("mcp_registries", [])
+    
+    if not registries:
+        click.echo("Errore: nessun repository MCP configurato in mcp_config.json.")
+        return
+        
+    selected_repo = repo
+    if not selected_repo:
+        if len(registries) == 1:
+            selected_repo = registries[0]
+        else:
+            click.echo("=== Seleziona il Repository MCP ===")
+            for idx, r in enumerate(registries, 1):
+                click.echo(f"[{idx}] {r}")
+            choice = click.prompt("Scegli un repository", type=int)
+            if choice < 1 or choice > len(registries):
+                click.echo("Scelta non valida.")
+                return
+            selected_repo = registries[choice - 1]
+            
+    # Initial search keyword prompt
+    click.echo("\n=== Sfoglia Integrazioni MCP ===")
+    search_query = click.prompt("Inserisci una parola chiave per cercare (premi Invio per mostrare tutti)", default="", show_default=False).strip()
+    if not search_query:
+        search_query = None
+        
+    after_cursor = None
+    cursors_history = []  # Stack for back-navigation: list of (after_cursor, search_query)
+    
+    while True:
+        # Build URL
+        url = f"{selected_repo}?limit=10"
+        if search_query:
+            url += f"&query={search_query}"
+        if after_cursor:
+            url += f"&after={after_cursor}"
+            
+        click.echo(f"\nConnessione a {selected_repo}...")
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            click.echo(f"Errore durante la connessione al repository: {e}")
+            return
+            
+        servers = data.get("servers", [])
+        page_info = data.get("pageInfo", {})
+        has_next = page_info.get("hasNextPage", False)
+        next_cursor = page_info.get("endCursor")
+        
+        if not servers:
+            click.echo("\nNessun server MCP trovato.")
+            if search_query:
+                if click.confirm("Vuoi azzerare la ricerca e mostrare tutti?", default=True):
+                    search_query = None
+                    after_cursor = None
+                    cursors_history = []
+                    continue
+            return
+            
+        click.echo(f"\n=== Server MCP Disponibili (Ricerca: {search_query or 'Nessuna'}) ===")
+        for idx, s in enumerate(servers, 1):
+            click.echo(f"[{idx}] {s.get('name')} (da {s.get('namespace', 'sconosciuto')})")
+            desc = s.get('description', '')
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            click.echo(f"    Descrizione: {desc}")
+            repo_url = s.get("repository", {}).get("url")
+            if repo_url:
+                click.echo(f"    Link: {repo_url}")
+        click.echo("-" * 50)
+        
+        # Build action options
+        options = []
+        action_map = {}
+        
+        # Selection options
+        for idx in range(1, len(servers) + 1):
+            action_map[str(idx)] = ("select", idx - 1)
+            
+        # Navigation options
+        if has_next and next_cursor:
+            options.append("[N] Prossima Pagina")
+            action_map["n"] = ("next", next_cursor)
+            
+        if cursors_history:
+            options.append("[P] Pagina Precedente")
+            action_map["p"] = ("prev", None)
+            
+        options.append("[S] Nuova Ricerca")
+        action_map["s"] = ("search", None)
+        
+        options.append("[Q] Annulla ed Esci")
+        action_map["q"] = ("cancel", None)
+        
+        click.echo("Opzioni: " + ", ".join(options))
+        choice = click.prompt("Scegli un'opzione o inserisci il numero del server", type=str).strip().lower()
+        
+        if choice not in action_map:
+            click.echo("Scelta non valida. Riprova.")
+            continue
+            
+        action, val = action_map[choice]
+        
+        if action == "cancel":
+            click.echo("Operazione annullata.")
+            return
+            
+        elif action == "search":
+            new_search = click.prompt("Inserisci la nuova parola chiave da cercare (premi Invio per mostrare tutti)", default="", show_default=False).strip()
+            search_query = new_search if new_search else None
+            after_cursor = None
+            cursors_history = []
+            continue
+            
+        elif action == "next":
+            cursors_history.append((after_cursor, search_query))
+            after_cursor = val
+            continue
+            
+        elif action == "prev":
+            prev_cursor, prev_search = cursors_history.pop()
+            after_cursor = prev_cursor
+            search_query = prev_search
+            continue
+            
+        elif action == "select":
+            server = servers[val]
+            name = server.get("slug") or server.get("name").lower().replace(" ", "-")
+            description = server.get("description", "")
+            repo_url = server.get("repository", {}).get("url")
+            schema = server.get("environmentVariablesJsonSchema", {}) or {}
+            
+            if repo_url:
+                if click.confirm(f"\nQuesto server ha un repository Git ({repo_url}).\nVuoi clonarlo ed effettuarne la build automaticamente in locale?", default=True):
+                    from llampaca.engine.mcp_installer import run_generic_git_setup
+                    run_generic_git_setup(name, repo_url, schema)
+                    return
+
+            click.echo(f"\nInstallazione di: {server.get('name')}")
+            click.echo(f"Descrizione: {description}")
+            if repo_url:
+                click.echo(f"GitHub: {repo_url}")
+                
+            # Propose default npx command
+            default_cmd = "npx"
+            default_args = ["-y", name]
+            
+            use_default = click.confirm(f"Usa il comando di esecuzione consigliato: {default_cmd} {' '.join(default_args)}?", default=True)
+            if use_default:
+                cmd = default_cmd
+                args = default_args
+            else:
+                cmd = click.prompt("Inserisci il comando da eseguire (es. python3, node)", type=str)
+                args_str = click.prompt("Inserisci gli argomenti separati da spazi", type=str, default="")
+                args = args_str.split() if args_str else []
+                
+            # Configure environment variables
+            env = {}
+            schema = server.get("environmentVariablesJsonSchema", {})
+            props = schema.get("properties", {})
+            required = schema.get("required", [])
+            
+            if props:
+                click.echo("\nConfigurazione Variabili d'Ambiente:")
+                for var_name, var_info in props.items():
+                    desc = var_info.get("description", "")
+                    is_req = var_name in required
+                    req_str = " (Obbligatorio)" if is_req else " (Opzionale)"
+                    prompt_str = f"  {var_name}{req_str}"
+                    if desc:
+                        prompt_str += f"\n    Desc: {desc}\n  Valore"
+                    val = click.prompt(prompt_str, default="", show_default=False)
+                    if val.strip():
+                        env[var_name] = val.strip()
+                    elif is_req:
+                        click.echo(f"Errore: {var_name} è obbligatorio.")
+                        return
+                        
+            # Save to mcp_config.json
+            mcp_config["mcp_servers"][name] = {
+                "command": cmd,
+                "args": args,
+                "env": env
+            }
+            save_mcp_config(mcp_config)
+            click.echo(f"\nIntegrazione '{name}' installata con successo in mcp_config.json!")
+            return
+
+@integrations.command(name="add")
+@click.argument("name")
+def integrations_add(name):
+    """Aggiungi manualmente un'integrazione MCP."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    
+    cmd = click.prompt("Inserisci il comando da eseguire (es. npx, python3)", type=str)
+    args_str = click.prompt("Inserisci gli argomenti separati da spazi", type=str, default="")
+    args = args_str.split() if args_str else []
+    
+    env = {}
+    while click.confirm("Vuoi aggiungere una variabile d'ambiente?", default=False):
+        var_name = click.prompt("Nome variabile (es. API_KEY)", type=str)
+        var_val = click.prompt(f"Valore per {var_name}", type=str)
+        env[var_name] = var_val
+        
+    mcp_config["mcp_servers"][name] = {
+        "command": cmd,
+        "args": args,
+        "env": env
+    }
+    save_mcp_config(mcp_config)
+    click.echo(f"Integrazione '{name}' aggiunta con successo in mcp_config.json.")
+
+@integrations.command(name="remove")
+@click.argument("name")
+def integrations_remove(name):
+    """Rimuovi un'integrazione MCP specificando il suo nome."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    
+    if name in mcp_config.get("mcp_servers", {}):
+        del mcp_config["mcp_servers"][name]
+        save_mcp_config(mcp_config)
+        click.echo(f"Integrazione '{name}' rimossa con successo.")
+    else:
+        click.echo(f"Errore: nessuna integrazione trovata con il nome '{name}' in mcp_config.json.")
+
+@integrations.command(name="setup")
+@click.argument("name")
+@click.option("--repo", required=True, help="L'URL del repository Git da clonare ed installare.")
+def integrations_setup(name, repo):
+    """Esegui la configurazione guidata generica per un repository Git MCP."""
+    from llampaca.engine.mcp_installer import run_generic_git_setup
+    run_generic_git_setup(name, repo, {})
+
+@integrations.group(name="repo")
+def repo_group():
+    """Gestisci i repository (registries) delle integrazioni MCP."""
+    pass
+
+@repo_group.command(name="list")
+def repo_list():
+    """Elenca i repository MCP configurati."""
+    from llampaca.config import load_mcp_config
+    mcp_config = load_mcp_config()
+    registries = mcp_config.get("mcp_registries", [])
+    
+    if not registries:
+        click.echo("Nessun repository MCP configurato.")
+    else:
+        click.echo("=== Repository MCP Configurati ===")
+        for idx, r in enumerate(registries, 1):
+            click.echo(f" [{idx}] {r}")
+
+@repo_group.command(name="add")
+@click.argument("url")
+def repo_add(url):
+    """Aggiungi un URL di un nuovo repository MCP."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    registries = mcp_config.setdefault("mcp_registries", [])
+    
+    if url in registries:
+        click.echo(f"Il repository '{url}' è già configurato.")
+    else:
+        registries.append(url)
+        save_mcp_config(mcp_config)
+        click.echo(f"Repository '{url}' aggiunto con successo.")
+
+@repo_group.command(name="remove")
+@click.argument("url")
+def repo_remove(url):
+    """Rimuovi un repository MCP esistente tramite il suo URL."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    registries = mcp_config.get("mcp_registries", [])
+    
+    if url in registries:
+        registries.remove(url)
+        save_mcp_config(mcp_config)
+        click.echo(f"Repository '{url}' rimosso con successo.")
+    else:
+        click.echo(f"Errore: repository '{url}' non trovato in mcp_config.json.")
 
 if __name__ == "__main__":
     main()

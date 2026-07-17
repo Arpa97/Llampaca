@@ -615,7 +615,7 @@ class Agent:
             if not confirmed:
                 return "The user declined to execute this action."
 
-        return self.registry.execute(name, arguments_json)
+        return await self.registry.execute(name, arguments_json)
 
     @staticmethod
     def _format_confirmation(name: str, arguments_json: str) -> str:

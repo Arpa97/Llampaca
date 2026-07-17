@@ -3,6 +3,28 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-17]
+
+### Added — External Model Context Protocol (MCP) Client support
+
+- **`llampaca/config.py`** — Added `load_mcp_config()` and `save_mcp_config()` to support `mcp_config.json` configuration file, isolation, and default values.
+  - *Why:* Keeps user-modifiable MCP settings (configured servers and repository sources) isolated from the core settings in `config.json`, enabling easy factory resets.
+
+- **`llampaca/tools/registry.py`** — Made `ToolRegistry.execute` asynchronous and updated it to support both standard synchronous tools and asynchronous coroutines or awaitable tool wrappers.
+  - *Why:* Allows the registry to execute asynchronous tools, which is necessary when invoking external MCP server operations via async sessions.
+
+- **`llampaca/agent/loop.py`** — Updated the tool execution step inside the agentic loop to await the now-asynchronous `self.registry.execute`.
+  - *Why:* Adapts the agent core loop to handle async tool executions.
+
+- **`llampaca/engine/mcp_client.py`** — Created a new client manager class `McpClientManager` to start external MCP servers using standard stdio JSON-RPC transport, fetch their tools, format various server payload responses, and dynamically register tools under a prefixed namespace (e.g. `gmail__send_email`). Included dangerous keywords heuristics and config overrides for tool confirmation rules.
+  - *Why:* Encapsulates external MCP server lifetime management and dynamic tool routing safely.
+
+- **`llampaca/cli.py`** — Integrated `McpClientManager` startup and shutdown lifecycle hooks into the `async_run_chat` command. Added the new `llampaca integrations` Click command group (supporting list, browse via Glama API, add, remove, and repo management).
+  - *Why:* Connects the user's configured MCP servers when starting the CLI session and provides a user-friendly terminal interface to discover and manage MCP integrations.
+
+- **`tests/test_mcp_client.py`** — Added unit tests verifying `load_mcp_config`, `save_mcp_config`, integrations subcommands, repository changes, config overrides, default dangerous heuristics, result formatting, dynamic wrapping, and manager subprocess controls.
+  - *Why:* Guarantees the robustness of the external MCP integration, unified config loading, and CLI commands, preventing regressions.
+
 ## [2026-07-16]
 
 ### Added — Model Context Protocol (MCP) Server support for VSCode integration

@@ -201,7 +201,7 @@ class ToolRegistry:
         """All tool definitions in the OpenAI 'tools' request format."""
         return [tool.to_openai_format() for tool in self._tools.values()]
 
-    def execute(self, name: str, arguments_json: str) -> str:
+    async def execute(self, name: str, arguments_json: str) -> str:
         """
         Execute a tool by name with the JSON arguments produced by the model.
 
@@ -224,7 +224,12 @@ class ToolRegistry:
             return f"Error: tool arguments must be a JSON object, got: {arguments_json!r}"
 
         try:
-            result = tool.func(**arguments)
+            if inspect.iscoroutinefunction(tool.func):
+                result = await tool.func(**arguments)
+            else:
+                result = tool.func(**arguments)
+                if inspect.isawaitable(result):
+                    result = await result
         except TypeError as e:
             # Wrong/missing parameters — tell the model what the schema expects
             return f"Error: invalid arguments for tool '{name}': {e}"
