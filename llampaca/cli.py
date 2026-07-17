@@ -545,11 +545,12 @@ def run(model_name, port, ctx, threads, gpu, no_tools):
 @main.command(name="serve")
 @click.argument("model_name", required=False)
 @click.option("--port", type=int, help="Port to run llama-server on")
+@click.option("--api-port", type=int, default=8090, help="Port to run Llampaca API server on")
 @click.option("--ctx", type=int, help="Context size")
 @click.option("--threads", type=int, help="Number of CPU threads to use")
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
-def serve(model_name, port, ctx, threads, gpu):
-    """Start the llama-server model API in the foreground without opening a chat session."""
+def serve(model_name, port, api_port, ctx, threads, gpu):
+    """Avvia il server Llampaca completo (llama-server + API HTTP) senza interfaccia grafica."""
     config = load_config()
     
     # 1. Resolve model path
@@ -578,7 +579,7 @@ def serve(model_name, port, ctx, threads, gpu):
         
     # Resolve parameters
     port = port or config.get("server_port", 8080)
-    ctx = ctx or 32768
+    ctx = ctx or config.get("context_size", 32768)
     threads = threads or config.get("n_threads", 4)
     gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
     
@@ -593,15 +594,13 @@ def serve(model_name, port, ctx, threads, gpu):
         sys.exit(1)
         
     click.echo(f"llama-server is up and running on port {port}!")
-    click.echo("Press Ctrl+C to stop the server.")
     
-    import time
+    # 3. Start API HTTP server
+    from llampaca.gui.server import start_api_server
     try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        click.echo("\nShutting down llama-server...")
+        start_api_server(port=api_port)
     finally:
+        click.echo("Shutting down llama-server...")
         server.stop()
         click.echo("Server stopped. Goodbye!")
 
@@ -654,6 +653,99 @@ def run_mcp_server():
     """Avvia Llampaca come MCP Server per integrarlo con VSCode o Claude Desktop."""
     from llampaca.engine.mcp_server import main as start_mcp
     start_mcp()
+
+@main.command(name="gui")
+@click.argument("model_name", required=False)
+@click.option("--port", type=int, help="Port to run llama-server on")
+@click.option("--ctx", type=int, help="Context size")
+@click.option("--threads", type=int, help="Number of CPU threads to use")
+@click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
+def run_gui(model_name, port, ctx, threads, gpu):
+    """Avvia la dashboard grafica interattiva di Llampaca ed il server dei modelli."""
+    import sys
+    import subprocess
+    
+    # macOS runtime hack: override Application Menu Name in menu bar
+    if sys.platform == 'darwin':
+        try:
+            from Foundation import NSBundle
+            bundle = NSBundle.mainBundle()
+            if bundle:
+                info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+                if info:
+                    info['CFBundleName'] = 'Llampaca'
+                    info['CFBundleDisplayName'] = 'Llampaca'
+        except Exception:
+            pass
+            
+    try:
+        import webview
+    except ImportError:
+        click.echo("L'interfaccia grafica richiede la libreria 'pywebview'.")
+        if click.confirm("Desideri installarla automaticamente ora tramite pip?", default=True):
+            try:
+                click.echo("Installazione in corso...")
+                subprocess.run([sys.executable, "-m", "pip", "install", "pywebview"], check=True)
+                click.echo("Installazione completata!")
+            except Exception as e:
+                click.echo(f"Errore durante l'installazione automatica: {e}")
+                click.echo("Prova ad installarla manualmente eseguendo: pip install pywebview")
+                sys.exit(1)
+        else:
+            click.echo("Impossibile avviare la GUI senza 'pywebview'.")
+            sys.exit(1)
+
+    # 1. Resolve model path
+    config = load_config()
+    if not model_name:
+        model_name = config.get("default_model", "")
+        if model_name in MODEL_PRESETS:
+            model_name = MODEL_PRESETS[model_name]["file"]
+            
+    if not model_name:
+        click.echo("Error: No default model configured, and no model specified.")
+        click.echo("Please download a model using: llampaca models download")
+        sys.exit(1)
+        
+    model_path = MODELS_DIR / model_name
+    if not model_path.exists():
+        model_path = Path(model_name)
+        if not model_path.exists():
+            if model_name in MODEL_PRESETS:
+                preset_file = MODEL_PRESETS[model_name]["file"]
+                model_path = MODELS_DIR / preset_file
+                
+    if not model_path.exists():
+        click.echo(f"Error: Model '{model_name}' could not be resolved to a file path.")
+        click.echo(f"Looked in {MODELS_DIR} and current working directory.")
+        sys.exit(1)
+        
+    # Resolve parameters
+    port = port or config.get("server_port", 8080)
+    ctx = ctx or config.get("context_size", 32768)
+    threads = threads or config.get("n_threads", 4)
+    gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
+
+    # 2. Instantiate and start LlamaServer
+    from llampaca.engine.server import LlamaServer
+    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu)
+    
+    click.echo(f"Starting llama-server on port {port}...")
+    import asyncio
+    if not asyncio.run(server.start()):
+        click.echo("Failed to start llama-server.")
+        sys.exit(1)
+        
+    click.echo(f"llama-server is up and running on port {port}!")
+            
+    from llampaca.gui.server import start_gui_window
+    try:
+        start_gui_window()
+    finally:
+        click.echo("Shutting down llama-server...")
+        server.stop()
+        click.echo("Goodbye!")
+
 @main.group(name="integrations")
 def integrations():
     """Gestisci le integrazioni esterne MCP (Model Context Protocol)."""

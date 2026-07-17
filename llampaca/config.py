@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     "llama_server_path": "",
     "default_model": "qwen3.5-4b-instruct",
     "server_port": 8080,
-    "context_size": 4096,
+    "context_size": 32768,
     "n_threads": max(1, os.cpu_count() - 2 if os.cpu_count() else 4),
     "gpu_layers": -1,  # -1 means auto (enable metal/cuda if supported)
     "mcp_servers": {}

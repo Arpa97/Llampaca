@@ -122,7 +122,7 @@ class Agent:
         confirm: Optional[Callable[[str], Any]] = None,
         model: str = "local-model",
         max_iterations: int = MAX_ITERATIONS,
-        context_size: int = 4096,
+        context_size: int = 32768,
         summary: Optional[str] = None,
     ):
         """

@@ -92,7 +92,7 @@ class LlamaServer:
         
         self.model_path = Path(model_path)
         self.port = port or config.get("server_port", 8080)
-        self.context_size = context_size or config.get("context_size", 4096)
+        self.context_size = context_size or config.get("context_size", 32768)
         self.n_threads = n_threads or config.get("n_threads", 4)
         self.gpu_layers = gpu_layers if gpu_layers is not None else config.get("gpu_layers", -1)
         
