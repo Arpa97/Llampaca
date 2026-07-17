@@ -87,7 +87,9 @@
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca history *)",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -)",
       "Bash(ls -t /Users/umbertodilaudo/.llampaca/logs/llama-server-embed-*.log | head -3)",
-      "Read(//Users/umbertodilaudo/Desktop/**)"
+      "Read(//Users/umbertodilaudo/Desktop/**)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m pytest /Users/umbertodilaudo/Desktop/Umberto/repo/Llampaca/tests/ -q)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.cli, llampaca.agent.loop, llampaca.engine.db; print\\('imports OK'\\)\")"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs"

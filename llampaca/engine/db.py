@@ -9,6 +9,16 @@ from llampaca.config import DB_PATH
 
 db_path = DB_PATH
 
+# Database paths whose schema and migrations have already been verified by
+# THIS process. get_db_connection() opens a fresh connection for every
+# operation (several per chat turn: user message, assistant message,
+# summary update...), and the schema/migration block below — a PRAGMA
+# table_info plus several CREATE TABLE/INDEX IF NOT EXISTS statements and a
+# commit — is idempotent but not free. The schema cannot change while the
+# process runs, so verifying it once per database removes that fixed cost
+# from every subsequent connection.
+_migrated_paths = set()
+
 @asynccontextmanager
 async def get_db_connection(db_path: Path = None):
     """
@@ -17,24 +27,30 @@ async def get_db_connection(db_path: Path = None):
     Ensures that foreign key constraints are enabled and rows are accessible as Row objects.
     Automatically initializes database tables on the first connection (if file doesn't exist).
     Supports concurrent writes by enabling WAL mode and setting a connection busy timeout.
+    Schema creation and migrations run once per database per process (see _migrated_paths).
     """
     path = db_path if db_path is not None else DB_PATH
-    
+
     # Ensure parent directory of the database file exists
     path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Check if database file exists and is not empty before connecting
     db_exists = path.exists() and path.stat().st_size > 0
-    
+
     # Connect with a busy timeout of 5 seconds to prevent locking errors under concurrency
     conn = await aiosqlite.connect(str(path), timeout=5.0)
     conn.row_factory = aiosqlite.Row
-    
+
     # SQLite requires foreign keys to be explicitly enabled per connection
     await conn.execute("PRAGMA foreign_keys = ON;")
     # Enable WAL mode to allow non-blocking concurrent reads and writes
     await conn.execute("PRAGMA journal_mode = WAL;")
-    
+
+    # Schema/migrations are needed when this process has not verified this
+    # database yet, or when the file has disappeared since (e.g. deleted by
+    # a test): an empty file must always be (re)initialized.
+    needs_init = str(path) not in _migrated_paths or not db_exists
+
     # Implicit schema creation on first database file initialization
     if not db_exists:
         try:
@@ -70,72 +86,80 @@ async def get_db_connection(db_path: Path = None):
                 pass
             raise
             
-    # Run migrations for existing databases to ensure they have the new columns
-    try:
-        cursor = await conn.execute("PRAGMA table_info(conversations);")
-        columns = [row["name"] for row in await cursor.fetchall()]
-        migration_needed = False
-        if "summary" not in columns:
-            await conn.execute("ALTER TABLE conversations ADD COLUMN summary TEXT DEFAULT NULL;")
-            migration_needed = True
-        if "last_summarized_message_id" not in columns:
-            await conn.execute("ALTER TABLE conversations ADD COLUMN last_summarized_message_id INTEGER DEFAULT NULL;")
-            migration_needed = True
-        if migration_needed:
-            await conn.commit()
+    # Run migrations for existing databases to ensure they have the new
+    # columns — skipped entirely once this process has verified this
+    # database (needs_init above): the schema cannot regress mid-process.
+    if needs_init:
+        try:
+            cursor = await conn.execute("PRAGMA table_info(conversations);")
+            columns = [row["name"] for row in await cursor.fetchall()]
+            migration_needed = False
+            if "summary" not in columns:
+                await conn.execute("ALTER TABLE conversations ADD COLUMN summary TEXT DEFAULT NULL;")
+                migration_needed = True
+            if "last_summarized_message_id" not in columns:
+                await conn.execute("ALTER TABLE conversations ADD COLUMN last_summarized_message_id INTEGER DEFAULT NULL;")
+                migration_needed = True
+            if migration_needed:
+                await conn.commit()
 
-        # RAG tables (attachments too large for direct injection). Created
-        # unconditionally with IF NOT EXISTS so both fresh and pre-existing
-        # databases get them — table creation is idempotent and cheap, so it
-        # doubles as its own migration.
-        #
-        # documents: one row per indexed attachment, owned by a conversation
-        # (ON DELETE CASCADE: deleting a chat deletes its index — the reason
-        # these tables live in history.db in the first place).
-        # embedder_name/embedding_dim record which model produced the
-        # vectors: vectors from different embedders are not comparable, so
-        # the pipeline checks these before searching and re-indexes on
-        # mismatch instead of silently ranking garbage.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                pages INTEGER,
-                embedder_name TEXT NOT NULL,
-                embedding_dim INTEGER NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-            );
-        """)
-        # chunks: the retrieval units. "embedding" is the raw float32 BLOB
-        # written by rag.serialize_vector; "page" is the page the chunk
-        # starts on (NULL for sources without pages); "position" preserves
-        # document order for display/debugging.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS chunks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                document_id INTEGER NOT NULL,
-                page INTEGER,
-                position INTEGER NOT NULL,
-                text TEXT NOT NULL,
-                embedding BLOB NOT NULL,
-                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-            );
-        """)
-        # The only query pattern is "all chunks of the documents of one
-        # conversation": index both foreign keys.
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_documents_conversation ON documents(conversation_id);"
-        )
-        await conn.commit()
-    except Exception:
-        await conn.close()
-        raise
-            
+            # RAG tables (attachments too large for direct injection). Created
+            # unconditionally with IF NOT EXISTS so both fresh and pre-existing
+            # databases get them — table creation is idempotent and cheap, so it
+            # doubles as its own migration.
+            #
+            # documents: one row per indexed attachment, owned by a conversation
+            # (ON DELETE CASCADE: deleting a chat deletes its index — the reason
+            # these tables live in history.db in the first place).
+            # embedder_name/embedding_dim record which model produced the
+            # vectors: vectors from different embedders are not comparable, so
+            # the pipeline checks these before searching and re-indexes on
+            # mismatch instead of silently ranking garbage.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    pages INTEGER,
+                    embedder_name TEXT NOT NULL,
+                    embedding_dim INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                );
+            """)
+            # chunks: the retrieval units. "embedding" is the raw float32 BLOB
+            # written by rag.serialize_vector; "page" is the page the chunk
+            # starts on (NULL for sources without pages); "position" preserves
+            # document order for display/debugging.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id INTEGER NOT NULL,
+                    page INTEGER,
+                    position INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+                );
+            """)
+            # The only query pattern is "all chunks of the documents of one
+            # conversation": index both foreign keys.
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_conversation ON documents(conversation_id);"
+            )
+            await conn.commit()
+            # Only a fully verified schema is remembered: a failure above
+            # closes the connection and leaves the path unmarked, so the
+            # next connection retries the initialization.
+            _migrated_paths.add(str(path))
+        except Exception:
+            await conn.close()
+            raise
+
+
     try:
         yield conn
         await conn.commit()

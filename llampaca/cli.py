@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 # pyrefly: ignore [missing-import]
 import click
 from pathlib import Path
@@ -416,6 +417,22 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
     # the document text — that is the whole point of indexing.
     pending_index_notes = []
 
+    # Deferred summarization (see Agent.summarize_pending): when a turn
+    # trims old history, the summary of the dropped turns is generated in
+    # the BACKGROUND after the answer — while the user is typing — instead
+    # of blocking the turn with an extra LLM generation before it.
+    summary_task = None
+
+    async def flush_summary() -> None:
+        """Generate the pending summary and persist it to the database."""
+        data = await agent.summarize_pending()
+        if data:
+            await update_conversation_summary(
+                active_conversation_id,
+                data["summary"],
+                data["last_summarized_message_id"],
+            )
+
     try:
         while True:
             user_input = click.prompt("You", prompt_suffix=" > ")
@@ -552,12 +569,23 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                 pending_index_notes = []
                 click.echo(click.style(f"  [sending with attachments: {names}]", dim=True))
 
+            # A summary flush from the previous turn may still be running;
+            # let it finish before talking to the server again. llama-server
+            # would serialize the two requests anyway, so this costs nothing
+            # extra — it just keeps turns strictly ordered.
+            if summary_task is not None:
+                try:
+                    await summary_task
+                except Exception:
+                    pass  # a failed flush keeps its turns queued for retry
+                summary_task = None
+
             # Add message to local context and persist to SQLite
             user_msg_id = await add_message(
                 active_conversation_id, "user", user_input,
                 title_snippet=question_text,
             )
-            
+
             # Print streaming response
             click.echo("Llampaca > ", nl=False)
             response_content = ""
@@ -576,13 +604,6 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                         if len(preview) > 120:
                             preview = preview[:120] + "..."
                         click.echo(click.style(f"  [result] {preview}", fg="green"))
-                    elif kind == "summary_updated":
-                        # Persist the updated summary to SQLite
-                        await update_conversation_summary(
-                            active_conversation_id,
-                            data["summary"],
-                            data["last_summarized_message_id"]
-                        )
                     elif kind == "warning":
                         click.echo(click.style(f"\n  [warning] {data}", fg="yellow"))
                     elif kind == "error":
@@ -607,15 +628,32 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                 # Assign the database ID to the assistant's message in memory
                 if agent.messages and agent.messages[-1]["role"] == "assistant":
                     agent.messages[-1]["id"] = assistant_msg_id
-            
+
+            # If this turn trimmed history, fold the dropped turns into the
+            # summary now, in the background: the generation runs while the
+            # user reads the answer and types the next message.
+            if agent.has_pending_summary:
+                summary_task = asyncio.create_task(flush_summary())
+
     except (KeyboardInterrupt, EOFError):
         click.echo("\nSession interrupted.")
     finally:
+        # Let an in-flight summary flush finish before killing the server,
+        # so a summary already being generated is persisted rather than
+        # lost. No NEW summarization is started here: un-summarized turns
+        # are still in the database and will simply be reloaded (and
+        # re-trimmed) on resume, so nothing is ever lost by skipping it.
+        if summary_task is not None and not summary_task.done():
+            try:
+                await summary_task
+            except Exception:
+                pass
+
         # Clear active conversation status from config on exit
         config = load_config()
         config["active_conversation_id"] = ""
         save_config(config)
-        
+
         # Shutdown servers: the chat server and, if the session ever
         # indexed or searched documents, the embedding server too
         # (stop() is a no-op when it never started).

@@ -62,7 +62,9 @@ class TestSummaryAndTrimming(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["last_summarized_message_id"], 42)
 
     async def test_trim_history_called(self):
-        """Test that _trim_history calls the LLM to generate summary when exceeding threshold."""
+        """Test that _trim_history trims when exceeding the threshold and queues
+        the removed turns, and that summarize_pending() then generates and
+        returns the summary (deferred summarization)."""
         # Create an Agent with a small context_size to force trimming
         agent = Agent(
             client=self.mock_client,
@@ -94,15 +96,27 @@ class TestSummaryAndTrimming(unittest.IsolatedAsyncioTestCase):
         mock_response.choices = [mock_choice]
         self.mock_openai_client.chat.completions.create.return_value = mock_response
 
-        # Run trimming
-        dropped, new_summary, last_id = await agent._trim_history()
+        # Run trimming (now synchronous and trim-only: summarization is
+        # deferred to summarize_pending, off the turn's critical path)
+        dropped = agent._trim_history()
 
-        # Check that trimming occurred
+        # Check that trimming occurred and the removed turns were queued,
+        # but no summary was generated yet (no LLM call on the hot path)
         self.assertGreater(dropped, 0)
-        self.assertEqual(new_summary, "Aggregated summary of conversation.")
-        # The last_id should be the ID of the last trimmed message
-        self.assertEqual(last_id, 2)  # because system is not popped, messages are popped from start (index 1) until under low_budget (500 * 0.6 = 300)
+        self.assertTrue(agent.has_pending_summary)
+        self.assertIsNone(agent.summary)
+        self.mock_openai_client.chat.completions.create.assert_not_called()
+
+        # Drain the queue: this is where the LLM call happens
+        data = await agent.summarize_pending()
+
+        self.assertEqual(data["summary"], "Aggregated summary of conversation.")
+        # The last_summarized_message_id should be the ID of the last trimmed message
+        self.assertEqual(data["last_summarized_message_id"], 2)  # because system is not popped, messages are popped from start (index 1) until under low_budget (500 * 0.6 = 300)
         self.assertEqual(agent.summary, "Aggregated summary of conversation.")
+        # The queue is drained: a second flush has nothing to do
+        self.assertFalse(agent.has_pending_summary)
+        self.assertIsNone(await agent.summarize_pending())
 
         # Ensure MIN_ACTIVE_WINDOW (6) was respected:
         # system prompt + at least 6 messages must remain in agent.messages

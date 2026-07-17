@@ -5,6 +5,66 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-16]
 
+### Changed — conversation summarization moved off the turn's critical path (deferred, background)
+
+- **`llampaca/agent/loop.py`** — `_trim_history()` is now synchronous and
+  trim-only: it drops the oldest turns (same watermark/hysteresis logic as
+  before) and *queues* the removed user/assistant turns instead of
+  summarizing them inline. New `Agent.summarize_pending()` drains the queue
+  with one non-streaming LLM call and returns
+  `{"summary", "last_summarized_message_id"}` for persistence; new
+  `Agent.has_pending_summary` property tells the UI whether a flush is
+  needed. The `("summary_updated", ...)` event is no longer yielded by
+  `send()` (the CLI persists the summary itself after the flush).
+  - *Why (performance):* the old flow ran a full LLM generation (the
+    summary) *before* the user's request whenever trimming fired — which
+    happens every time the history climbs from the 60% to the 80%
+    watermark, i.e. periodically for the whole life of a long session.
+    Two costs on every occurrence: (1) the answer could not even start
+    streaming until an entire extra generation finished (seconds on local
+    hardware); (2) the summary prompt replaced llama-server's cached
+    prompt prefix right before the main request, forcing a full prompt
+    re-process. Deferring the summary to after the turn removes both: the
+    generation now runs while the user reads/types (server idle time),
+    and the main request goes out immediately after the trim.
+  - On failure, the queued turns are kept and retried at the next flush
+    (previously they were silently dropped from the summary); the messages
+    themselves are always safe in SQLite regardless.
+- **`llampaca/cli.py`** — After each turn, if the agent has pending
+  summary turns, the flush runs as a background `asyncio` task
+  (`flush_summary()`), persisting via `update_conversation_summary`. The
+  next turn awaits any still-running flush before contacting the server
+  (llama-server would serialize the requests anyway, so this costs nothing
+  extra and keeps turns strictly ordered). On session exit an in-flight
+  flush is awaited before the server stops; no *new* summarization is
+  started at exit because un-summarized messages are still in the database
+  and are simply reloaded on resume.
+- **`tests/test_summary.py`** — `test_trim_history_called` updated to the
+  new split: `_trim_history()` must trim and queue *without* calling the
+  LLM; `summarize_pending()` must then generate the summary, return the
+  persistence payload, and leave the queue empty.
+
+### Changed — database schema checks run once per process instead of on every connection
+
+- **`llampaca/engine/db.py`** — New module-level `_migrated_paths` set:
+  the schema-creation and migration block (`PRAGMA table_info` +
+  `ALTER TABLE` checks + 2 `CREATE TABLE IF NOT EXISTS` + 2
+  `CREATE INDEX IF NOT EXISTS` + commit) now runs only the first time this
+  process touches a given database file, instead of inside *every*
+  `get_db_connection()` call.
+  - *Why (performance):* the connection manager opens a fresh connection
+    for each operation, and a chat turn performs several (persist user
+    message, persist assistant message, summary update...). Each one was
+    re-paying the full idempotent migration ritual. The schema cannot
+    change while the process runs, so verifying it once per database
+    removes that fixed cost from every message write.
+  - Safety: the path is marked as verified only after the whole block
+    commits successfully (a failure leaves it unmarked and the next
+    connection retries), and a database file that disappears mid-process
+    (e.g. deleted by a test) is detected via the existing `db_exists`
+    check and re-initialized. Per-connection pragmas that SQLite requires
+    per connection (`foreign_keys`, busy timeout, WAL) are untouched.
+
 ### Changed — embedding server runs CPU-only by default (independent of the chat model's GPU setting)
 
 - **`llampaca/config.py`** — New `embedding_gpu_layers` config key, default

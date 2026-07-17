@@ -160,6 +160,16 @@ class Agent:
         # on the very first request, before any content is produced).
         self._tools_confirmed_working = False
 
+        # Turns removed by _trim_history() but not yet folded into the
+        # rolling summary. Summarization is DEFERRED on purpose: it is a
+        # full LLM generation (seconds on local hardware), so doing it
+        # inline before answering would both delay the answer and clobber
+        # llama-server's prompt cache right before the main request. The UI
+        # drains this buffer with summarize_pending() after the turn's
+        # answer has been rendered — typically while the user is typing.
+        self._pending_summary_turns: List[Dict[str, Any]] = []
+        self._pending_summary_last_id: Optional[int] = None
+
         # --- Detect the tool-calling mode (see module docstring) ---------
         # A template that never mentions tools cannot render the native
         # "tools" parameter: llama-server would silently drop the tool
@@ -213,18 +223,20 @@ class Agent:
                                          iteration cap reached)
             ("error", str)            — the model/server failed this turn; the
                                          session stays alive so the user can retry
-            ("summary_updated", dict) — the conversation summary was updated:
-                                         {"summary": <str>, "last_summarized_message_id": <int>}
+
+        Note: trimming old history queues the removed turns for deferred
+        summarization — the caller flushes them AFTER the turn with
+        summarize_pending() (see that method for the rationale).
         """
         self.messages.append({"role": "user", "content": user_input, "id": message_id})
 
         for _ in range(self.max_iterations):
             # Keep the history inside the context budget before *every*
             # request, not just once per user message: tool results appended
-            # mid-turn can overflow the window too.
-            dropped, new_summary, last_id = await self._trim_history()
-            if dropped > 0 and new_summary is not None:
-                yield ("summary_updated", {"summary": new_summary, "last_summarized_message_id": last_id})
+            # mid-turn can overflow the window too. Trimming is cheap and
+            # synchronous; the summary of what was dropped is generated
+            # later, off this turn's critical path (summarize_pending).
+            self._trim_history()
 
             prompt_mode = self.tools_enabled and not self.native_tools
             tools = (
@@ -413,7 +425,7 @@ class Agent:
         """
         return self._estimate_tokens(), self.context_size
 
-    async def _trim_history(self) -> Tuple[int, Optional[str], Optional[int]]:
+    def _trim_history(self) -> int:
         """
         Drop the oldest conversation turns when the history approaches the
         context limit, so llama-server never truncates the prompt itself
@@ -428,17 +440,22 @@ class Agent:
         Never dropped: the system prompt (messages[0]), the most recent messages
         guaranteed by MIN_ACTIVE_WINDOW, and the current input.
 
+        The removed chat turns are QUEUED for summarization, not summarized
+        here: this method runs on the turn's critical path (right before the
+        main request), while summarization is a whole LLM generation — see
+        summarize_pending() for how and when the queue is drained.
+
         Returns:
-            Tuple of (dropped_count, new_summary, last_summarized_id)
+            The number of messages dropped (0 when under the watermark).
         """
         high_budget = int(self.context_size * CONTEXT_HIGH_WATERMARK)
         if self._estimate_tokens() <= high_budget:
-            return 0, None, None
+            return 0
 
         low_budget = int(self.context_size * CONTEXT_LOW_WATERMARK)
         dropped = 0
         removed_messages = []
-        
+
         # messages[0] is system prompt; the last MIN_ACTIVE_WINDOW messages are untouchable
         # to ensure recent conversation context remains intact.
         while len(self.messages) > (1 + MIN_ACTIVE_WINDOW) and self._estimate_tokens() > low_budget:
@@ -457,60 +474,105 @@ class Agent:
                     orphaned = self.messages.pop(1)
                     removed_messages.append(orphaned)
                     dropped += 1
-                    
+
         if not removed_messages:
-            return 0, None, None
+            return 0
 
-        # Find the last message with a database ID in the removed chunk
-        last_id = None
+        # Track the last database ID in the removed chunk: it becomes the
+        # conversation's last_summarized_message_id once the summary that
+        # covers these turns is persisted.
         for msg in removed_messages:
-            if "id" in msg and msg["id"] is not None:
-                last_id = msg["id"]
+            if msg.get("id") is not None:
+                self._pending_summary_last_id = msg["id"]
 
-        # Generate the new summary by calling the LLM
-        new_summary = None
-        chat_turns = [m for m in removed_messages if m["role"] in ("user", "assistant")]
-        if chat_turns:
-            summary_instructions = (
-                "Sei un assistente specializzato nel riassumere conversazioni. "
-                "Aggiorna la sinossi precedente includendo le informazioni rilevanti contenute "
-                "nei nuovi messaggi di seguito. Mantieni la sinossi concisa ed evidenzia accordi, "
-                "fatti chiave o modifiche. Rispondi SOLO con la sinossi aggiornata."
-            )
-            
-            prompt_msgs = [
-                {"role": "system", "content": summary_instructions}
-            ]
-            if self.summary:
-                prompt_msgs.append({
-                    "role": "user",
-                    "content": f"Sinossi precedente:\n{self.summary}"
-                })
-            
-            transcript_lines = []
-            for msg in chat_turns:
-                transcript_lines.append(f"{msg['role'].upper()}: {msg['content']}")
-            transcript = "\n".join(transcript_lines)
-            
+        # Only user/assistant turns carry conversational content worth
+        # summarizing; tool results are transient plumbing.
+        self._pending_summary_turns.extend(
+            m for m in removed_messages if m["role"] in ("user", "assistant")
+        )
+        return dropped
+
+    @property
+    def has_pending_summary(self) -> bool:
+        """Whether trimmed turns are waiting to be folded into the summary."""
+        return bool(self._pending_summary_turns)
+
+    async def summarize_pending(self) -> Optional[Dict[str, Any]]:
+        """
+        Fold the turns queued by _trim_history() into the rolling summary
+        with one non-streaming LLM call.
+
+        Deliberately NOT called from send(): a summary is a full generation
+        (seconds on local hardware) against the same single-slot
+        llama-server, so doing it before the turn's main request would both
+        delay the user's answer and replace the server's cached prompt
+        prefix with the summary prompt — forcing the main request to
+        re-process the whole history. Instead the UI schedules this call
+        AFTER the answer has been rendered, typically while the user is
+        typing and the server sits idle. (llama-server serializes requests,
+        so even a flush still in flight when the next turn starts costs
+        nothing extra over having run it inline.)
+
+        Returns:
+            {"summary": str, "last_summarized_message_id": int | None} when
+            a new summary was generated and should be persisted, else None.
+            On a model/server failure the pending turns are kept queued, so
+            the next call retries instead of silently losing them (the
+            messages themselves are always safe in the database anyway).
+        """
+        turns = self._pending_summary_turns
+        last_id = self._pending_summary_last_id
+        if not turns:
+            return None
+        self._pending_summary_turns = []
+        self._pending_summary_last_id = None
+
+        summary_instructions = (
+            "Sei un assistente specializzato nel riassumere conversazioni. "
+            "Aggiorna la sinossi precedente includendo le informazioni rilevanti contenute "
+            "nei nuovi messaggi di seguito. Mantieni la sinossi concisa ed evidenzia accordi, "
+            "fatti chiave o modifiche. Rispondi SOLO con la sinossi aggiornata."
+        )
+
+        prompt_msgs = [
+            {"role": "system", "content": summary_instructions}
+        ]
+        if self.summary:
             prompt_msgs.append({
                 "role": "user",
-                "content": f"Nuovi messaggi da integrare:\n{transcript}"
+                "content": f"Sinossi precedente:\n{self.summary}"
             })
-            
-            try:
-                # Use LlamaClient's OpenAI client under the hood for a non-streaming call
-                response = await self.client.client.chat.completions.create(
-                    model=self.model,
-                    messages=prompt_msgs,
-                    stream=False,
-                )
-                new_summary = response.choices[0].message.content.strip()
-                self.summary = new_summary
-            except Exception:
-                # Fallback to current summary in case of model error
-                new_summary = self.summary
 
-        return dropped, new_summary, last_id
+        transcript_lines = []
+        for msg in turns:
+            # content can be None on assistant messages that only carried
+            # tool calls; render those as empty rather than "None".
+            transcript_lines.append(f"{msg['role'].upper()}: {msg.get('content') or ''}")
+        transcript = "\n".join(transcript_lines)
+
+        prompt_msgs.append({
+            "role": "user",
+            "content": f"Nuovi messaggi da integrare:\n{transcript}"
+        })
+
+        try:
+            # Use LlamaClient's OpenAI client under the hood for a non-streaming call
+            response = await self.client.client.chat.completions.create(
+                model=self.model,
+                messages=prompt_msgs,
+                stream=False,
+            )
+            new_summary = response.choices[0].message.content.strip()
+        except Exception:
+            # Re-queue in front of anything trimmed in the meantime, so a
+            # later flush covers these turns too (order preserved).
+            self._pending_summary_turns = turns + self._pending_summary_turns
+            if self._pending_summary_last_id is None:
+                self._pending_summary_last_id = last_id
+            return None
+
+        self.summary = new_summary
+        return {"summary": new_summary, "last_summarized_message_id": last_id}
 
     # ------------------------------------------------------------------
     # Prompt-based tool mode helpers
