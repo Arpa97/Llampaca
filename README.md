@@ -18,7 +18,8 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 - 💬 **Interactive chat** — streaming terminal chat session with any loaded model
 - 📎 **File attachments** — attach a PDF, Word or text file to the conversation with `/attach` and ask questions about it
 - 🤖 **Agentic tool use** — the model can read/write workspace files, run shell commands (with your confirmation) and fetch web pages, via native OpenAI-compatible tool calling
-- 🏗️ **Extensible** — register any Python function as a tool; MCP integration coming soon
+- 🔌 **MCP Support** — expand your agent's capabilities with external Model Context Protocol (MCP) servers (e.g., email, database, github, slack, etc.)
+- 🏗️ **Extensible** — register any Python function as a tool; write custom logic easily
 
 ---
 
@@ -91,6 +92,14 @@ You > What is the termination notice period?
 | `llampaca run [model_name]` | Start the server and open an interactive chat session |
 | `llampaca history list` | List all stored conversation sessions |
 | `llampaca history delete <id>` | Delete a conversation session by its ID |
+| `llampaca integrations list` | List all configured MCP integrations |
+| `llampaca integrations browse` | Search and install servers from the Glama registry |
+| `llampaca integrations add <name>` | Manually add a local or external MCP server |
+| `llampaca integrations remove <name>` | Uninstall/remove an MCP server |
+| `llampaca integrations setup <name> --repo <url>` | Clone a Git repository and run its setup script |
+| `llampaca integrations repo list` | List configured MCP registry URLs |
+| `llampaca integrations repo add <url>` | Add an MCP registry URL |
+| `llampaca integrations repo remove <url>` | Remove an MCP registry URL |
 
 ### `llampaca run` options
 
@@ -132,6 +141,42 @@ Tool calling works with any model, via two modes picked automatically:
 - **Prompt-based** — for models without tool support in their template (e.g. Gemma): tool definitions are injected into the system prompt and the model replies with a JSON object that Llampaca parses itself.
 
 The active mode is shown in the session header (`Tools enabled (native): ...`).
+
+---
+
+## 🔌 Model Context Protocol (MCP)
+
+Llampaca supports the **Model Context Protocol (MCP)**, allowing you to connect external tools (like databases, email clients, custom CLI utilities, or remote APIs) directly into your local agent.
+
+MCP servers are spawned dynamically in the background via stdio streams when starting a chat session. All active tools from the connected MCP servers are automatically registered in the agent's Tool Registry.
+
+### 🔍 How to use it
+
+1. **Browse and Install integrations** from the official Glama Registry:
+   ```bash
+   llampaca integrations browse
+   ```
+   This interactive prompt allows you to search for integrations (e.g., `gmail`, `sqlite`, `postgres`), clone their repository, build them, and configure them.
+
+2. **Manually Add an integration**:
+   If you have a local node or python script that runs as an MCP server, you can register it:
+   ```bash
+   llampaca integrations add my-custom-server
+   ```
+   Llampaca will prompt you for the command to execute (e.g., `npx`, `python3`, `node`), arguments (e.g., `-y`, `@modelcontextprotocol/server-sqlite`), and any environment variables (e.g., API keys, database URLs).
+
+3. **Check Configured integrations**:
+   ```bash
+   llampaca integrations list
+   ```
+
+4. **Run the Chat**:
+   Once registered, start chat as normal. The agent will discover all tools and ask for confirmation before calling any write/edit operations:
+   ```bash
+   llampaca run
+   ```
+
+All configurations are saved cleanly in `~/.llampaca/mcp_config.json`.
 
 ---
 
@@ -246,7 +291,7 @@ Llampaca automatically:
 - [x] Agentic tool/skill execution loop (filesystem, shell, web tools with confirmation gating)
 - [x] Web search integration (DuckDuckGo, no API key) — deeper "DeepSearch" (multi-step research) still to come
 - [x] File attachments (`/attach` — PDF/Word/text, direct injection) — RAG for documents larger than the context window still to come
-- [ ] MCP (Model Context Protocol) integration
+- [x] MCP (Model Context Protocol) integration
 - [ ] GUI (desktop application packaging)
 - [ ] One-click installer (no Python required)
 
