@@ -17,6 +17,7 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 - 📦 **Model management** — download GGUF models from Hugging Face with a single command, or load your own
 - 💬 **Interactive chat** — streaming terminal chat session with any loaded model
 - 📎 **File attachments** — attach a PDF, Word or text file to the conversation with `/attach` and ask questions about it
+- 🧠 **Personal wiki (persistent memory)** — the assistant remembers durable facts about you across sessions, stored as plain markdown pages you can read and edit yourself
 - 🤖 **Agentic tool use** — the model can read/write workspace files, run shell commands (with your confirmation) and fetch web pages, via native OpenAI-compatible tool calling
 - 🏗️ **Extensible** — register any Python function as a tool; MCP integration coming soon
 
@@ -79,6 +80,20 @@ You > What is the termination notice period?
 - **Large files**: the document is automatically **indexed for search** (RAG): it is chunked, embedded with a local embedding model, and stored in SQLite; the model then reads it through the `search_documents` tool, retrieving only the passages relevant to each question. Requires the embedding model (`llampaca models download --preset qwen3-embedding-0.6b`, ~640 MB) — a second, lightweight `llama-server` instance starts automatically the first time it is needed
 - Indexed documents **survive the session**: resume the conversation and they are searchable again without re-attaching. Deleting the conversation deletes its index.
 
+### 6. Teach it about you (optional)
+
+Llampaca has a **personal wiki**: plain markdown pages in `~/.llampaca/wiki/` that act as persistent memory across conversations.
+
+```
+You > /remember I prefer answers in Italian and I use conda, not venv
+  [remember] asking the model to store this in the wiki (you will be asked to confirm the write)...
+```
+
+- `/remember <fact>` forwards the fact to the model, which picks (or creates) the right page via the `update_wiki_page` tool — the write always asks for your confirmation first
+- The index of page names rides in the system prompt, so in every session the model knows what it remembers and reads the relevant page with `read_wiki_page` when needed
+- Pages are **plain markdown files**: inspect, correct, or delete them with any editor — no hidden state
+- No embeddings involved: a titled page index plus whole-page reads is more reliable than fuzzy retrieval for small local models
+
 ---
 
 ## 📋 CLI Reference
@@ -98,7 +113,7 @@ You > What is the termination notice period?
 | Flag | Default | Description |
 |---|---|---|
 | `--port` | `8080` | Starting port (auto-increments if occupied) |
-| `--ctx` | `4096` | Context window size in tokens |
+| `--ctx` | `8192` | Context window size in tokens |
 | `--threads` | auto | Number of CPU threads |
 | `--gpu` | `-1` (auto) | GPU layers to offload (`0` = CPU only, `-1` = all layers) |
 | `--no-tools` | off | Disable agent tools (plain chat mode) |
@@ -123,6 +138,8 @@ During a `llampaca run` session the model can call these built-in tools:
 | `web_search` | Search the web (DuckDuckGo, no API key) and return top results | No |
 | `fetch_url` | Download a web page as plain text | No |
 | `search_documents` | Search inside indexed attachments (only active when the conversation has documents indexed via `/attach`) | No |
+| `read_wiki_page` | Read a page of the persistent personal wiki (`~/.llampaca/wiki/`) | No |
+| `update_wiki_page` | Create/overwrite a wiki page with a durable fact about the user | **Yes** |
 
 Safety model:
 - **Workspace sandbox** — file tools can only touch paths inside the directory where you launched `llampaca run`; anything else (e.g. `../../etc/passwd`) is rejected
@@ -159,6 +176,7 @@ llampaca/
 ├── config.py             # Paths, defaults, and model presets
 ├── attachments.py        # /attach: PDF/Word/text extraction and context budgeting
 ├── rag.py                # RAG core: chunking, vector serialization, cosine top-k
+├── wiki.py               # Personal wiki core: markdown pages, slugs, prompt index
 ├── engine/
 │   ├── downloader.py     # GitHub binary + Hugging Face model downloader
 │   ├── server.py         # llama-server subprocess manager (chat + embedding modes)
@@ -171,7 +189,8 @@ llampaca/
     ├── filesystem.py     # read_file / write_file / list_directory (sandboxed)
     ├── shell.py          # run_shell_command (confirmation-gated)
     ├── web.py            # fetch_url (HTML → plain text)
-    └── documents.py      # search_documents (RAG retrieval over indexed attachments)
+    ├── documents.py      # search_documents (RAG retrieval over indexed attachments)
+    └── wiki.py           # read_wiki_page / update_wiki_page (persistent memory)
 ```
 
 ### Application Data
@@ -182,6 +201,7 @@ All application data is stored in `~/.llampaca/`:
 |---|---|
 | `~/.llampaca/bin/` | `llama-server` binary and shared libraries |
 | `~/.llampaca/models/` | Downloaded GGUF model files |
+| `~/.llampaca/wiki/` | Personal wiki: markdown pages of persistent memory (`/remember`) |
 | `~/.llampaca/logs/` | Server logs and PID files per port |
 | `~/.llampaca/history.db` | SQLite database storing conversation history |
 | `~/.llampaca/config.json` | User configuration |
@@ -197,7 +217,7 @@ All application data is stored in `~/.llampaca/`:
     "llama_server_path": "",
     "default_model": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
     "server_port": 8080,
-    "context_size": 4096,
+    "context_size": 8192,
     "n_threads": 6,
     "gpu_layers": -1
 }
@@ -253,6 +273,7 @@ Llampaca automatically:
 - [x] Agentic tool/skill execution loop (filesystem, shell, web tools with confirmation gating)
 - [x] Web search integration (DuckDuckGo, no API key) — deeper "DeepSearch" (multi-step research) still to come
 - [x] File attachments (`/attach` — PDF/Word/text): direct injection for small files, automatic RAG (local embeddings + `search_documents` tool) for documents larger than the context budget
+- [x] Personal wiki (`/remember` + `read_wiki_page`/`update_wiki_page`): persistent cross-session memory as plain markdown pages, with the page index injected in the system prompt
 - [ ] MCP (Model Context Protocol) integration
 - [ ] GUI (desktop application packaging)
 - [ ] One-click installer (no Python required)

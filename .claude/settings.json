@@ -106,10 +106,23 @@
       "Bash(git switch *)",
       "Bash(~/.llampaca/bin/llama-server -m ~/.llampaca/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf --port 8099 -c 2048 -t 6 --jinja -fa on -ngl 99)",
       "Bash(curl -s -N http://127.0.0.1:8099/v1/chat/completions -H \"Content-Type: application/json\" -d '{\"model\":\"m\",\"stream\":true,\"cache_prompt\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one word\"}]}')",
-      "Bash(pkill -f \"llama-server.*8099\")"
+      "Bash(pkill -f \"llama-server.*8099\")",
+      "Bash(git fetch *)",
+      "Bash(git merge-tree *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(git merge *)",
+      "Bash(git push *)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m pytest tests/test_wiki.py -q)",
+      "Bash(python3 -m pytest tests/test_wiki.py -q)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.cli; from llampaca.tools import build_default_registry; r=build_default_registry\\(\\); print\\(r.names\\(\\)\\)\")",
+      "Read(//Users/umbertodilaudo/.llampaca/wiki/**)",
+      "Bash(rm ~/.llampaca/wiki/user-preferences.md)",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests)",
+      "Bash(cat ~/.llampaca/config.json)"
     ],
     "additionalDirectories": [
-      "/Users/umbertodilaudo/.llampaca/logs"
+      "/Users/umbertodilaudo/.llampaca/logs",
+      "/Users/umbertodilaudo/.llampaca/wiki"
     ]
   }
 }

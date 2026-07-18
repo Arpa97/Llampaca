@@ -19,7 +19,9 @@ from llampaca.engine.downloader import download_llama_binaries, download_hf_mode
 from llampaca.engine.server import LlamaServer, is_port_in_use
 from llampaca.engine.client import LlamaClient
 from llampaca.agent import Agent
+from llampaca.agent.loop import DEFAULT_SYSTEM_PROMPT
 from llampaca.tools import build_default_registry
+from llampaca import wiki
 
 def format_size(bytes_size: int) -> str:
     """Format bytes into human-readable size."""
@@ -299,10 +301,22 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
         summary = conv_data.get("summary")
         last_summarized_id = conv_data.get("last_summarized_message_id")
 
+    # The wiki index (the model's persistent memory: page names +
+    # descriptions) rides in the system prompt so the model knows what it
+    # remembers without a tool call. Static for the session by design: a
+    # page written mid-session is confirmed by its tool result, and
+    # rebuilding the prompt on every write would invalidate llama-server's
+    # prefix cache (same trade-off as refresh_tools). Skipped with
+    # --no-tools: the index describes tools the model would not have.
+    system_prompt = None
+    if registry is not None:
+        system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+
     agent = Agent(
         client=client,
         registry=registry,
         confirm=confirm_action,
+        system_prompt=system_prompt,
         model=model_path.name,
         # Lets the agent trim old history before the prompt outgrows the
         # window, and powers the context-usage indicator after each turn.
@@ -392,6 +406,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
     else:
         click.echo(" Tools disabled (plain chat mode)")
     click.echo(" Type '/attach <file>' to attach a document (PDF, Word, text).")
+    if registry:
+        click.echo(" Type '/remember <fact>' to store a fact in the wiki "
+                   f"({wiki.WIKI_DIR}).")
     click.echo(" Type '/exit' or '/quit' to close the session.")
     click.echo("=" * 50 + "\n")
 
@@ -547,6 +564,42 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
                     fg="cyan",
                 ))
                 continue
+
+            # --- /remember <fact>: store a durable fact in the wiki ------
+            # Not written to disk directly: the fact is forwarded to the
+            # model as a normal turn, so IT picks (or creates) the right
+            # wiki page, and the write still passes through the standard
+            # update_wiki_page confirmation prompt. Deterministic trigger,
+            # model-side organization.
+            if user_input.strip().lower().startswith("/remember"):
+                fact = user_input.strip()[len("/remember"):].strip()
+                if not fact:
+                    click.echo("Usage: /remember <fact to store in the wiki>")
+                    continue
+                if no_tools:
+                    click.echo(click.style(
+                        "  [remember error] Tools are disabled (--no-tools), "
+                        "so the model cannot write to the wiki. Relaunch "
+                        "without --no-tools.", fg="red",
+                    ))
+                    continue
+                # The fact comes FIRST so the auto-title snippet below picks
+                # it up instead of the bracketed instruction.
+                user_input = (
+                    f"{fact}\n\n"
+                    "[The user asked to remember the fact above permanently. "
+                    "Store it in your wiki with update_wiki_page, copying the "
+                    "fact FAITHFULLY — the page content must state exactly "
+                    "the fact above, never something invented. Add it to the "
+                    "existing page it fits best (read the page first and "
+                    "keep its still-valid content), or create a new page if "
+                    "none fits. Then confirm in one short line where you "
+                    "stored it.]"
+                )
+                click.echo(click.style(
+                    "  [remember] asking the model to store this in the wiki "
+                    "(you will be asked to confirm the write)...", fg="cyan",
+                ))
 
             # The user's own words, captured BEFORE any merge below: used
             # for auto-titling, so a conversation is never titled

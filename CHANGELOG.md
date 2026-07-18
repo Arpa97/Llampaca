@@ -5,6 +5,76 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-18]
 
+### Changed — default context window doubled: 4096 → 8192 tokens
+
+- **`llampaca/config.py`** — `DEFAULT_CONFIG["context_size"]` 4096 → 8192.
+- **`llampaca/engine/server.py`** — chat-mode fallback (used when
+  config.json lacks the key) aligned to 8192. The EMBEDDING server's
+  context stays 4096 on purpose: it is sized for one ~500-token chunk,
+  not for conversation.
+- **`llampaca/agent/loop.py`** — `Agent(context_size=...)` signature
+  default aligned to 8192 (the CLI always passes the resolved value; this
+  only affects programmatic users).
+- **`README.md`** — `--ctx` table default and config example updated.
+- Also updated the user's existing `~/.llampaca/config.json` (which
+  pinned the old 4096 — `load_config()` only fills MISSING keys, so the
+  code-side default alone would never have taken effect for them).
+- *Why:* requested by the user. More room for the agentic loop (system
+  prompt + wiki index + tool results + history) before trimming kicks in.
+  Cost: the KV cache doubles; with q8_0 cache quantization and ~4B models
+  this stays well within the machine's budget. Derived values scale
+  automatically: attachment budget (~35% of ctx) and the per-tool-result
+  cap (ctx-proportional) both grow with the window.
+
+### Added — personal wiki: persistent cross-session memory (`/remember`)
+
+- **`llampaca/config.py`** — new `WIKI_DIR` (`~/.llampaca/wiki/`), created by
+  `ensure_dirs()`. The wiki lives in app data, NOT in the launch workspace:
+  it is the user's memory, shared by every project.
+- **`llampaca/wiki.py`** (new) — pure file logic: `slugify()` (page names
+  normalized to `[a-z0-9-]`, so model-provided names can never traverse
+  paths), page CRUD with a size cap (~1500 est. tokens — a page must always
+  be whole-readable inside `--ctx 4096`), and `render_index()` (the wiki
+  section of the system prompt, capped at 30 listed pages, explicit "the
+  wiki is empty" message so the model knows it can create the first page).
+  Deliberately NO embeddings/RAG: a personal wiki is a few dozen titled
+  markdown pages, and a title index plus deterministic whole-page reads is
+  more reliable for small local models than fuzzy retrieval. Pages are
+  human-editable markdown on purpose (inspect/correct/delete with any
+  editor).
+- **`llampaca/tools/wiki.py`** (new) — `read_wiki_page` (no confirmation;
+  a missing page lists the existing names so the model self-corrects) and
+  `update_wiki_page` (**confirmation-gated** like every other write: a
+  trigger-happy model costs one keystroke, never a polluted wiki). The
+  "only durable facts, never secrets, overwrite means whole page" policy
+  lives in the tool docstring — next to the capability it governs. No
+  delete tool: removing memories is a user action on the files.
+- **`llampaca/tools/__init__.py`** — wiki tools added to
+  `build_default_registry()`: unlike `search_documents` (per-conversation,
+  registered on demand) the wiki is global and always available.
+- **`llampaca/cli.py`** — (1) the wiki index is appended to the system
+  prompt at session start (static for the session by design: rebuilding on
+  every write would invalidate llama-server's prefix cache; a page written
+  mid-session is confirmed by its tool result); skipped under `--no-tools`.
+  (2) New `/remember <fact>` chat command: the fact is forwarded to the
+  model as a normal turn so IT picks/creates the right page, and the write
+  still passes through the confirmation prompt. The instruction demands the
+  fact be copied FAITHFULLY: e2e verification showed Gemma-3-4B
+  (prompt-based tool mode) inventing page content / copying the stale index
+  description instead of the new fact — Qwen3.5-4B (native mode) stores it
+  verbatim; with weaker models the confirmation prompt (which shows the
+  exact content) is the safety net. (3) Session header advertises
+  `/remember`.
+- **`tests/test_wiki.py`** (new) — 20 offline tests: slugify/traversal,
+  page CRUD + size caps, index rendering (empty/full/truncated), tool
+  registration, confirmation flags, and error-as-string contract. All
+  tests run against a tmp wiki dir; full suite: 96 passed.
+- *Why:* the assistant had per-conversation memory (history.db) and
+  per-document knowledge (RAG attachments) but nothing that crossed
+  sessions; the wiki gives small local models durable personalization at
+  zero new dependencies (TODO: "llm wiki o rag, second brain per
+  personalizzazione utente").
+
 ### Added — generation speed (tokens/second) in the turn footer
 
 - **`llampaca/engine/client.py`** — `chat_stream_events()` yields a new

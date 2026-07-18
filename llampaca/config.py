@@ -18,6 +18,10 @@ BIN_DIR = LLAMPACA_DIR / "bin"
 MODELS_DIR = LLAMPACA_DIR / "models"
 LOGS_DIR = LLAMPACA_DIR / "logs"
 DB_PATH = LLAMPACA_DIR / "history.db"
+# The personal wiki: plain markdown pages the model (and the user) can read
+# and update across sessions. Lives in the app data dir — NOT in the launch
+# workspace — because it is the user's memory, shared by every project.
+WIKI_DIR = LLAMPACA_DIR / "wiki"
 
 # Recommended model presets.
 # The "kind" field separates chat models (loaded by `llampaca run`) from
@@ -73,7 +77,7 @@ DEFAULT_CONFIG = {
     "llama_server_path": "",
     "default_model": "qwen3.5-4b-instruct",
     "server_port": 8080,
-    "context_size": 4096,
+    "context_size": 8192,
     "n_threads": max(1, os.cpu_count() - 2 if os.cpu_count() else 4),
     "gpu_layers": -1,  # -1 means auto (enable metal/cuda if supported)
     # Embedding (RAG) settings. embedding_model may be a preset name or a
@@ -112,6 +116,7 @@ def ensure_dirs():
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    WIKI_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_config() -> dict:
     """Load configuration from the config file, creating it if it doesn't exist."""
