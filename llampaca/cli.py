@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import asyncio
 # pyrefly: ignore [missing-import]
 import click
@@ -163,7 +164,7 @@ def remove_model(filename):
         model_path.unlink()
         click.echo(f"Deleted {model_path.name}")
 
-async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
+async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think=False):
     config = load_config()
     
     # 2. Check and choose conversation session
@@ -259,7 +260,8 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
         port=server_port,
         context_size=ctx,
         n_threads=threads,
-        gpu_layers=gpu
+        gpu_layers=gpu,
+        no_think=no_think
     )
     
     if not await server.start():
@@ -589,11 +591,45 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
             # Print streaming response
             click.echo("Llampaca > ", nl=False)
             response_content = ""
+            # Whether the stream is currently inside a thinking block: used
+            # to (a) print the "[thinking]" header exactly once per block
+            # and (b) close the dim block with a newline when the model
+            # moves on to the answer or to a tool call. A turn can contain
+            # several blocks (reasoning models think again before each tool
+            # round-trip), so the flag is reset on every transition.
+            in_reasoning = False
+            # Wall-clock duration of the whole turn — model thinking +
+            # generation + tool executions — i.e. the wait the user actually
+            # experiences. monotonic() because it can't jump if the system
+            # clock changes mid-turn.
+            turn_started = time.monotonic()
             try:
                 async for kind, data in agent.send(user_input, message_id=user_msg_id):
+                    # Any non-reasoning event ends the current dim thinking
+                    # block: close it visually before rendering the event.
+                    if in_reasoning and kind != "reasoning":
+                        click.echo()
+                        in_reasoning = False
                     if kind == "text":
                         click.echo(data, nl=False)
                         response_content += data
+                    elif kind == "reasoning":
+                        # The model's thinking, streamed dim so it reads as
+                        # process, not as the answer. Purely visual: it is
+                        # never part of response_content, so it never
+                        # reaches the database or the conversation history.
+                        if not in_reasoning:
+                            click.echo(click.style("\n  [thinking] ", dim=True), nl=False)
+                            in_reasoning = True
+                        click.echo(click.style(data, dim=True), nl=False)
+                    elif kind == "tool_start":
+                        # The tool's name is known but its arguments are
+                        # still streaming: show *something* immediately —
+                        # the full call line follows in "tool_call" once
+                        # the arguments are complete.
+                        click.echo(click.style(
+                            f"\n  [tool] calling {data['name']}...", fg="cyan", dim=True
+                        ), nl=False)
                     elif kind == "tool_call":
                         click.echo(click.style(
                             f"\n  [tool] {data['name']}({data['arguments']})", fg="cyan"
@@ -611,16 +647,22 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
                         click.echo(click.style(f"\n  [error] {data}", fg="red"))
             except Exception as e:
                 click.echo(click.style(f"\n  [error] Unexpected error: {e}", fg="red"))
+            if in_reasoning:
+                # Stream ended while still thinking (e.g. an error cut it
+                # short): close the dim block so the chrome below starts
+                # on its own line.
+                click.echo()
             click.echo() # Newline at the end
+            turn_seconds = time.monotonic() - turn_started
 
-            # Context-usage indicator: how much of the model's window is
-            # still free after this turn. The estimate is heuristic
-            # (chars/4), hence the "~". Rendered dim so it reads as chrome,
-            # not as part of the model's answer.
+            # Turn footer: context still free plus how long the whole
+            # response took. The context estimate is heuristic (chars/4),
+            # hence the "~". Rendered dim so it reads as chrome, not as
+            # part of the model's answer.
             used_tokens, total_tokens = agent.context_usage()
             free_percent = max(0, 100 - (used_tokens * 100 // total_tokens))
             click.echo(click.style(
-                f"  [context: ~{free_percent}% free]", dim=True
+                f"  [context: ~{free_percent}% free | took {turn_seconds:.1f}s]", dim=True
             ))
 
             if response_content:
@@ -668,7 +710,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools):
 @click.option("--threads", type=int, help="Number of CPU threads to use")
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
 @click.option("--no-tools", is_flag=True, default=False, help="Disable agent tools (plain chat mode)")
-def run(model_name, port, ctx, threads, gpu, no_tools):
+@click.option("--no-think", is_flag=True, default=False,
+              help="Disable the model's hidden 'thinking' phase (reasoning models like Qwen3): faster responses, slightly lower quality on complex tasks")
+def run(model_name, port, ctx, threads, gpu, no_tools, no_think):
     """Launch llama-server and open an interactive agent session."""
     config = load_config()
     
@@ -700,7 +744,7 @@ def run(model_name, port, ctx, threads, gpu, no_tools):
         sys.exit(1)
         
     import asyncio
-    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools))
+    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think))
 
 @main.group()
 def history():

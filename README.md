@@ -102,6 +102,7 @@ You > What is the termination notice period?
 | `--threads` | auto | Number of CPU threads |
 | `--gpu` | `-1` (auto) | GPU layers to offload (`0` = CPU only, `-1` = all layers) |
 | `--no-tools` | off | Disable agent tools (plain chat mode) |
+| `--no-think` | off | Disable the hidden "thinking" phase of reasoning models (e.g. Qwen3): faster responses, slightly lower quality on complex tasks. Only effective when the model's chat template supports the toggle (official Qwen GGUFs do) |
 
 ---
 

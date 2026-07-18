@@ -3,7 +3,79 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
-## [2026-07-16]
+## [2026-07-18]
+
+### Added — live thinking display, early tool-call announcement, turn duration in the CLI
+
+- **`llampaca/engine/client.py`** — `chat_stream_events()` yields two new
+  event kinds: `("reasoning", str)` for chunks of the model's thinking
+  (llama-server's `reasoning_content` delta extension, read via `getattr`
+  because the OpenAI SDK doesn't declare it), and `("tool_name", str)`
+  emitted the moment a streamed tool-call fragment first carries the
+  function name — long before its JSON arguments finish streaming.
+  Reasoning is display-only: it is *not* accumulated into the final
+  `("message", ...)` dict, so it can never re-enter the conversation
+  history or the database.
+- **`llampaca/agent/loop.py`** — `send()` forwards them as
+  `("reasoning", str)` and `("tool_start", {"name": ...})` events (both
+  documented in the docstring). Reasoning chunks bypass the prompt-mode
+  JSON buffering (a tool call never hides in reasoning) and count as
+  produced output for the native-tools rejection heuristic: a template
+  that rejects the `tools` parameter fails before generating anything, so
+  once thinking has streamed, a later error is a runtime failure, not a
+  rejection.
+- **`llampaca/cli.py`** — the chat loop renders reasoning dim under a
+  `[thinking]` header (one block per thinking phase; reasoning models
+  think again before each tool round-trip), shows
+  `[tool] calling <name>...` as soon as the name is known (the full
+  `[tool] name({args})` line still follows once arguments are complete),
+  and the turn footer now reads `[context: ~N% free | took N.Ns]` — the
+  wall-clock duration of the whole turn (thinking + generation + tool
+  executions), measured with `time.monotonic()`.
+  - *Why:* measured on Qwen3-4B, a trivial one-tool question generated
+    12+ seconds of tokens that were 100% invisible (thinking + tool-call
+    JSON): the terminal sat silent while Roo Code, on the *same*
+    llama-server, streamed its reasoning live and felt fast. This makes
+    the same wait visible — same speed, completely different perception —
+    and the duration in the footer makes regressions measurable at a
+    glance.
+- **`tests/test_stream_events.py`** — new tests: reasoning is streamed
+  but kept out of the final message; `tool_name` fires exactly once and
+  before the arguments complete (reassembly still intact); the agent
+  forwards `reasoning`/`tool_start`. Suite: 74 tests passing in both
+  environments (system `python3 -m pytest`, conda `python -m unittest`).
+  Verified end-to-end with a real `llampaca run` session (conda binary,
+  Qwen3-4B): thinking streams dim, `[tool] calling read_file...` appears
+  immediately, footer shows `[context: ~57% free | took 32.8s]`.
+
+### Added — `--no-think` flag for `llampaca run` (disable reasoning models' thinking phase)
+
+- **`llampaca/engine/server.py`** — `LlamaServer` accepts a new
+  `no_think: bool` parameter (chat mode only). When set, `_build_command()`
+  appends `--reasoning off` to the llama-server command line, which renders
+  the chat template with thinking disabled (e.g. Qwen3's
+  `enable_thinking=false`) so the model answers directly instead of
+  producing a hidden `<think>` block first.
+- **`llampaca/cli.py`** — new `--no-think` CLI option on `run`, threaded
+  through `async_run_chat()` to the `LlamaServer` constructor.
+  - *Why:* investigation of "Llampaca feels slower than Roo Code on the
+    same llama-server" showed the wait before any visible output is the
+    model's thinking phase: measured on Qwen3-4B, a trivial one-tool
+    question spent 1.1s on prompt processing and **12.2s generating 351
+    tokens that were 100% invisible** (reasoning + tool-call JSON —
+    `LlamaClient` only surfaces `delta.content`, and the tool_call event
+    is emitted at end of stream). `--no-think` removes that phase at the
+    source for models whose template supports the toggle.
+  - *Known limitation (verified empirically):* the flag only works when
+    the GGUF's embedded chat template implements the `enable_thinking`
+    toggle. The two local third-party conversions tested
+    (`Qwen3-4B-Q4_K_M.gguf` from an AWQ re-conversion, and
+    `Benasd/Qwen3.5-4B-Q8_0.gguf`) ship templates *without* it (zero
+    `enable_thinking` occurrences in the GGUF metadata): with them the
+    model keeps thinking and the reasoning text leaks into the visible
+    `content` instead of `reasoning_content` — same latency, worse output.
+    Official `Qwen/Qwen3-*-GGUF` builds (or non-thinking Instruct-2507
+    variants) are required for the flag to have effect.
 
 ### Changed — conversation summarization moved off the turn's critical path (deferred, background)
 

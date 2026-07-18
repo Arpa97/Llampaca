@@ -215,7 +215,16 @@ class Agent:
 
         Events yielded (as (kind, data) tuples):
             ("text", str)             — chunk of assistant text, render as it arrives
-            ("tool_call", dict)       — the model requested a tool:
+            ("reasoning", str)        — chunk of the model's thinking text
+                                         (reasoning models only). Display-only:
+                                         never stored in the history or the DB
+            ("tool_start", dict)      — a tool call is being generated:
+                                         {"name": ...}. Emitted as soon as the
+                                         tool's name is known, while its
+                                         arguments are still streaming — lets
+                                         the UI announce the call immediately
+            ("tool_call", dict)       — the model requested a tool (arguments
+                                         complete, about to execute):
                                          {"name": ..., "arguments": <json str>}
             ("tool_result", dict)     — a tool finished:
                                          {"name": ..., "result": <str>}
@@ -289,6 +298,22 @@ class Agent:
                                 buffer = ""
                         else:
                             yield ("text", data)
+                    elif kind == "reasoning":
+                        # Thinking streams through untouched (never buffered:
+                        # the prompt-mode JSON buffering only concerns the
+                        # answer text, a tool call never hides in reasoning).
+                        # It also counts as produced output for the
+                        # tool-rejection heuristic below: a template that
+                        # rejects the tools parameter fails before generating
+                        # anything, so once thinking has streamed, a later
+                        # error is a runtime failure, not a rejection.
+                        produced_text = True
+                        yield ("reasoning", data)
+                    elif kind == "tool_name":
+                        # Early announcement: the call's arguments are still
+                        # streaming (often for seconds), but the UI can
+                        # already show which tool is being prepared.
+                        yield ("tool_start", {"name": data})
                     elif kind == "message":
                         assistant_message = data
                 # A request that included native tools and completed without

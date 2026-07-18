@@ -78,6 +78,24 @@ class LlamaClient:
         Yields:
             ("text", str) — a chunk of assistant text, as soon as it arrives
                 (so the UI can render it live);
+            ("reasoning", str) — a chunk of the model's *thinking* text.
+                Reasoning models (Qwen3/3.5, DeepSeek-R1, ...) generate a
+                hidden <think> block before answering and before every tool
+                call; llama-server (--jinja) extracts it into the separate
+                delta field "reasoning_content". Surfacing it matters for
+                perceived latency: the thinking phase is often the bulk of
+                the generated tokens, and without this event the user
+                stares at a silent terminal the whole time. Reasoning is
+                display-only: it is NOT part of the final "message" (it
+                must not be fed back into the history — chat templates
+                drop past reasoning, and re-sending it would break the
+                server's prompt-prefix cache);
+            ("tool_name", str) — a tool call was detected mid-stream: the
+                function name, emitted as soon as it is known. The name
+                arrives in the FIRST fragment of a call while its JSON
+                arguments can take many seconds more to stream — this early
+                signal lets the UI say "calling X..." immediately instead
+                of staying silent until the end of the stream;
             ("message", dict) — exactly once, at the end: the fully assembled
                 assistant message in OpenAI format, including "tool_calls" if
                 the model requested any. The caller appends this to the
@@ -121,6 +139,14 @@ class LlamaClient:
             if delta is None:
                 continue
 
+            # Thinking text: forward for live (dimmed) rendering. Accessed
+            # with getattr because "reasoning_content" is a llama-server
+            # extension the OpenAI SDK's delta type doesn't declare — the
+            # SDK still carries it as an extra attribute when present.
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield ("reasoning", reasoning)
+
             # Plain assistant text: forward immediately for live rendering
             if delta.content:
                 content += delta.content
@@ -136,6 +162,11 @@ class LlamaClient:
                         entry["id"] = fragment.id
                     if fragment.function:
                         if fragment.function.name:
+                            # First time this call's name shows up: announce
+                            # it right away (see "tool_name" in the
+                            # docstring), then keep accumulating arguments.
+                            if not entry["name"]:
+                                yield ("tool_name", fragment.function.name)
                             entry["name"] = fragment.function.name
                         if fragment.function.arguments:
                             # Arguments arrive as JSON text spread over chunks

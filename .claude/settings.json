@@ -89,7 +89,20 @@
       "Bash(ls -t /Users/umbertodilaudo/.llampaca/logs/llama-server-embed-*.log | head -3)",
       "Read(//Users/umbertodilaudo/Desktop/**)",
       "Bash(~/miniconda3/envs/llampaca/bin/python -m pytest /Users/umbertodilaudo/Desktop/Umberto/repo/Llampaca/tests/ -q)",
-      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.cli, llampaca.agent.loop, llampaca.engine.db; print\\('imports OK'\\)\")"
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.cli, llampaca.agent.loop, llampaca.engine.db; print\\('imports OK'\\)\")",
+      "Bash(ls -lat ~/.llampaca/logs/ | head -10)",
+      "Bash(curl -s -m 2 http://127.0.0.1:8080/health)",
+      "Bash(kill 99280)",
+      "Bash(~/.llampaca/bin/llama-server -m ~/.llampaca/models/Qwen3-4B-Q4_K_M.gguf --port 8099 -c 4096 -t 6 --jinja --cache-reuse 256 -fa on -ctk q8_0 -ctv q8_0 --reasoning-budget 0 -ngl 99)",
+      "Bash(curl -s -m 1 http://127.0.0.1:8099/health)",
+      "Bash(break)",
+      "Bash(time curl -s http://127.0.0.1:8099/v1/chat/completions -H \"Content-Type: application/json\" -d @/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/4bf92e8a-b974-4733-a689-4ac6b4b75e97/scratchpad/req.json)",
+      "Bash(kill %1)",
+      "Bash(~/.llampaca/bin/llama-server -m ~/.llampaca/models/Qwen3-4B-Q4_K_M.gguf --port 8099 -c 4096 -t 6 --jinja --cache-reuse 256 -fa on -ctk q8_0 -ctv q8_0 --reasoning off -ngl 99)",
+      "Bash(~/.llampaca/bin/llama-server -m ~/.llampaca/models/Qwen3.5-4B-Q8_0.gguf --port 8099 -c 4096 -t 6 --jinja --cache-reuse 256 -fa on -ctk q8_0 -ctv q8_0 --reasoning off -ngl 99)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m pytest tests/ -q)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.cli, llampaca.engine.server; print\\('imports OK'\\)\")",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m unittest discover tests)"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs"

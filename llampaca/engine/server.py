@@ -89,7 +89,8 @@ def cleanup_orphans():
 class LlamaServer:
     def __init__(self, model_path: Path, port: int = None, context_size: int = None,
                  n_threads: int = None, gpu_layers: int = None,
-                 embedding: bool = False, pooling: str = "last"):
+                 embedding: bool = False, pooling: str = "last",
+                 no_think: bool = False):
         """
         Args:
             embedding: Run llama-server as an *embedding* server instead of a
@@ -100,12 +101,21 @@ class LlamaServer:
                 "mean" for bge-style models. Wrong pooling silently produces
                 meaningless vectors, so the value comes from the model preset.
                 Ignored in chat mode.
+            no_think: Disable the model's "thinking" phase (llama-server's
+                --reasoning-budget 0). Reasoning models like Qwen3/3.5 emit a
+                hidden <think> block before every answer and every tool call
+                — often hundreds of tokens the user never sees, perceived as
+                dead time before the response starts. With the budget at 0
+                the model skips straight to the answer: much lower latency
+                per turn, at some quality cost on complex tasks. Ignored in
+                embedding mode (embedders don't generate).
         """
         config = load_config()
 
         self.model_path = Path(model_path)
         self.embedding = embedding
         self.pooling = pooling
+        self.no_think = no_think
         if embedding:
             # Dedicated defaults for embedding mode: its own port range (so
             # it never races the chat server's auto-increment scan) and a
@@ -209,6 +219,18 @@ class LlamaServer:
                 "-ctk", "q8_0",
                 "-ctv", "q8_0",
             ])
+            if self.no_think:
+                # Render the chat template with thinking disabled (e.g.
+                # Qwen3's enable_thinking=false), so reasoning models skip
+                # their <think> phase and answer directly. Harmless on
+                # models that don't reason. CAVEAT: only effective when the
+                # GGUF's embedded chat template actually implements the
+                # toggle — official Qwen GGUFs do, some third-party
+                # conversions ship a stripped template without it and keep
+                # thinking anyway. Requires a llama.cpp build recent enough
+                # to know the flag; older binaries will refuse to start and
+                # point the user at the log.
+                cmd.extend(["--reasoning", "off"])
 
         # Configure GPU layers
         # For llama.cpp, if gpu_layers is -1 (auto), we default to offloading
