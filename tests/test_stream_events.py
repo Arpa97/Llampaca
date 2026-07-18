@@ -29,14 +29,21 @@ from llampaca.agent.loop import Agent
 from llampaca.engine.client import LlamaClient
 
 
-def _chunk(content=None, reasoning=None, tool_calls=None):
-    """Build a fake OpenAI streaming chunk with the given delta fields."""
+def _chunk(content=None, reasoning=None, tool_calls=None, timings=None):
+    """Build a fake OpenAI streaming chunk with the given delta fields.
+
+    timings mimics llama-server's extension: a "timings" attribute on the
+    chunk itself (not on the delta), present only on the final chunk.
+    """
     delta = SimpleNamespace(
         content=content,
         reasoning_content=reasoning,
         tool_calls=tool_calls,
     )
-    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+    chunk = SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+    if timings is not None:
+        chunk.timings = timings
+    return chunk
 
 
 def _tool_fragment(index, name=None, arguments=None, id=None):
@@ -109,6 +116,25 @@ class TestClientStreamEvents(unittest.IsolatedAsyncioTestCase):
             {"name": "read_file", "arguments": '{"path": "x.txt"}'},
         )
 
+    async def test_stats_emitted_from_final_chunk_timings(self):
+        timings = {"predicted_n": 238, "predicted_ms": 8067.3,
+                   "prompt_n": 13, "prompt_ms": 1153.6}
+        client = _client_with_chunks([
+            _chunk(content="hi"),
+            # llama-server's final chunk: empty delta, timings attached
+            _chunk(timings=timings),
+        ])
+        events = await self._collect(client)
+
+        # Exactly one stats event, right before the final message
+        self.assertEqual(events[-2], ("stats", timings))
+        self.assertEqual(events[-1][0], "message")
+
+    async def test_no_stats_event_without_timings(self):
+        client = _client_with_chunks([_chunk(content="hi")])
+        events = await self._collect(client)
+        self.assertEqual([e[0] for e in events], ["text", "message"])
+
 
 class TestAgentForwardsStreamEvents(unittest.IsolatedAsyncioTestCase):
     async def test_send_forwards_reasoning_and_tool_start(self):
@@ -119,6 +145,7 @@ class TestAgentForwardsStreamEvents(unittest.IsolatedAsyncioTestCase):
             yield ("reasoning", "let me think")
             yield ("tool_name", "read_file")
             yield ("text", "done")
+            yield ("stats", {"predicted_n": 5, "predicted_ms": 100.0})
             yield ("message", {"role": "assistant", "content": "done"})
 
         mock_client.chat_stream_events = fake_events
@@ -130,6 +157,7 @@ class TestAgentForwardsStreamEvents(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(("reasoning", "let me think"), events)
         self.assertIn(("tool_start", {"name": "read_file"}), events)
+        self.assertIn(("stats", {"predicted_n": 5, "predicted_ms": 100.0}), events)
         self.assertIn(("text", "done"), events)
 
 

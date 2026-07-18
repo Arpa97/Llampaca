@@ -603,6 +603,13 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
             # experiences. monotonic() because it can't jump if the system
             # clock changes mid-turn.
             turn_started = time.monotonic()
+            # Generation counters for the whole turn, summed across the
+            # per-request "stats" events (a turn with tool round-trips is
+            # several model requests). tokens/ms ratio — not tokens/wall-
+            # clock — so tool execution time never dilutes the reported
+            # generation speed.
+            gen_tokens = 0
+            gen_ms = 0.0
             try:
                 async for kind, data in agent.send(user_input, message_id=user_msg_id):
                     # Any non-reasoning event ends the current dim thinking
@@ -640,6 +647,10 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
                         if len(preview) > 120:
                             preview = preview[:120] + "..."
                         click.echo(click.style(f"  [result] {preview}", fg="green"))
+                    elif kind == "stats":
+                        # Silent accumulation: rendered once in the footer.
+                        gen_tokens += data.get("predicted_n") or 0
+                        gen_ms += data.get("predicted_ms") or 0.0
                     elif kind == "warning":
                         click.echo(click.style(f"\n  [warning] {data}", fg="yellow"))
                     elif kind == "error":
@@ -655,14 +666,20 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
             click.echo() # Newline at the end
             turn_seconds = time.monotonic() - turn_started
 
-            # Turn footer: context still free plus how long the whole
-            # response took. The context estimate is heuristic (chars/4),
-            # hence the "~". Rendered dim so it reads as chrome, not as
-            # part of the model's answer.
+            # Turn footer: context still free, how long the whole response
+            # took, and the generation speed measured by the server itself
+            # (summed across the turn's requests). The context estimate is
+            # heuristic (chars/4), hence the "~"; the speed part is omitted
+            # when the server sent no timings (older llama.cpp builds).
+            # Rendered dim so it reads as chrome, not as part of the
+            # model's answer.
             used_tokens, total_tokens = agent.context_usage()
             free_percent = max(0, 100 - (used_tokens * 100 // total_tokens))
+            speed = ""
+            if gen_tokens and gen_ms > 0:
+                speed = f" | {gen_tokens} tok @ {gen_tokens / (gen_ms / 1000):.1f} tok/s"
             click.echo(click.style(
-                f"  [context: ~{free_percent}% free | took {turn_seconds:.1f}s]", dim=True
+                f"  [context: ~{free_percent}% free | took {turn_seconds:.1f}s{speed}]", dim=True
             ))
 
             if response_content:

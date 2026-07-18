@@ -102,7 +102,11 @@
       "Bash(~/.llampaca/bin/llama-server -m ~/.llampaca/models/Qwen3.5-4B-Q8_0.gguf --port 8099 -c 4096 -t 6 --jinja --cache-reuse 256 -fa on -ctk q8_0 -ctv q8_0 --reasoning off -ngl 99)",
       "Bash(~/miniconda3/envs/llampaca/bin/python -m pytest tests/ -q)",
       "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.cli, llampaca.engine.server; print\\('imports OK'\\)\")",
-      "Bash(~/miniconda3/envs/llampaca/bin/python -m unittest discover tests)"
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m unittest discover tests)",
+      "Bash(git switch *)",
+      "Bash(~/.llampaca/bin/llama-server -m ~/.llampaca/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf --port 8099 -c 2048 -t 6 --jinja -fa on -ngl 99)",
+      "Bash(curl -s -N http://127.0.0.1:8099/v1/chat/completions -H \"Content-Type: application/json\" -d '{\"model\":\"m\",\"stream\":true,\"cache_prompt\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one word\"}]}')",
+      "Bash(pkill -f \"llama-server.*8099\")"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs"

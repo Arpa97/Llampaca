@@ -5,6 +5,38 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-18]
 
+### Added — generation speed (tokens/second) in the turn footer
+
+- **`llampaca/engine/client.py`** — `chat_stream_events()` yields a new
+  `("stats", dict)` event, at most once per request right before the final
+  `("message", ...)`: llama-server attaches a `timings` object (llama.cpp
+  extension) to the final stream chunk — the one with `finish_reason` and
+  an empty delta — carrying server-measured counters (`predicted_n`,
+  `predicted_ms`, `prompt_n`, `prompt_ms`, ...). Captured before the
+  delta guards (which skip that chunk) and not emitted at all when the
+  server sends no timings (older builds).
+- **`llampaca/agent/loop.py`** — `send()` forwards `("stats", dict)`
+  per model request; the UI owns aggregation (a turn with tool
+  round-trips is several requests).
+- **`llampaca/cli.py`** — the footer now reads
+  `[context: ~N% free | took N.Ns | N tok @ N.N tok/s]`: generated tokens
+  summed across the turn's requests, speed computed as
+  `Σpredicted_n / Σpredicted_ms` — generation-time only, so tool
+  execution and prompt processing never dilute the reported speed. The
+  speed segment is omitted when no stats arrived.
+  - *Why:* requested by the user after the turn-duration display: the
+    duration alone can't distinguish "model is slow" from "model wrote a
+    lot" — tokens/second is the comparable metric across models and
+    settings (it is what the earlier Roo Code vs terminal investigation
+    had to dig out of raw server responses by hand).
+- **`tests/test_stream_events.py`** — 2 new client tests (stats emitted
+  from the final chunk's timings and ordered right before "message"; no
+  stats event when the server sends no timings) and the agent-forwarding
+  test now covers `stats` too. Suite: 76 tests passing in both
+  environments. Verified end-to-end (conda binary, Qwen3-4B, one-tool
+  question): footer showed `[context: ~56% free | took 30.5s | 657 tok @
+  27.2 tok/s]`.
+
 ### Added — live thinking display, early tool-call announcement, turn duration in the CLI
 
 - **`llampaca/engine/client.py`** — `chat_stream_events()` yields two new

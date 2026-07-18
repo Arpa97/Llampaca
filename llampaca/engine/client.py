@@ -96,6 +96,15 @@ class LlamaClient:
                 arguments can take many seconds more to stream — this early
                 signal lets the UI say "calling X..." immediately instead
                 of staying silent until the end of the stream;
+            ("stats", dict) — at most once, right before "message": the
+                server-measured performance counters for THIS request, taken
+                from llama-server's "timings" object on the final stream
+                chunk (a llama.cpp extension the OpenAI SDK carries as an
+                extra attribute). Keys of interest: "predicted_n" /
+                "predicted_ms" (generated tokens and time spent generating
+                them — their ratio is the true tokens/second) and
+                "prompt_n" / "prompt_ms" (prompt processing). Not emitted
+                when the server doesn't send timings (older builds);
             ("message", dict) — exactly once, at the end: the fully assembled
                 assistant message in OpenAI format, including "tool_calls" if
                 the model requested any. The caller appends this to the
@@ -131,8 +140,16 @@ class LlamaClient:
         content = ""
         # index -> partial tool call being reassembled from stream fragments
         pending_tool_calls: Dict[int, Dict[str, str]] = {}
+        # Server-side performance counters: llama-server attaches a
+        # "timings" object to the FINAL chunk of the stream (the one with
+        # finish_reason, whose delta is empty). Captured before the delta
+        # guards below, which would skip that chunk.
+        stats: Optional[dict] = None
 
         async for chunk in stream:
+            chunk_timings = getattr(chunk, "timings", None)
+            if chunk_timings:
+                stats = dict(chunk_timings)
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -189,6 +206,8 @@ class LlamaClient:
                 for index, entry in sorted(pending_tool_calls.items())
             ]
 
+        if stats is not None:
+            yield ("stats", stats)
         yield ("message", message)
 
     async def embed(

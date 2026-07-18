@@ -228,6 +228,11 @@ class Agent:
                                          {"name": ..., "arguments": <json str>}
             ("tool_result", dict)     — a tool finished:
                                          {"name": ..., "result": <str>}
+            ("stats", dict)           — llama-server's timings for one model
+                                         request (see client docstring). A turn
+                                         with tool round-trips emits one per
+                                         request; the UI aggregates them to
+                                         show turn-level tokens/second
             ("warning", str)          — non-fatal problem (e.g. tool mode switched,
                                          iteration cap reached)
             ("error", str)            — the model/server failed this turn; the
@@ -314,6 +319,11 @@ class Agent:
                         # streaming (often for seconds), but the UI can
                         # already show which tool is being prepared.
                         yield ("tool_start", {"name": data})
+                    elif kind == "stats":
+                        # Per-request server timings, forwarded as-is: the
+                        # UI owns the aggregation across a turn's multiple
+                        # requests (tool round-trips).
+                        yield ("stats", data)
                     elif kind == "message":
                         assistant_message = data
                 # A request that included native tools and completed without
