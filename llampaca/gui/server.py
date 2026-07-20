@@ -580,6 +580,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_mcp_search(original_path)
         elif self.path.startswith('/api/mcp'):
             self.handle_get_mcp()
+        elif self.path.startswith('/api/wiki'):
+            self.handle_get_wiki()
         else:
             super().do_GET()
 
@@ -597,6 +599,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_post_models_download()
         elif self.path.startswith('/api/mcp/install'):
             self.handle_post_mcp_install()
+        elif self.path.startswith('/api/wiki'):
+            self.handle_post_wiki()
         else:
             self.send_error(404, "Not Found")
 
@@ -608,6 +612,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_delete_model()
         elif self.path.startswith('/api/mcp/uninstall/'):
             self.handle_delete_mcp()
+        elif self.path.startswith('/api/wiki/'):
+            self.handle_delete_wiki()
         else:
             self.send_error(404, "Not Found")
 
@@ -724,6 +730,25 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             role = payload.get('role', 'user')
             content = payload.get('content', '')
             print(f"--- [API POST MESSAGE] Content payload: '{content[:100]}...'", flush=True)
+
+            # /remember <fact>: the GUI equivalent of the CLI chat command.
+            # Not written to disk directly — the fact is forwarded to the model
+            # as a normal turn, so IT picks (or creates) the right wiki page and
+            # the write still passes through the standard update_wiki_page
+            # confirmation (which appears as the GUI's Allow/Decline prompt).
+            if content.strip().lower().startswith("/remember"):
+                fact = content.strip()[len("/remember"):].strip()
+                if fact:
+                    content = (
+                        f"{fact}\n\n"
+                        "[The user asked to remember the fact above permanently. "
+                        "Store it in your wiki with update_wiki_page, copying the "
+                        "fact FAITHFULLY — the page content must state exactly the "
+                        "fact above, never something invented. Add it to the "
+                        "existing page it fits best (read the page first and keep "
+                        "its still-valid content), or create a new page if none "
+                        "fits. Then confirm in one short line where you stored it.]"
+                    )
 
             # Merge any files staged for this conversation into the user turn,
             # mirroring the CLI: injected attachments (document text) and RAG
@@ -968,6 +993,80 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             self.send_error(500, str(e))
+
+    # ------------------------------------------------------------------ #
+    # Personal wiki ("Profilo") — view/edit the same ~/.llampaca/wiki     #
+    # pages the model reads/writes and the CLI's /remember stores.        #
+    # ------------------------------------------------------------------ #
+    def handle_get_wiki(self):
+        """GET /api/wiki -> list of {name, description};
+        GET /api/wiki/<name> -> {name, content} for one page."""
+        from urllib.parse import unquote
+        from llampaca import wiki
+        try:
+            parts = self.path.strip('/').split('/')
+            if len(parts) == 3:  # /api/wiki/<name>
+                name = unquote(parts[2])
+                try:
+                    content = wiki.read_page(name)
+                except FileNotFoundError:
+                    self._send_json({"error": "Pagina non trovata"}, status=404)
+                    return
+                self._send_json({"name": wiki.slugify(name), "content": content})
+            else:  # /api/wiki
+                pages = [
+                    {"name": name, "description": desc}
+                    for name, desc in wiki.list_pages()
+                ]
+                # max_chars lets the editor warn before the write would be
+                # rejected server-side (same cap the model's tool obeys).
+                self._send_json({"pages": pages, "max_chars": wiki.MAX_PAGE_CHARS})
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
+
+    def handle_post_wiki(self):
+        """POST /api/wiki with {name, content} -> create/overwrite a page.
+        Returns {name} with the slugified name actually written."""
+        from llampaca import wiki
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
+            name = (payload.get("name") or "").strip()
+            content = payload.get("content", "")
+            if not name:
+                self._send_json({"error": "Il nome della pagina è obbligatorio."}, status=400)
+                return
+            try:
+                # write_page enforces the same rules as the model's tool:
+                # non-empty content and the whole-page size cap.
+                slug = wiki.write_page(name, content)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            self._send_json({"name": slug})
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
+
+    def handle_delete_wiki(self):
+        """DELETE /api/wiki/<name> -> remove a page file. Deleting is a user
+        action (the model can only write), which is exactly what this is."""
+        from urllib.parse import unquote
+        from llampaca import wiki
+        try:
+            parts = self.path.strip('/').split('/')
+            if len(parts) != 3:
+                self.send_error(400, "Bad Request")
+                return
+            name = unquote(parts[2])
+            path = wiki.page_path(name)  # slugified, inside WIKI_DIR
+            if path.is_file():
+                path.unlink()
+            self._send_json({"success": True, "name": wiki.slugify(name)})
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
 
     def handle_post_settings(self):
         try:

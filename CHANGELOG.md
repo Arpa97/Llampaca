@@ -5,6 +5,29 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-20]
 
+### Added — GUI: "Profilo" tab (view/edit wiki pages) and `/remember` in the chat
+
+- **`llampaca/gui/server.py`** — wiki REST endpoints over the same
+  `~/.llampaca/wiki/` pages the model and the CLI use:
+  - `GET /api/wiki` (list of name+description), `GET /api/wiki/<name>` (full
+    content), `POST /api/wiki` (create/overwrite, enforcing `write_page`'s
+    non-empty + size-cap rules → 400 on violation), `DELETE /api/wiki/<name>`
+    (deleting is a user action, which this is).
+  - `/remember <fact>` now works in the GUI chat: `handle_post_message`
+    applies the same transform as the CLI (the fact is forwarded to the model
+    with the "store faithfully via update_wiki_page" instruction), so the
+    write still goes through the GUI's Allow/Decline confirmation.
+- **`llampaca/gui/models/wiki_model.js`**, **`controllers/wiki_controller.js`**,
+  **`components/WikiView.js`** — new "Profilo" tab: a two-pane page list +
+  markdown editor to read, create, edit, and delete memories, with a live
+  character count against the page cap. Edits are the same files the assistant
+  reads, so they take effect in the next message (the wiki index is rebuilt
+  per turn).
+- **`llampaca/gui/app.js`**, **`index.html`** — registered the tab (nav item +
+  view) and added its styles.
+  - *Why:* the wiki was terminal-only; the GUI now exposes it as an editable
+    personal profile, and the `/remember` shortcut has GUI parity.
+
 ### Changed — single source of truth for the default context window (CLI, GUI, Agent all aligned to 8192)
 
 - **`llampaca/config.py`** — new `DEFAULT_CONTEXT_SIZE = 8192` constant, used

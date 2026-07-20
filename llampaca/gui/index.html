@@ -607,6 +607,67 @@
             box-shadow: 0 4px 16px rgba(0,0,0,0.08);
         }
 
+        /* Personal wiki ("Profilo") — two-pane list + editor */
+        .wiki-container {
+            flex-grow: 1;
+            display: flex;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .wiki-sidebar {
+            width: 280px;
+            flex-shrink: 0;
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            background-color: #fbfcfd;
+        }
+
+        .wiki-main {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            padding: 24px 30px;
+            overflow-y: auto;
+        }
+
+        .wiki-empty {
+            margin: auto;
+            max-width: 460px;
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        .wiki-empty h3 { color: var(--text-main); margin-bottom: 10px; }
+        .wiki-empty p { font-size: 13.5px; line-height: 1.5; }
+
+        .wiki-editor {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            min-height: 0;
+            gap: 16px;
+        }
+
+        .wiki-textarea {
+            flex-grow: 1;
+            min-height: 320px;
+            resize: vertical;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .wiki-editor-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+
         /* 4. Models Manager Styling */
         .models-grid {
             display: grid;
@@ -1132,6 +1193,13 @@
                     </svg>
                     Integrazioni MCP
                 </a>
+                <a class="nav-item" :class="{ active: currentTab === 'wiki' }" @click="currentTab = 'wiki'">
+                    <svg viewBox="0 0 24 24">
+                        <path
+                            d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                    </svg>
+                    Profilo
+                </a>
                 <a class="nav-item" :class="{ active: currentTab === 'settings' }" @click="currentTab = 'settings'">
                     <svg viewBox="0 0 24 24">
                         <path
@@ -1152,6 +1220,7 @@
             <chat-view v-if="currentTab === 'chat'"></chat-view>
             <models-view v-if="currentTab === 'models'"></models-view>
             <mcp-view v-if="currentTab === 'mcp'"></mcp-view>
+            <wiki-view v-if="currentTab === 'wiki'"></wiki-view>
             <settings-view v-if="currentTab === 'settings'"></settings-view>
         </main>
     </div>
