@@ -92,8 +92,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "on the user's machine. You can use the available tools to read and write "
     "files in the user's workspace, run shell commands, search the web, and "
     "fetch web pages. When the user asks about current events or facts that may "
-    "have changed since your training, use web_search to find up-to-date "
-    "information rather than answering from memory, and cite what you found. "
+    "have changed since your training, or anything you are unsure of or do "
+    "not know, use web_search rather than guessing, and cite what you found. "
     # Language models tokenize text, so they cannot reliably see individual
     # characters and are notoriously bad at counting them or at exact
     # arithmetic. The shell can do both perfectly, so we steer the model to

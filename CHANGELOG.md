@@ -3,6 +3,19 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-20]
+
+### Changed — system prompt: web_search anche quando il modello è incerto
+
+- **`llampaca/agent/loop.py`** — `DEFAULT_SYSTEM_PROMPT`: il trigger per
+  `web_search` ora include anche i casi in cui il modello non sa o non è
+  sicuro di un fatto ("or anything you are unsure of or do not know"),
+  non solo eventi correnti / fatti cambiati dopo il training.
+- **Motivo:** i modelli piccoli tendono ad allucinare fatti statici che non
+  conoscono invece di cercarli. La frase è stata riscritta (non aggiunta) per
+  non allungare il prompt — importante soprattutto in modalità prompt-based
+  (Gemma), dove le istruzioni tool vivono già dentro il system prompt.
+
 ## [2026-07-18]
 
 ### Changed — default context window doubled: 4096 → 8192 tokens
