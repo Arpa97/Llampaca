@@ -134,7 +134,14 @@
       "Bash(~/miniconda3/envs/llampaca/bin/python -m compileall -q llampaca/gui/)",
       "Bash(~/miniconda3/envs/llampaca/bin/python -c \"from llampaca.config import DEFAULT_CONTEXT_SIZE, EMBEDDING_CONTEXT_SIZE; print\\('constants:', DEFAULT_CONTEXT_SIZE, EMBEDDING_CONTEXT_SIZE\\)\")",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('context_size nel tuo config.json:', d.get\\('context_size', '\\(assente → userà il default 8192\\)'\\)\\)\")",
-      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.gui.server; print\\('server.py import OK'\\)\")"
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.gui.server; print\\('server.py import OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); ast.parse\\(open\\('llampaca/cli.py'\\).read\\(\\)\\); print\\('PY OK'\\)\")",
+      "Bash(node --check llampaca/gui/components/ChatView.js)",
+      "Bash(node --check llampaca/gui/controllers/chat_controller.js)",
+      "Bash(curl -sN -m 120 -X POST http://localhost:8095/api/conversations/97c060a4-85d2-4c78-b90a-a0765074be6b/messages -H 'Content-Type: application/json' -d '{\"content\":\"Read the file pyproject.toml and summarize it in one sentence\"}')",
+      "Bash(pkill -f \"llampaca serve\")",
+      "Bash(pkill -f \"llama-server\")"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

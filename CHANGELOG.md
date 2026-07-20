@@ -5,6 +5,36 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-20]
 
+### Changed — Unify the context indicator across CLI and GUI + add speed/time
+
+- **`llampaca/gui/server.py`**: the turn footer emitted as the `context_status`
+  SSE event now derives context occupancy from `agent.context_usage()` — the
+  *same* heuristic the CLI footer uses (chars/4 plus per-message overhead and,
+  in native mode, the tool-definition tokens). Previously the GUI computed a
+  separate raw `used_chars` vs `context_size * CHARS_PER_TOKEN`, which ignored
+  the per-message overhead and tool definitions and so under-reported usage
+  relative to the CLI. The event now carries `used_tokens`, `total_tokens` and
+  `used_percent`, plus `turn_seconds`, `gen_tokens` and `tok_s` (generation
+  speed from the summed server `stats` timings, elapsed time via
+  `time.monotonic()`), mirroring the CLI footer.
+  - *Reason*: the two surfaces were calculating and phrasing the context
+    differently; the CLI already showed tokens/second and time while the GUI
+    did not.
+- **`llampaca/cli.py`**: the footer now reports context **used** rather than
+  free — `[context: ~X% used | took Ys | N tok @ Z tok/s]` — so both surfaces
+  express the same quantity (occupancy, not remaining).
+  - *Reason*: consistency, and "used" is the more intuitive reading of the
+    indicator.
+- **`llampaca/gui/components/ChatView.js`**: the indicator now reads
+  "Contesto: ~X% usato (Yk / Zk token) · Ns · N tok @ Z tok/s" using the new
+  event fields.
+- **`llampaca/gui/controllers/chat_controller.js`**: documented the enriched
+  `context_status` payload in the SSE handler (no behavioural change — it still
+  assigns the whole payload to `contextBudget`).
+- *Note*: generated-token counts and tok/s are exact (from llama-server's
+  `predicted_n`); only the context-occupancy figure is estimated (chars/4),
+  because it is computed locally before each request to drive history trimming.
+
 ### Added — GUI: stop an in-progress answer without crashing
 
 - **`llampaca/gui/server.py`**:

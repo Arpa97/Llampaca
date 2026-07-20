@@ -188,6 +188,9 @@ export function useChatController() {
                                 console.log(`[risultato] ${preview}`);
                                 scrollToBottom();
                             } else if (kind === "context_status") {
+                                // Turn footer: context occupancy (same estimate
+                                // the CLI uses), plus generation speed and the
+                                // elapsed time for the whole turn.
                                 contextBudget.value = data;
                             } else if (kind === "title_updated") {
                                 const conv = conversations.value.find(c => c.id === convId);

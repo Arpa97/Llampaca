@@ -517,11 +517,28 @@ class AgentManager:
 
             response_content = ""
             print(f"\n[Agent Session] Processing message for conversation {conv_id}...", flush=True)
-            
+
+            # Turn timing + generation counters — mirror the CLI footer so
+            # the GUI reports the exact same numbers. monotonic() so a system
+            # clock change mid-turn can't distort the elapsed time. The tokens
+            # and milliseconds are summed across every model request the turn
+            # makes (a turn with tool round-trips is several requests), and the
+            # speed is derived from tokens/generation-ms — never wall-clock —
+            # so tool execution time never dilutes the reported tok/s.
+            import time as _time
+            turn_started = _time.monotonic()
+            gen_tokens = 0
+            gen_ms = 0.0
+
             async for kind, data in agent.send(content, message_id=user_msg_id):
                 if kind == "tool_call":
                     last_tool_call["name"] = data.get("name")
                     last_tool_call["arguments"] = data.get("arguments")
+                elif kind == "stats":
+                    # Per-request server timings: accumulate silently and
+                    # surface them once, in the turn footer (context_status).
+                    gen_tokens += data.get("predicted_n") or 0
+                    gen_ms += data.get("predicted_ms") or 0.0
                 result_queue.put(("event", kind, data))
                 if kind == "text":
                     response_content += data
@@ -531,17 +548,31 @@ class AgentManager:
                         data["summary"],
                         data["last_summarized_message_id"]
                     )
-                    
+
+            turn_seconds = _time.monotonic() - turn_started
             print("\n[Agent Session] Completed.", flush=True)
             if response_content:
                 assistant_msg_id = await add_message(conv_id, "assistant", response_content)
                 result_queue.put(("done", {"assistant_message_id": assistant_msg_id}))
-                
-                # Context budget status
-                from llampaca.agent.loop import CHARS_PER_TOKEN
-                current_chars = sum(len(m.get("content") or "") for m in agent.messages)
-                max_chars = agent.context_size * CHARS_PER_TOKEN
-                result_queue.put(("event", "context_status", {"used_chars": current_chars, "max_chars": max_chars}))
+
+                # Turn footer: use the *same* estimate as the CLI so both
+                # surfaces report identical context occupancy. context_usage()
+                # returns (estimated_used_tokens, context_size) using the
+                # chars/4 heuristic plus per-message overhead and, in native
+                # mode, the tool-definition tokens — none of which the old
+                # raw-chars calculation here accounted for. We also ship the
+                # generation speed and elapsed time so the GUI can show them.
+                used_tokens, total_tokens = agent.context_usage()
+                used_percent = min(100, (used_tokens * 100 // total_tokens)) if total_tokens else 0
+                tok_s = (gen_tokens / (gen_ms / 1000)) if (gen_tokens and gen_ms > 0) else None
+                result_queue.put(("event", "context_status", {
+                    "used_tokens": used_tokens,
+                    "total_tokens": total_tokens,
+                    "used_percent": used_percent,
+                    "turn_seconds": round(turn_seconds, 1),
+                    "gen_tokens": gen_tokens,
+                    "tok_s": round(tok_s, 1) if tok_s is not None else None,
+                }))
                 
                 # Auto-titling for new conversations
                 if len(conv_data.get("messages", [])) <= 1:

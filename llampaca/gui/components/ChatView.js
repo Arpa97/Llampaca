@@ -57,7 +57,7 @@ export default {
                     
                     <div class="chat-input-area">
                         <div v-if="contextBudget" style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-align: right; padding-right: 10px;">
-                            Contesto occupato: {{ Math.round((contextBudget.used_chars / contextBudget.max_chars) * 100) }}% ({{ Math.round(contextBudget.used_chars/1000) }}k / {{ Math.round(contextBudget.max_chars/1000) }}k char)
+                            Contesto: ~{{ contextBudget.used_percent }}% usato ({{ Math.round(contextBudget.used_tokens/1000 * 10)/10 }}k / {{ Math.round(contextBudget.total_tokens/1000 * 10)/10 }}k token)<template v-if="contextBudget.turn_seconds != null"> · {{ contextBudget.turn_seconds }}s</template><template v-if="contextBudget.tok_s != null"> · {{ contextBudget.gen_tokens }} tok @ {{ contextBudget.tok_s }} tok/s</template>
                         </div>
                         <div v-if="attachments.length" class="attachment-chips">
                             <div v-for="(a, i) in attachments" :key="i" class="attachment-chip" :class="a.status">
