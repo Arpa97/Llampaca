@@ -159,6 +159,32 @@ class AgentManager:
                 
         return success
 
+    async def reload_mcp_manager(self):
+        # 1. Stop current MCP sessions (if any)
+        if self.mcp_manager:
+            print("[AgentManager] Reloading MCP: stopping active manager...", flush=True)
+            try:
+                await self.mcp_manager.stop()
+            except Exception as e:
+                print(f"Error stopping MCP on reload: {e}", flush=True)
+            self.mcp_manager = None
+            
+        # 2. Clear old MCP tools (tools with '__' prefix) from registry
+        to_remove = [t for t in self.registry.names() if "__" in t]
+        for t in to_remove:
+            if t in self.registry._tools:
+                del self.registry._tools[t]
+                
+        # 3. Load fresh config and start new sessions
+        from llampaca.config import load_mcp_config
+        mcp_config = load_mcp_config()
+        mcp_servers_config = mcp_config.get("mcp_servers", {})
+        if mcp_servers_config:
+            from llampaca.engine.mcp_client import McpClientManager
+            self.mcp_manager = McpClientManager(mcp_servers_config)
+            await self.mcp_manager.start(self.registry)
+        print("[AgentManager] Reloading MCP: new sessions started and registered.", flush=True)
+
     def start(self, config):
         self.config = config
         self.thread.start()
@@ -346,6 +372,10 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_models_search(original_path)
         elif self.path.startswith('/api/models'):
             self.handle_get_models()
+        elif self.path.startswith('/api/mcp/search'):
+            self.handle_get_mcp_search(original_path)
+        elif self.path.startswith('/api/mcp'):
+            self.handle_get_mcp()
         else:
             super().do_GET()
 
@@ -361,6 +391,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_post_models_default()
         elif self.path.startswith('/api/models/download'):
             self.handle_post_models_download()
+        elif self.path.startswith('/api/mcp/install'):
+            self.handle_post_mcp_install()
         else:
             self.send_error(404, "Not Found")
 
@@ -370,6 +402,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_delete_conversation()
         elif self.path.startswith('/api/models/'):
             self.handle_delete_model()
+        elif self.path.startswith('/api/mcp/uninstall/'):
+            self.handle_delete_mcp()
         else:
             self.send_error(404, "Not Found")
 
@@ -881,6 +915,136 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             results = search_hf_models(query=search_query)
             
             body = json.dumps(results).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_get_mcp(self):
+        try:
+            from llampaca.config import load_mcp_config
+            mcp_config = load_mcp_config()
+            servers = mcp_config.get("mcp_servers", {})
+            
+            result_list = []
+            for name, cfg in servers.items():
+                connected = False
+                tools_count = 0
+                if agent_manager.mcp_manager and name in agent_manager.mcp_manager.sessions:
+                    connected = True
+                    tools_count = sum(1 for t in agent_manager.registry.names() if t.startswith(f"{name}__"))
+                
+                result_list.append({
+                    "name": name,
+                    "command": cfg.get("command"),
+                    "args": cfg.get("args", []),
+                    "env": cfg.get("env", {}),
+                    "connected": connected,
+                    "toolsCount": tools_count
+                })
+                
+            body = json.dumps(result_list).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_get_mcp_search(self, original_path):
+        try:
+            import urllib.parse
+            import requests
+            
+            query_str = ""
+            if "?" in original_path:
+                query_str = original_path.split("?", 1)[1]
+                
+            params = urllib.parse.parse_qs(query_str)
+            search_query = params.get("q", [""])[0].strip()
+            
+            from llampaca.config import DEFAULT_REGISTRY
+            url = f"{DEFAULT_REGISTRY}?limit=12"
+            if search_query:
+                url += f"&query={urllib.parse.quote(search_query)}"
+                
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            servers = data.get("servers", [])
+            body = json.dumps(servers).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_post_mcp_install(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            
+            name = payload.get("name")
+            command = payload.get("command")
+            args = payload.get("args", [])
+            env = payload.get("env", {})
+            
+            if not name or not command:
+                raise Exception("Parametri 'name' e 'command' obbligatori.")
+                
+            from llampaca.config import load_mcp_config, save_mcp_config
+            mcp_config = load_mcp_config()
+            mcp_config["mcp_servers"][name] = {
+                "command": command,
+                "args": args,
+                "env": env
+            }
+            save_mcp_config(mcp_config)
+            
+            # Reload MCP manager thread-safely
+            import asyncio
+            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
+            fut.result(timeout=10.0)
+            
+            body = json.dumps({"success": True}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_delete_mcp(self):
+        try:
+            parts = self.path.strip('/').split('/')
+            if len(parts) < 4:
+                raise Exception("Nome server MCP non specificato.")
+            name = parts[3]
+            
+            from llampaca.config import load_mcp_config, save_mcp_config
+            mcp_config = load_mcp_config()
+            if name in mcp_config.get("mcp_servers", {}):
+                del mcp_config["mcp_servers"][name]
+                save_mcp_config(mcp_config)
+                
+            # Reload MCP manager thread-safely
+            import asyncio
+            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
+            fut.result(timeout=10.0)
+            
+            body = json.dumps({"success": True}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))

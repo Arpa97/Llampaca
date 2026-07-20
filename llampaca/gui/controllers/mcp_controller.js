@@ -1,46 +1,150 @@
 import { McpModel } from '../models/mcp_model.js';
 
-const { ref, computed } = Vue;
+const { ref, onMounted } = Vue;
 
 export function useMcpController() {
     const model = new McpModel();
-    const activeIntegrations = ref(model.getActiveIntegrations());
-    const registryItems = ref(model.getRegistryItems());
+    const activeIntegrations = ref([]);
     const registrySearch = ref('');
+    const searchResults = ref([]);
+    const isSearching = ref(false);
+    const isInstalling = ref(false);
+    
+    // Installation configuration states
+    const installingItem = ref(null);
+    const envInputs = ref({});
+    const customCommand = ref('npx');
+    const customArgs = ref('');
 
-    const getFilteredRegistry = computed(() => {
-        const search = registrySearch.value.toLowerCase().trim();
-        if (!search) return registryItems.value;
-        return registryItems.value.filter(item => 
-            item.name.toLowerCase().includes(search) || 
-            item.description.toLowerCase().includes(search)
-        );
-    });
+    const loadActiveIntegrations = async () => {
+        try {
+            activeIntegrations.value = await model.getActiveIntegrations();
+        } catch (e) {
+            console.error("Errore caricamento integrazioni attive:", e);
+        }
+    };
 
-    const removeIntegration = (name) => {
+    const performSearch = async (query = '') => {
+        try {
+            isSearching.value = true;
+            searchResults.value = await model.searchRegistry(query);
+        } catch (e) {
+            console.error("Errore ricerca registro MCP:", e);
+            if (window.showToast) {
+                window.showToast(`Errore ricerca: ${e.message}`, 'error');
+            }
+        } finally {
+            isSearching.value = false;
+        }
+    };
+
+    const removeIntegration = async (name) => {
         if (confirm(`Sei sicuro di voler disinstallare l'integrazione '${name}'?`)) {
-            model.removeIntegration(name);
-            activeIntegrations.value = model.getActiveIntegrations();
+            try {
+                isInstalling.value = true;
+                await model.uninstallIntegration(name);
+                if (window.showToast) {
+                    window.showToast(`Integrazione '${name}' disinstallata con successo.`, 'success');
+                }
+                await loadActiveIntegrations();
+            } catch (e) {
+                if (window.showToast) {
+                    window.showToast(`Errore disinstallazione: ${e.message}`, 'error');
+                } else {
+                    alert(`Errore: ${e.message}`);
+                }
+            } finally {
+                isInstalling.value = false;
+            }
         }
     };
 
-    const installRegistryItem = (item) => {
-        const exists = activeIntegrations.value.some(i => i.name === item.name);
-        if (exists) {
-            alert(`L'integrazione '${item.name}' è già installata ed attiva!`);
-            return;
-        }
-        alert(`Avvio procedura guidata per '${item.name}'...\n(Apri il terminale per completare la configurazione e le credenziali)`);
+    const triggerInstall = (item) => {
+        installingItem.value = item;
+        customCommand.value = "npx";
+        const slug = item.slug || item.name.toLowerCase().replace(/\s+/g, '-');
+        customArgs.value = `-y ${slug}`;
         
-        model.installIntegration(item);
-        activeIntegrations.value = model.getActiveIntegrations();
+        envInputs.value = {};
+        const schema = item.environmentVariablesJsonSchema || {};
+        const props = schema.properties || {};
+        for (const k in props) {
+            envInputs.value[k] = '';
+        }
     };
+
+    const cancelInstall = () => {
+        installingItem.value = null;
+        envInputs.value = {};
+    };
+
+    const confirmInstall = async () => {
+        if (!installingItem.value) return;
+        
+        const item = installingItem.value;
+        const name = item.slug || item.name.toLowerCase().replace(/\s+/g, '-');
+        
+        const schema = item.environmentVariablesJsonSchema || {};
+        const required = schema.required || [];
+        for (const k of required) {
+            if (!envInputs.value[k] || !envInputs.value[k].trim()) {
+                if (window.showToast) {
+                    window.showToast(`La variabile d'ambiente '${k}' è obbligatoria!`, 'error');
+                } else {
+                    alert(`La variabile '${k}' è obbligatoria.`);
+                }
+                return;
+            }
+        }
+        
+        try {
+            isInstalling.value = true;
+            const args = customArgs.value.trim().split(/\s+/).filter(Boolean);
+            
+            await model.installIntegration(
+                name,
+                customCommand.value.trim(),
+                args,
+                envInputs.value
+            );
+            
+            if (window.showToast) {
+                window.showToast(`Integrazione '${name}' installata con successo!`, 'success');
+            }
+            
+            installingItem.value = null;
+            envInputs.value = {};
+            await loadActiveIntegrations();
+        } catch (e) {
+            if (window.showToast) {
+                window.showToast(`Errore installazione: ${e.message}`, 'error');
+            } else {
+                alert(`Errore: ${e.message}`);
+            }
+        } finally {
+            isInstalling.value = false;
+        }
+    };
+
+    onMounted(() => {
+        loadActiveIntegrations();
+        performSearch('');
+    });
 
     return {
         activeIntegrations,
         registrySearch,
-        getFilteredRegistry,
+        searchResults,
+        isSearching,
+        isInstalling,
+        installingItem,
+        envInputs,
+        customCommand,
+        customArgs,
+        performSearch,
         removeIntegration,
-        installRegistryItem
+        triggerInstall,
+        cancelInstall,
+        confirmInstall
     };
 }
