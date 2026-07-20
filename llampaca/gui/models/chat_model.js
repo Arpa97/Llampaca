@@ -29,14 +29,22 @@ export class ChatModel {
         return await r.json();
     }
 
-    async addMessage(convId, role, content) {
+    async addMessage(convId, role, content, signal) {
         const response = await fetch(`/api/conversations/${convId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ role, content })
+            body: JSON.stringify({ role, content }),
+            signal   // AbortSignal: lets the caller stop reading the stream
         });
         if (!response.ok) throw new Error(await response.text());
         return response.body; // Returns readable stream for SSE parsing
+    }
+
+    // Ask the backend to cancel the in-flight generation (the Stop button).
+    async cancel() {
+        const r = await fetch('/api/cancel', { method: 'POST' });
+        if (!r.ok) throw new Error(await r.text());
+        return await r.json();
     }
 
     // Upload a file to be staged for the conversation's next message.

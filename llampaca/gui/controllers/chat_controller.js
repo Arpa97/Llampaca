@@ -17,6 +17,11 @@ export function useChatController() {
     // (the backend merges them into that turn) and on conversation switch.
     const attachments = ref([]);
     const isDragging = ref(false);
+    // True while a response is streaming: drives the Stop button and blocks a
+    // second concurrent send. `abortController` lets Stop abort the fetch so
+    // the UI frees immediately, in addition to telling the backend to cancel.
+    const isStreaming = ref(false);
+    let abortController = null;
     // The conversation the staged files belong to. Used to clear the chips
     // when the user navigates to a DIFFERENT conversation, without clobbering
     // chips that were just added to a conversation created on the fly by the
@@ -79,6 +84,9 @@ export function useChatController() {
     };
 
     const sendMessage = async () => {
+        // Ignore a send while a response is still streaming (the button is a
+        // Stop button then anyway).
+        if (isStreaming.value) return;
         // Allow sending with only attachments (e.g. "riassumi" typed later),
         // but never a completely empty turn.
         if (!userInput.value.trim() && !attachments.value.length) return;
@@ -136,9 +144,13 @@ export function useChatController() {
             timestamp: ''
         }) - 1;
 
+        // Mark streaming and arm the abort controller for the Stop button.
+        isStreaming.value = true;
+        abortController = new AbortController();
+
         try {
             // Initiate send to backend API
-            const stream = await model.addMessage(convId, 'user', promptText);
+            const stream = await model.addMessage(convId, 'user', promptText, abortController.signal);
             const reader = stream.getReader();
             const decoder = new TextDecoder("utf-8");
             let buffer = "";
@@ -190,6 +202,10 @@ export function useChatController() {
                                 activeMessages.value[assistantIndex].thought = '';
                                 activeMessages.value[assistantIndex].content += `\n❌ **[Errore di sistema, vedi console]**`;
                                 scrollToBottom();
+                            } else if (kind === "cancelled") {
+                                // Backend confirmed the stop: keep whatever was
+                                // streamed, drop the "thinking" line, mark it.
+                                markStopped(assistantIndex);
                             } else if (kind === "done") {
                                 activeMessages.value[assistantIndex].thought = '';
                                 activeMessages.value[assistantIndex].timestamp = new Date().toTimeString().split(' ')[0];
@@ -203,9 +219,43 @@ export function useChatController() {
                 }
             }
         } catch (err) {
-            activeMessages.value[assistantIndex].content = `Errore di connessione: ${err.message}`;
-            activeMessages.value[assistantIndex].timestamp = 'Errore';
+            // AbortError = the user pressed Stop; not a real failure. Keep the
+            // partial answer and mark it stopped instead of showing an error.
+            if (err && err.name === 'AbortError') {
+                markStopped(assistantIndex);
+            } else {
+                activeMessages.value[assistantIndex].content = `Errore di connessione: ${err.message}`;
+                activeMessages.value[assistantIndex].timestamp = 'Errore';
+            }
+        } finally {
+            isStreaming.value = false;
+            abortController = null;
         }
+    };
+
+    // Finalize a stopped assistant bubble: drop the "thinking" line, keep any
+    // partial text (or a marker if none), stamp the time. Idempotent, so it is
+    // safe whether the stop arrives via AbortError or the "cancelled" event.
+    const markStopped = (assistantIndex) => {
+        const msg = activeMessages.value[assistantIndex];
+        if (!msg) return;
+        msg.thought = '';
+        if (!msg.content) msg.content = '_(generazione interrotta)_';
+        if (!msg.timestamp) msg.timestamp = new Date().toTimeString().split(' ')[0];
+    };
+
+    // Stop button: tell the backend to cancel (stops the model), abort the
+    // fetch so the UI frees immediately, and clear any pending tool prompt.
+    const stopGeneration = async () => {
+        if (!isStreaming.value) return;
+        try {
+            await model.cancel();
+        } catch (e) {
+            console.error("Errore durante l'annullamento:", e);
+        }
+        if (abortController) abortController.abort();
+        pendingConfirmation.value = null;
+        isStreaming.value = false;
     };
 
     const startNewConversation = async () => {
@@ -332,8 +382,10 @@ export function useChatController() {
         pendingConfirmation,
         attachments,
         isDragging,
+        isStreaming,
         getActiveMessages: activeMessages,
         sendMessage,
+        stopGeneration,
         startNewConversation,
         deleteConversation,
         resolveConfirmation,

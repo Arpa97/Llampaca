@@ -433,6 +433,21 @@ class AgentManager:
             conversation_id=conv_id,
         )
 
+    def cancel_current(self) -> bool:
+        """Cancel the message currently being processed, if any.
+
+        Thread-safe: called from an HTTP handler thread (the /api/cancel
+        request), it hops onto the event loop to cancel the task. The
+        coroutine's `finally` still puts ("close", None) on its result queue,
+        so the streaming request unblocks and ends cleanly instead of hanging
+        — cancelling never crashes the server or the session.
+        """
+        task = self.current_task
+        if task is not None and not task.done():
+            self.loop.call_soon_threadsafe(task.cancel)
+            return True
+        return False
+
     def process_message(self, conv_id, content, user_msg_id, conv_data, config, result_queue):
         if self.request_queue:
             asyncio.run_coroutine_threadsafe(
@@ -547,7 +562,17 @@ class AgentManager:
                         print(f"Error auto-titling: {e}")
             else:
                 result_queue.put(("done", {}))
-                
+
+        except asyncio.CancelledError:
+            # User pressed Stop (/api/cancel cancelled this task). Tell the
+            # client, then RE-RAISE so cancellation propagates correctly (the
+            # _main_task awaiting this task expects it). The `finally` below
+            # still closes the SSE queue. Partial output is intentionally not
+            # persisted: a cancelled turn leaves the user message but no saved
+            # answer, which is the expected "aborted" outcome.
+            print("[Agent Session] Cancelled by user.", flush=True)
+            result_queue.put(("event", "cancelled", {}))
+            raise
         except Exception as e:
             traceback.print_exc()
             result_queue.put(("error", str(e)))
@@ -589,6 +614,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.path = self.path.split('?')[0]
         if self.path.startswith('/api/confirm'):
             self.handle_post_confirm()
+        elif self.path.startswith('/api/cancel'):
+            self.handle_post_cancel()
         elif self.path.startswith('/api/conversations'):
             self.handle_post_conversations()
         elif self.path.startswith('/api/settings'):
@@ -616,6 +643,18 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_delete_wiki()
         else:
             self.send_error(404, "Not Found")
+
+    def handle_post_cancel(self):
+        """POST /api/cancel — stop the in-flight generation, if any. Runs on a
+        separate handler thread from the blocked streaming request (the HTTP
+        server is threaded), so it can interrupt it mid-stream."""
+        try:
+            cancelled = agent_manager.cancel_current()
+            self._send_json({"cancelled": cancelled})
+        except Exception as e:
+            print("!!! [API POST CANCEL ERROR]", flush=True)
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
 
     def handle_post_confirm(self):
         try:
@@ -842,6 +881,9 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     elif kind == "error":
                         self.emit_sse("error", data)
                         print(f"\n  [error] {data}", flush=True)
+                    elif kind == "cancelled":
+                        self.emit_sse("cancelled", data)
+                        print("\n  [cancelled] generation stopped by user", flush=True)
                 elif msg_type == "done":
                     self.emit_sse("done", args[0])
                 elif msg_type == "error":

@@ -72,9 +72,12 @@ export default {
                             <button class="attachment-btn" title="Allega un file" @click="openFilePicker">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                             </button>
-                            <input class="chat-input-field" v-model="userInput" @keyup.enter="sendMessage" placeholder="Digita una domanda o chiedi un'azione mail/tool..." />
-                            <button class="send-btn" @click="sendMessage">
+                            <input class="chat-input-field" v-model="userInput" @keyup.enter="sendMessage" :disabled="isStreaming" placeholder="Digita una domanda o chiedi un'azione mail/tool..." />
+                            <button v-if="!isStreaming" class="send-btn" @click="sendMessage" title="Invia">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            </button>
+                            <button v-else class="send-btn stop-btn" @click="stopGeneration" title="Interrompi la generazione">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
                             </button>
                         </div>
                     </div>

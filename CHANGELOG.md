@@ -5,6 +5,33 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-20]
 
+### Added — GUI: stop an in-progress answer without crashing
+
+- **`llampaca/gui/server.py`**:
+  - `AgentManager.cancel_current()` cancels the in-flight `_process_message_coro`
+    task thread-safely (`loop.call_soon_threadsafe(task.cancel)`).
+  - `_process_message_coro` now handles `asyncio.CancelledError` explicitly:
+    it emits a `cancelled` event and re-raises; the existing `finally` still
+    puts `("close", None)` on the SSE queue, so the streaming HTTP handler
+    unblocks and ends cleanly instead of hanging. `emit_sse`/`end_sse` already
+    swallow write errors, so a client that has closed the connection can't
+    crash the handler. Partial output is not persisted (an aborted turn keeps
+    the user message but saves no answer).
+  - New `POST /api/cancel` endpoint (`handle_post_cancel`) — served on a
+    separate thread from the blocked streaming request, so it can interrupt
+    it mid-stream — plus the `cancelled` SSE relay.
+- **`llampaca/gui/models/chat_model.js`** — `addMessage` accepts an
+  `AbortSignal`; new `cancel()` posts to `/api/cancel`.
+- **`llampaca/gui/controllers/chat_controller.js`** — `isStreaming` state, an
+  `AbortController` per send, `stopGeneration()` (cancel backend + abort fetch
+  + clear any pending tool prompt), a guard against concurrent sends, and
+  graceful handling of `AbortError`/`cancelled` (keep partial text, mark the
+  bubble stopped, never show a connection error).
+- **`llampaca/gui/components/ChatView.js`**, **`index.html`** — the send button
+  turns into a red Stop button while a response streams (input disabled).
+  - *Why:* requested — a way to abort a running question without crashing the
+    server or the session.
+
 ### Fixed — GUI: a sent message with attachments now shows which files it carried
 
 - **`llampaca/gui/controllers/chat_controller.js`** — `sendMessage` captures the
