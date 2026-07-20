@@ -41,6 +41,9 @@ This project adheres to Semantic Versioning and complies with development loggin
 - **`tests/test_mcp_client.py`** — Added unit tests verifying `load_mcp_config`, `save_mcp_config`, integrations subcommands, repository changes, config overrides, default dangerous heuristics, result formatting, dynamic wrapping, and manager subprocess controls.
   - *Why:* Guarantees the robustness of the external MCP integration, unified config loading, and CLI commands, preventing regressions.
 
+- **`README.md`** — Documented Model Context Protocol (MCP) server integration, CLI `llampaca integrations` command suite, configuration path (`~/.llampaca/mcp_config.json`), and checked off MCP in the roadmap section.
+  - *Why:* Provides clear instructions for users on how to search, add, remove, and manage external MCP server tools in Llampaca.
+
 ## [2026-07-16]
 
 ### Added — Model Context Protocol (MCP) Server support for VSCode integration
