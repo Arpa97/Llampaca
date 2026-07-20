@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="it">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
+
     <style>
         :root {
             /* Palette cromatica ufficiale */
@@ -17,13 +18,14 @@
             --pacific-blue: #4da1a9;
             --dusk-blue: #2e5077;
             --crimson-violet: #611c35;
-            
+
             --bg-sidebar: #f6f8fa;
             --bg-content: #ffffff;
             --border-color: #e1e4e8;
             --text-main: #24292e;
             --text-muted: #586069;
-            
+            --bg-color: #ffffff;
+
             --sidebar-width: 250px;
             --font-stack: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
@@ -101,7 +103,8 @@
         }
 
         .nav-item:hover {
-            background-color: rgba(255, 166, 48, 0.08); /* light amber-glow */
+            background-color: rgba(255, 166, 48, 0.08);
+            /* light amber-glow */
         }
 
         .nav-item.active {
@@ -231,7 +234,8 @@
         .chat-container {
             display: flex;
             width: 100%;
-            height: calc(100vh - 65px); /* Remaining space below header */
+            height: calc(100vh - 65px);
+            /* Remaining space below header */
             overflow: hidden;
         }
 
@@ -286,7 +290,7 @@
             background-color: white;
             border-color: var(--amber-glow);
             border-left: 4px solid var(--amber-glow);
-            box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
         }
 
         .conversation-title {
@@ -312,7 +316,7 @@
         }
 
         .conversation-delete:hover {
-            background-color: rgba(0,0,0,0.05);
+            background-color: rgba(0, 0, 0, 0.05);
             color: var(--crimson-violet);
         }
 
@@ -355,29 +359,34 @@
             border-radius: 16px;
             line-height: 1.5;
             font-size: 13.5px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
             word-break: break-word;
         }
 
         .message-bubble.markdown-body p {
             margin: 0 0 10px 0;
         }
+
         .message-bubble.markdown-body p:last-child {
             margin-bottom: 0;
         }
-        .message-bubble.markdown-body ul, 
+
+        .message-bubble.markdown-body ul,
         .message-bubble.markdown-body ol {
             margin: 0 0 10px 0;
             padding-left: 20px;
         }
+
         .message-bubble.markdown-body li {
             margin-bottom: 4px;
         }
+
         .message-bubble.markdown-body strong {
             font-weight: 600;
         }
+
         .message-bubble.markdown-body code {
-            background-color: rgba(0,0,0,0.05);
+            background-color: rgba(0, 0, 0, 0.05);
             padding: 2px 4px;
             border-radius: 4px;
             font-family: monospace;
@@ -419,7 +428,7 @@
             max-width: 90%;
             align-self: flex-start;
         }
-        
+
         .confirmation-title {
             font-size: 13px;
             color: #d97706;
@@ -456,6 +465,7 @@
             color: #ef4444;
             border: 1px solid #fca5a5;
         }
+
         .btn-danger:hover {
             background-color: #fee2e2;
         }
@@ -494,7 +504,8 @@
             color: var(--text-main);
         }
 
-        .attachment-btn, .send-btn {
+        .attachment-btn,
+        .send-btn {
             border: none;
             background: transparent;
             cursor: pointer;
@@ -538,7 +549,7 @@
 
         .model-card:hover {
             border-color: var(--amber-glow);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
         }
 
         .model-card.active {
@@ -565,7 +576,7 @@
             background-color: var(--tea-green);
             color: #4b6a1d;
             font-weight: 600;
-            border: 1px solid rgba(0,0,0,0.05);
+            border: 1px solid rgba(0, 0, 0, 0.05);
         }
 
         .model-card-desc {
@@ -596,7 +607,7 @@
             border-radius: 12px;
             padding: 24px;
             margin-bottom: 25px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
         }
 
         .download-panel-title {
@@ -659,7 +670,7 @@
         }
 
         .mcp-item:hover {
-            box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
         }
 
         .mcp-details {
@@ -691,7 +702,7 @@
             background-color: rgba(215, 232, 186, 0.4);
             color: #4b6a1d;
             font-weight: 600;
-            border: 1px solid rgba(0,0,0,0.05);
+            border: 1px solid rgba(0, 0, 0, 0.05);
         }
 
         .registry-grid {
@@ -713,7 +724,7 @@
 
         .registry-card:hover {
             border-color: var(--amber-glow);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
         }
 
         .registry-card-header {
@@ -760,7 +771,7 @@
             display: flex;
             flex-direction: column;
             gap: 24px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
         }
 
         .form-group {
@@ -819,6 +830,7 @@
             color: var(--dusk-blue);
             font-size: 15px;
         }
+
         .spinner {
             width: 40px;
             height: 40px;
@@ -827,9 +839,15 @@
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
+
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         /* Toast Notification */
@@ -841,7 +859,7 @@
             color: white;
             padding: 12px 24px;
             border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             font-size: 13.5px;
             font-weight: 500;
             z-index: 2000;
@@ -851,17 +869,21 @@
             animation: slideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
             border-left: 4px solid var(--amber-glow);
         }
+
         .toast-notification.success {
             border-left: 4px solid var(--tea-green);
         }
+
         .toast-notification.error {
             border-left: 4px solid var(--crimson-violet);
         }
+
         @keyframes slideIn {
             from {
                 transform: translateY(20px);
                 opacity: 0;
             }
+
             to {
                 transform: translateY(0);
                 opacity: 1;
@@ -876,33 +898,40 @@
             border-radius: 4px;
             overflow: hidden;
         }
+
         .progress-bar-fill {
             height: 100%;
             background-color: var(--amber-glow);
             border-radius: 4px;
             transition: width 0.3s ease;
         }
+
         .model-badge.success {
             background-color: rgba(215, 232, 186, 0.4);
             color: #4b6a1d;
         }
+
         .model-badge.secondary {
             background-color: #f1f3f5;
             color: #495057;
         }
+
         .model-badge.warning {
             background-color: #fff3cd;
             color: #856404;
         }
+
         .model-badge.info {
             background-color: #e8f4fd;
             color: #0056b3;
         }
+
         select.download-input {
             outline: none;
             cursor: pointer;
-            box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
         }
+
         select.download-input:focus {
             border-color: var(--amber-glow);
             box-shadow: 0 0 0 2px rgba(242, 174, 46, 0.15);
@@ -923,6 +952,7 @@
             z-index: 1000;
             animation: fadeIn 0.2s ease-out;
         }
+
         .modal-container {
             background: var(--bg-color);
             border: 1px solid var(--border-color);
@@ -931,11 +961,12 @@
             max-width: 550px;
             max-height: 85vh;
             overflow-y: auto;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
             display: flex;
             flex-direction: column;
             animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
         }
+
         .modal-header {
             padding: 20px 24px;
             border-bottom: 1px solid var(--border-color);
@@ -943,15 +974,18 @@
             justify-content: space-between;
             align-items: center;
         }
+
         .modal-title {
             font-size: 16px;
             font-weight: 600;
             color: var(--text-color);
         }
+
         .modal-body {
             padding: 24px;
             overflow-y: auto;
         }
+
         .modal-footer {
             padding: 16px 24px;
             border-top: 1px solid var(--border-color);
@@ -960,16 +994,31 @@
             gap: 12px;
             background: var(--bg-hover);
         }
+
         @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
         }
+
         @keyframes scaleIn {
-            from { transform: scale(0.95); opacity: 0; }
-            to { transform: scale(1); opacity: 1; }
+            from {
+                transform: scale(0.95);
+                opacity: 0;
+            }
+
+            to {
+                transform: scale(1);
+                opacity: 1;
+            }
         }
     </style>
 </head>
+
 <body>
     <div id="app">
         <!-- Toast Notification -->
@@ -982,26 +1031,37 @@
                 <!-- Renders official logo in full width -->
                 <img class="brand-logo" src="logo.png" alt="Llampaca Official Logo">
             </div>
-            
+
             <nav class="nav-menu">
                 <a class="nav-item" :class="{ active: currentTab === 'chat' }" @click="currentTab = 'chat'">
-                    <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/></svg>
+                    <svg viewBox="0 0 24 24">
+                        <path
+                            d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z" />
+                    </svg>
                     Chat & Assistente
                 </a>
                 <a class="nav-item" :class="{ active: currentTab === 'models' }" @click="currentTab = 'models'">
-                    <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                    <svg viewBox="0 0 24 24">
+                        <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                    </svg>
                     Modelli GGUF
                 </a>
                 <a class="nav-item" :class="{ active: currentTab === 'mcp' }" @click="currentTab = 'mcp'">
-                    <svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/></svg>
+                    <svg viewBox="0 0 24 24">
+                        <path
+                            d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z" />
+                    </svg>
                     Integrazioni MCP
                 </a>
                 <a class="nav-item" :class="{ active: currentTab === 'settings' }" @click="currentTab = 'settings'">
-                    <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                    <svg viewBox="0 0 24 24">
+                        <path
+                            d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
                     Impostazioni
                 </a>
             </nav>
-            
+
             <div class="sidebar-footer">
                 <div class="status-dot"></div>
                 <span>Server locale attivo</span>
@@ -1024,4 +1084,5 @@
     <!-- Frontend logic app.js (loaded as ES6 module) -->
     <script type="module" src="app.js"></script>
 </body>
+
 </html>
