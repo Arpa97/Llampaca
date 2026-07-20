@@ -102,13 +102,28 @@ export function useChatController() {
 
         // The staged files are consumed by the backend the moment this
         // message is posted (it merges them into this user turn), so clear
-        // their chips now — they belong to the message we are about to send.
+        // their chips now — but first capture their names so the sent bubble
+        // shows WHAT was attached. Errored uploads never reached the backend,
+        // so they are excluded.
+        const attachedNames = attachments.value
+            .filter(a => a.status !== 'error')
+            .map(a => a.name);
         attachments.value = [];
 
-        // 1. Immediately append user message to UI
+        // 1. Immediately append user message to UI. Prepend a "📎 name" line
+        // per attachment so it is visible in the transcript that this turn
+        // carried files (and the model is answering on their basis). This
+        // matches how a reloaded conversation renders: the backend persists
+        // the full document blocks, which parseMarkdown collapses to the same
+        // "📎 name" chips.
+        let displayContent = promptText;
+        if (attachedNames.length) {
+            const chips = attachedNames.map(n => `📎 *${n}*`).join('\n');
+            displayContent = promptText ? `${chips}\n\n${promptText}` : chips;
+        }
         activeMessages.value.push({
             role: 'user',
-            content: promptText,
+            content: displayContent,
             timestamp: timeStr
         });
         scrollToBottom();

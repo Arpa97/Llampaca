@@ -5,6 +5,16 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-20]
 
+### Fixed — GUI: a sent message with attachments now shows which files it carried
+
+- **`llampaca/gui/controllers/chat_controller.js`** — `sendMessage` captures the
+  attached (non-errored) filenames before clearing the chips and prepends a
+  "📎 name" line per file to the optimistic user bubble. Before, the sent turn
+  showed only the typed text, so nothing in the transcript indicated the model
+  was answering on the basis of an attached document. This mirrors how a
+  reloaded conversation already renders (the backend persists the full
+  document blocks, which `parseMarkdown` collapses to the same "📎 name" chips).
+
 ### Added — GUI: "Profilo" tab (view/edit wiki pages) and `/remember` in the chat
 
 - **`llampaca/gui/server.py`** — wiki REST endpoints over the same
