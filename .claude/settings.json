@@ -70,7 +70,10 @@
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c \"import pypdf, docx; print\\('conda env OK: pypdf', pypdf.__version__\\)\")",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pytest tests/test_attachments.py -q)",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m unittest discover tests -v)",
-      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca run *)"
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca run *)",
+      "Bash(git fetch *)",
+      "Bash(git merge *)",
+      "Bash(git commit -m 'chore: add git fetch/merge permissions to settings *)"
     ]
   }
 }
