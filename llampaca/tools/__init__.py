@@ -4,12 +4,17 @@
 # Public API:
 #   - ToolRegistry / Tool: register Python functions as agent tools
 #   - build_default_registry(): registry pre-loaded with the built-in tools
-#     (filesystem, shell, web)
+#     (filesystem, shell, web, wiki)
 
 from llampaca.tools.registry import Tool, ToolRegistry
 from llampaca.tools.filesystem import register_filesystem_tools
 from llampaca.tools.shell import register_shell_tools
 from llampaca.tools.web import register_web_tools
+from llampaca.tools.wiki import register_wiki_tools
+# search_documents is exported but deliberately NOT part of
+# build_default_registry: it is registered dynamically, only for sessions
+# whose conversation has indexed attachments (see tools/documents.py).
+from llampaca.tools.documents import register_document_tools, make_query_embedder
 
 
 def build_default_registry(max_result_chars: int = None) -> ToolRegistry:
@@ -33,7 +38,17 @@ def build_default_registry(max_result_chars: int = None) -> ToolRegistry:
     register_filesystem_tools(registry)
     register_shell_tools(registry)
     register_web_tools(registry)
+    # The wiki (persistent cross-session memory) is always available:
+    # unlike search_documents it is global, not tied to one conversation.
+    register_wiki_tools(registry)
     return registry
 
 
-__all__ = ["Tool", "ToolRegistry", "build_default_registry"]
+__all__ = [
+    "Tool",
+    "ToolRegistry",
+    "build_default_registry",
+    "register_document_tools",
+    "make_query_embedder",
+    "register_wiki_tools",
+]

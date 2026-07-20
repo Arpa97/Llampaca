@@ -100,6 +100,23 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(convs[0]["id"], conv_id1)
         self.assertEqual(convs[1]["id"], conv_id2)
 
+    async def test_auto_title_uses_snippet_override(self):
+        """A merged first message (attachment + question) must be titled
+        from the user's question, not from the attachment framing."""
+        conv_id = await create_conversation(model_name="m", db_path=self.db_path)
+        merged = (
+            "[Attached file: tesi.pdf]\nlots of document text\n"
+            "[End of attached file: tesi.pdf]\n\nWhat is chapter 3 about?"
+        )
+        await add_message(
+            conv_id, "user", merged,
+            db_path=self.db_path, title_snippet="What is chapter 3 about?",
+        )
+        conv = await get_conversation(conv_id, db_path=self.db_path)
+        self.assertEqual(conv["title"], "What is chapter 3 about?")
+        # The stored message itself keeps the full merged content.
+        self.assertEqual(conv["messages"][0]["content"], merged)
+
     async def test_update_title(self):
         """Test manually updating the conversation title."""
         conv_id = await create_conversation(model_name="model", title="Old Title", db_path=self.db_path)

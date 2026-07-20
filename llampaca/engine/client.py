@@ -78,6 +78,33 @@ class LlamaClient:
         Yields:
             ("text", str) — a chunk of assistant text, as soon as it arrives
                 (so the UI can render it live);
+            ("reasoning", str) — a chunk of the model's *thinking* text.
+                Reasoning models (Qwen3/3.5, DeepSeek-R1, ...) generate a
+                hidden <think> block before answering and before every tool
+                call; llama-server (--jinja) extracts it into the separate
+                delta field "reasoning_content". Surfacing it matters for
+                perceived latency: the thinking phase is often the bulk of
+                the generated tokens, and without this event the user
+                stares at a silent terminal the whole time. Reasoning is
+                display-only: it is NOT part of the final "message" (it
+                must not be fed back into the history — chat templates
+                drop past reasoning, and re-sending it would break the
+                server's prompt-prefix cache);
+            ("tool_name", str) — a tool call was detected mid-stream: the
+                function name, emitted as soon as it is known. The name
+                arrives in the FIRST fragment of a call while its JSON
+                arguments can take many seconds more to stream — this early
+                signal lets the UI say "calling X..." immediately instead
+                of staying silent until the end of the stream;
+            ("stats", dict) — at most once, right before "message": the
+                server-measured performance counters for THIS request, taken
+                from llama-server's "timings" object on the final stream
+                chunk (a llama.cpp extension the OpenAI SDK carries as an
+                extra attribute). Keys of interest: "predicted_n" /
+                "predicted_ms" (generated tokens and time spent generating
+                them — their ratio is the true tokens/second) and
+                "prompt_n" / "prompt_ms" (prompt processing). Not emitted
+                when the server doesn't send timings (older builds);
             ("message", dict) — exactly once, at the end: the fully assembled
                 assistant message in OpenAI format, including "tool_calls" if
                 the model requested any. The caller appends this to the
@@ -113,13 +140,29 @@ class LlamaClient:
         content = ""
         # index -> partial tool call being reassembled from stream fragments
         pending_tool_calls: Dict[int, Dict[str, str]] = {}
+        # Server-side performance counters: llama-server attaches a
+        # "timings" object to the FINAL chunk of the stream (the one with
+        # finish_reason, whose delta is empty). Captured before the delta
+        # guards below, which would skip that chunk.
+        stats: Optional[dict] = None
 
         async for chunk in stream:
+            chunk_timings = getattr(chunk, "timings", None)
+            if chunk_timings:
+                stats = dict(chunk_timings)
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
             if delta is None:
                 continue
+
+            # Thinking text: forward for live (dimmed) rendering. Accessed
+            # with getattr because "reasoning_content" is a llama-server
+            # extension the OpenAI SDK's delta type doesn't declare — the
+            # SDK still carries it as an extra attribute when present.
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield ("reasoning", reasoning)
 
             # Plain assistant text: forward immediately for live rendering
             if delta.content:
@@ -136,6 +179,11 @@ class LlamaClient:
                         entry["id"] = fragment.id
                     if fragment.function:
                         if fragment.function.name:
+                            # First time this call's name shows up: announce
+                            # it right away (see "tool_name" in the
+                            # docstring), then keep accumulating arguments.
+                            if not entry["name"]:
+                                yield ("tool_name", fragment.function.name)
                             entry["name"] = fragment.function.name
                         if fragment.function.arguments:
                             # Arguments arrive as JSON text spread over chunks
@@ -158,7 +206,46 @@ class LlamaClient:
                 for index, entry in sorted(pending_tool_calls.items())
             ]
 
+        if stats is not None:
+            yield ("stats", stats)
         yield ("message", message)
+
+    async def embed(
+        self,
+        texts: List[str],
+        model: str = "local-embedder",
+        batch_size: int = 32,
+    ) -> List[List[float]]:
+        """
+        Embed a list of texts against a llama-server started with
+        --embedding, via the OpenAI-compatible /v1/embeddings endpoint.
+
+        Returns one vector per input text, in the same order as the input.
+
+        Notes:
+            - Batching: requests are sent in slices of batch_size texts.
+              One text = one chunk (~500 tokens), so a batch stays well
+              within the embedding server's context; slicing keeps any
+              single HTTP request from carrying hundreds of chunks when a
+              large document is indexed.
+            - Order: the API tags each result with an "index" relative to
+              its request; results are re-sorted by it defensively, then
+              offset by the slice position, so the output order is
+              guaranteed even if the server were to reply out of order.
+            - Prefixes: query/document instruction prefixes are NOT applied
+              here — the caller owns them (they are model-specific and
+              asymmetric; see the embedding preset in config.py).
+        """
+        vectors: List[List[float]] = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            response = await self.client.embeddings.create(
+                model=model,
+                input=batch,
+            )
+            ordered = sorted(response.data, key=lambda item: item.index)
+            vectors.extend([item.embedding for item in ordered])
+        return vectors
 
     async def get_models(self) -> List[str]:
         """

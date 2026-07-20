@@ -5,12 +5,32 @@ description: How to build, launch and drive Llampaca end-to-end to verify change
 
 # Verifying Llampaca
 
+## The two Python environments (IMPORTANT)
+
+The user's real `llampaca` command runs from a **conda env**:
+`/Users/umbertodilaudo/miniconda3/envs/llampaca` (Python 3.11, editable
+install pointing at this repo). System `python3` also has the deps and can
+run `python3 -m llampaca` from the repo root.
+
+Because both are editable/repo-based, **code changes are picked up by both
+automatically** — but **dependencies diverge**. This has already caused a
+real incident: a new dep installed only into system python3 made the
+feature pass verification while crashing the user's real sessions.
+
+Rules:
+- **New dependency? Install it in BOTH environments:**
+  `/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -m pip install <pkg>`
+  and `python3 -m pip install <pkg>`.
+- **End-to-end verification: prefer the conda binary**
+  (`/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca`) — it is
+  what the user actually runs.
+- The conda env has no pytest: run tests there with
+  `.../envs/llampaca/bin/python -m unittest discover tests`.
+
 ## Prerequisites (already satisfied on this machine)
 
 - Binaries in `~/.llampaca/bin/llama-server` (installed via `llampaca init`)
 - A model in `~/.llampaca/models/` (e.g. `Qwen3.5-4B-Q8_0.gguf`)
-- Python deps importable via system `python3` (no project .venv exists;
-  running `python3 -m llampaca` from the repo root picks up the local package)
 
 ## Drive the interactive agent session
 
@@ -18,15 +38,30 @@ description: How to build, launch and drive Llampaca end-to-end to verify change
 session can be scripted by piping lines: user messages, `y`/`n` answers to
 tool confirmations, and `/exit` to quit cleanly (which shuts the server down).
 
+If conversation history exists (`llampaca history list` to check), a
+session-selection menu appears first — the initial piped line must then be
+`1` (start a new conversation).
+
 ```bash
-# Happy path: trigger a read_file tool call
-printf 'Read the file pyproject.toml and summarize it\n/exit\n' | python3 -m llampaca run 2>&1 | tail -30
+LLAMPACA=/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca
+
+# Happy path: trigger a read_file tool call ("1" answers the session menu)
+printf '1\nRead the file pyproject.toml and summarize it\n/exit\n' | $LLAMPACA run 2>&1 | tail -30
 
 # Confirmation flow: the 'n' (or 'y') line answers the click.confirm prompt
-printf 'Create a file called x.txt with hello\nn\n/exit\n' | python3 -m llampaca run 2>&1 | tail -20
+printf '1\nCreate a file called x.txt with hello\nn\n/exit\n' | $LLAMPACA run 2>&1 | tail -20
 
 # Plain chat mode
-printf 'Say hello\n/exit\n' | python3 -m llampaca run --no-tools 2>&1 | tail -10
+printf '1\nSay hello\n/exit\n' | $LLAMPACA run --no-tools 2>&1 | tail -10
+
+# Attachment flow (/attach stages a file; it is sent with the next message)
+printf '1\n/attach README.md\nWhat is the attached file about?\n/exit\n' | $LLAMPACA run 2>&1 | tail -15
+
+# RAG flow: a file over the attachment budget (~35% of --ctx) is INDEXED
+# instead of injected — a second llama-server (embedding) starts lazily
+# mid-session, then the model must call the search_documents tool.
+# Needs the embedding model: llampaca models download --preset qwen3-embedding-0.6b
+printf '1\n/attach /path/to/big-file.pdf\nAsk something specific about its content\n/exit\n' | $LLAMPACA run 2>&1 | tail -25
 ```
 
 Model load takes ~10s; give commands a generous timeout (300s is safe).
@@ -37,6 +72,15 @@ Model load takes ~10s; give commands a generous timeout (300s is safe).
 - `[result] ...` green lines = tool executed, one-line preview
 - Confirmation prompts appear for `write_file` and `run_shell_command`
 - Server logs: `~/.llampaca/logs/llama-server-<port>.log`
+- RAG flow, in order: `[indexing] file: ~N tokens — too large...` →
+  embedding server startup lines (port 8180) → `[indexed] file: N chunks,
+  N pages` → after the question, `[tool] search_documents({...})` with a
+  `[result] Top K passages ... [file, p.N | relevance 0.xx]` → TWO
+  "Shutting down llama-server..." lines at exit (chat + embedding).
+  Embedding server log: `~/.llampaca/logs/llama-server-embed-<port>.log`.
+  Resuming a conversation with indexed docs prints "Indexed documents
+  available for search: ..." at session open (embedding server starts
+  right away in that case — that is intended, not a bug).
 
 ## Gotchas
 
@@ -44,5 +88,6 @@ Model load takes ~10s; give commands a generous timeout (300s is safe).
   llama-server processes at startup — don't run two sessions in parallel
   expecting isolation.
 - Unit-level checks of the tool registry (schema generation, sandbox, error
-  paths) can be done via `python3 -c` from the repo root, but always finish
-  with a real `llampaca run` session.
+  paths) can be done via `python3 -c` (or the conda env's python) from the
+  repo root, but always finish with a real `llampaca run` session using the
+  conda binary.

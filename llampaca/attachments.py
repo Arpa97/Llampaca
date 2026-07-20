@@ -43,9 +43,11 @@ Design notes
 
 from pathlib import Path
 
-# Reuse the agent's chars-per-token heuristic so the budget math here and
-# the trimming math in the agent loop are based on the same estimate.
-from llampaca.agent.loop import CHARS_PER_TOKEN
+# Reuse the same chars-per-token heuristic as the agent loop so the budget
+# math here and the trimming math there are based on the same estimate.
+# (Imported from config, the dependency-free leaf module, not from
+# agent.loop — see the import-cycle note in rag.py.)
+from llampaca.config import CHARS_PER_TOKEN
 
 # Maximum share of the model's context window a single /attach may occupy.
 # Rationale for 0.35: the agent starts trimming history at the 0.80

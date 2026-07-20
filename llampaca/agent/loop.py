@@ -75,12 +75,13 @@ MIN_ACTIVE_WINDOW = 6
 CONTEXT_HIGH_WATERMARK = 0.80  # trim when the history exceeds this fraction
 CONTEXT_LOW_WATERMARK = 0.60   # ...and cut it down to this fraction
 
-# Rough tokens-per-character ratio used for budget estimates. Exact token
-# counts would require a round-trip to the server's /tokenize endpoint per
-# message; a chars/4 estimate is standard, cheap, and accurate enough for
-# watermark decisions (the 20% headroom above the high watermark absorbs
-# the estimation error).
-CHARS_PER_TOKEN = 4
+# Rough tokens-per-character ratio used for budget estimates (the 20%
+# headroom above the high watermark absorbs the estimation error). The
+# constant lives in config.py so that low-level modules (rag, attachments)
+# can share the same heuristic without importing this module — this
+# re-export keeps existing `from llampaca.agent.loop import CHARS_PER_TOKEN`
+# users working.
+from llampaca.config import CHARS_PER_TOKEN
 
 # Fixed per-message overhead, in tokens: every message costs a few extra
 # tokens for its role marker and the chat template's framing around it.
@@ -91,8 +92,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "on the user's machine. You can use the available tools to read and write "
     "files in the user's workspace, run shell commands, search the web, and "
     "fetch web pages. When the user asks about current events or facts that may "
-    "have changed since your training, use web_search to find up-to-date "
-    "information rather than answering from memory, and cite what you found. "
+    "have changed since your training, or anything you are unsure of or do "
+    "not know, use web_search rather than guessing, and cite what you found. "
     # Language models tokenize text, so they cannot reliably see individual
     # characters and are notoriously bad at counting them or at exact
     # arithmetic. The shell can do both perfectly, so we steer the model to
@@ -122,7 +123,7 @@ class Agent:
         confirm: Optional[Callable[[str], Any]] = None,
         model: str = "local-model",
         max_iterations: int = MAX_ITERATIONS,
-        context_size: int = 32768,
+        context_size: int = 8192,
         summary: Optional[str] = None,
     ):
         """
@@ -159,6 +160,16 @@ class Agent:
         # on the very first request, before any content is produced).
         self._tools_confirmed_working = False
 
+        # Turns removed by _trim_history() but not yet folded into the
+        # rolling summary. Summarization is DEFERRED on purpose: it is a
+        # full LLM generation (seconds on local hardware), so doing it
+        # inline before answering would both delay the answer and clobber
+        # llama-server's prompt cache right before the main request. The UI
+        # drains this buffer with summarize_pending() after the turn's
+        # answer has been rendered — typically while the user is typing.
+        self._pending_summary_turns: List[Dict[str, Any]] = []
+        self._pending_summary_last_id: Optional[int] = None
+
         # --- Detect the tool-calling mode (see module docstring) ---------
         # A template that never mentions tools cannot render the native
         # "tools" parameter: llama-server would silently drop the tool
@@ -180,16 +191,17 @@ class Agent:
         # free. Applied to custom prompts too, since the problem is the same.
         base_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         today = datetime.now().strftime("%A, %d %B %Y")
-        dated_prompt = f"{base_prompt} Today's date is {today}."
-
-        # In prompt-based mode the tool definitions live in the system prompt
-        if self.tools_enabled and not self.native_tools:
-            dated_prompt += "\n\n" + self._tool_instructions()
+        # The tool-free part of the system prompt, kept on the instance so
+        # the full prompt can be REBUILT whenever the tool set or the tool
+        # mode changes mid-session (refresh_tools, _switch_to_prompt_mode).
+        # Rebuilding from this base — instead of appending to messages[0] —
+        # keeps those operations idempotent: no duplicated tool sections.
+        self._base_system_prompt = f"{base_prompt} Today's date is {today}."
 
         # Full conversation history, in OpenAI messages format.
         # Kept on the instance so multiple send() calls form one conversation.
         self.messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": dated_prompt}
+            {"role": "system", "content": self._system_prompt_content()}
         ]
 
     async def send(
@@ -203,26 +215,42 @@ class Agent:
 
         Events yielded (as (kind, data) tuples):
             ("text", str)             — chunk of assistant text, render as it arrives
-            ("tool_call", dict)       — the model requested a tool:
+            ("reasoning", str)        — chunk of the model's thinking text
+                                         (reasoning models only). Display-only:
+                                         never stored in the history or the DB
+            ("tool_start", dict)      — a tool call is being generated:
+                                         {"name": ...}. Emitted as soon as the
+                                         tool's name is known, while its
+                                         arguments are still streaming — lets
+                                         the UI announce the call immediately
+            ("tool_call", dict)       — the model requested a tool (arguments
+                                         complete, about to execute):
                                          {"name": ..., "arguments": <json str>}
             ("tool_result", dict)     — a tool finished:
                                          {"name": ..., "result": <str>}
+            ("stats", dict)           — llama-server's timings for one model
+                                         request (see client docstring). A turn
+                                         with tool round-trips emits one per
+                                         request; the UI aggregates them to
+                                         show turn-level tokens/second
             ("warning", str)          — non-fatal problem (e.g. tool mode switched,
                                          iteration cap reached)
             ("error", str)            — the model/server failed this turn; the
                                          session stays alive so the user can retry
-            ("summary_updated", dict) — the conversation summary was updated:
-                                         {"summary": <str>, "last_summarized_message_id": <int>}
+
+        Note: trimming old history queues the removed turns for deferred
+        summarization — the caller flushes them AFTER the turn with
+        summarize_pending() (see that method for the rationale).
         """
         self.messages.append({"role": "user", "content": user_input, "id": message_id})
 
         for _ in range(self.max_iterations):
             # Keep the history inside the context budget before *every*
             # request, not just once per user message: tool results appended
-            # mid-turn can overflow the window too.
-            dropped, new_summary, last_id = await self._trim_history()
-            if dropped > 0 and new_summary is not None:
-                yield ("summary_updated", {"summary": new_summary, "last_summarized_message_id": last_id})
+            # mid-turn can overflow the window too. Trimming is cheap and
+            # synchronous; the summary of what was dropped is generated
+            # later, off this turn's critical path (summarize_pending).
+            self._trim_history()
 
             prompt_mode = self.tools_enabled and not self.native_tools
             tools = (
@@ -275,6 +303,27 @@ class Agent:
                                 buffer = ""
                         else:
                             yield ("text", data)
+                    elif kind == "reasoning":
+                        # Thinking streams through untouched (never buffered:
+                        # the prompt-mode JSON buffering only concerns the
+                        # answer text, a tool call never hides in reasoning).
+                        # It also counts as produced output for the
+                        # tool-rejection heuristic below: a template that
+                        # rejects the tools parameter fails before generating
+                        # anything, so once thinking has streamed, a later
+                        # error is a runtime failure, not a rejection.
+                        produced_text = True
+                        yield ("reasoning", data)
+                    elif kind == "tool_name":
+                        # Early announcement: the call's arguments are still
+                        # streaming (often for seconds), but the UI can
+                        # already show which tool is being prepared.
+                        yield ("tool_start", {"name": data})
+                    elif kind == "stats":
+                        # Per-request server timings, forwarded as-is: the
+                        # UI owns the aggregation across a turn's multiple
+                        # requests (tool round-trips).
+                        yield ("stats", data)
                     elif kind == "message":
                         assistant_message = data
                 # A request that included native tools and completed without
@@ -411,7 +460,7 @@ class Agent:
         """
         return self._estimate_tokens(), self.context_size
 
-    async def _trim_history(self) -> Tuple[int, Optional[str], Optional[int]]:
+    def _trim_history(self) -> int:
         """
         Drop the oldest conversation turns when the history approaches the
         context limit, so llama-server never truncates the prompt itself
@@ -426,17 +475,22 @@ class Agent:
         Never dropped: the system prompt (messages[0]), the most recent messages
         guaranteed by MIN_ACTIVE_WINDOW, and the current input.
 
+        The removed chat turns are QUEUED for summarization, not summarized
+        here: this method runs on the turn's critical path (right before the
+        main request), while summarization is a whole LLM generation — see
+        summarize_pending() for how and when the queue is drained.
+
         Returns:
-            Tuple of (dropped_count, new_summary, last_summarized_id)
+            The number of messages dropped (0 when under the watermark).
         """
         high_budget = int(self.context_size * CONTEXT_HIGH_WATERMARK)
         if self._estimate_tokens() <= high_budget:
-            return 0, None, None
+            return 0
 
         low_budget = int(self.context_size * CONTEXT_LOW_WATERMARK)
         dropped = 0
         removed_messages = []
-        
+
         # messages[0] is system prompt; the last MIN_ACTIVE_WINDOW messages are untouchable
         # to ensure recent conversation context remains intact.
         while len(self.messages) > (1 + MIN_ACTIVE_WINDOW) and self._estimate_tokens() > low_budget:
@@ -455,60 +509,105 @@ class Agent:
                     orphaned = self.messages.pop(1)
                     removed_messages.append(orphaned)
                     dropped += 1
-                    
+
         if not removed_messages:
-            return 0, None, None
+            return 0
 
-        # Find the last message with a database ID in the removed chunk
-        last_id = None
+        # Track the last database ID in the removed chunk: it becomes the
+        # conversation's last_summarized_message_id once the summary that
+        # covers these turns is persisted.
         for msg in removed_messages:
-            if "id" in msg and msg["id"] is not None:
-                last_id = msg["id"]
+            if msg.get("id") is not None:
+                self._pending_summary_last_id = msg["id"]
 
-        # Generate the new summary by calling the LLM
-        new_summary = None
-        chat_turns = [m for m in removed_messages if m["role"] in ("user", "assistant")]
-        if chat_turns:
-            summary_instructions = (
-                "Sei un assistente specializzato nel riassumere conversazioni. "
-                "Aggiorna la sinossi precedente includendo le informazioni rilevanti contenute "
-                "nei nuovi messaggi di seguito. Mantieni la sinossi concisa ed evidenzia accordi, "
-                "fatti chiave o modifiche. Rispondi SOLO con la sinossi aggiornata."
-            )
-            
-            prompt_msgs = [
-                {"role": "system", "content": summary_instructions}
-            ]
-            if self.summary:
-                prompt_msgs.append({
-                    "role": "user",
-                    "content": f"Sinossi precedente:\n{self.summary}"
-                })
-            
-            transcript_lines = []
-            for msg in chat_turns:
-                transcript_lines.append(f"{msg['role'].upper()}: {msg['content']}")
-            transcript = "\n".join(transcript_lines)
-            
+        # Only user/assistant turns carry conversational content worth
+        # summarizing; tool results are transient plumbing.
+        self._pending_summary_turns.extend(
+            m for m in removed_messages if m["role"] in ("user", "assistant")
+        )
+        return dropped
+
+    @property
+    def has_pending_summary(self) -> bool:
+        """Whether trimmed turns are waiting to be folded into the summary."""
+        return bool(self._pending_summary_turns)
+
+    async def summarize_pending(self) -> Optional[Dict[str, Any]]:
+        """
+        Fold the turns queued by _trim_history() into the rolling summary
+        with one non-streaming LLM call.
+
+        Deliberately NOT called from send(): a summary is a full generation
+        (seconds on local hardware) against the same single-slot
+        llama-server, so doing it before the turn's main request would both
+        delay the user's answer and replace the server's cached prompt
+        prefix with the summary prompt — forcing the main request to
+        re-process the whole history. Instead the UI schedules this call
+        AFTER the answer has been rendered, typically while the user is
+        typing and the server sits idle. (llama-server serializes requests,
+        so even a flush still in flight when the next turn starts costs
+        nothing extra over having run it inline.)
+
+        Returns:
+            {"summary": str, "last_summarized_message_id": int | None} when
+            a new summary was generated and should be persisted, else None.
+            On a model/server failure the pending turns are kept queued, so
+            the next call retries instead of silently losing them (the
+            messages themselves are always safe in the database anyway).
+        """
+        turns = self._pending_summary_turns
+        last_id = self._pending_summary_last_id
+        if not turns:
+            return None
+        self._pending_summary_turns = []
+        self._pending_summary_last_id = None
+
+        summary_instructions = (
+            "Sei un assistente specializzato nel riassumere conversazioni. "
+            "Aggiorna la sinossi precedente includendo le informazioni rilevanti contenute "
+            "nei nuovi messaggi di seguito. Mantieni la sinossi concisa ed evidenzia accordi, "
+            "fatti chiave o modifiche. Rispondi SOLO con la sinossi aggiornata."
+        )
+
+        prompt_msgs = [
+            {"role": "system", "content": summary_instructions}
+        ]
+        if self.summary:
             prompt_msgs.append({
                 "role": "user",
-                "content": f"Nuovi messaggi da integrare:\n{transcript}"
+                "content": f"Sinossi precedente:\n{self.summary}"
             })
-            
-            try:
-                # Use LlamaClient's OpenAI client under the hood for a non-streaming call
-                response = await self.client.client.chat.completions.create(
-                    model=self.model,
-                    messages=prompt_msgs,
-                    stream=False,
-                )
-                new_summary = response.choices[0].message.content.strip()
-                self.summary = new_summary
-            except Exception:
-                # Fallback to current summary in case of model error
-                new_summary = self.summary
 
-        return dropped, new_summary, last_id
+        transcript_lines = []
+        for msg in turns:
+            # content can be None on assistant messages that only carried
+            # tool calls; render those as empty rather than "None".
+            transcript_lines.append(f"{msg['role'].upper()}: {msg.get('content') or ''}")
+        transcript = "\n".join(transcript_lines)
+
+        prompt_msgs.append({
+            "role": "user",
+            "content": f"Nuovi messaggi da integrare:\n{transcript}"
+        })
+
+        try:
+            # Use LlamaClient's OpenAI client under the hood for a non-streaming call
+            response = await self.client.client.chat.completions.create(
+                model=self.model,
+                messages=prompt_msgs,
+                stream=False,
+            )
+            new_summary = response.choices[0].message.content.strip()
+        except Exception:
+            # Re-queue in front of anything trimmed in the meantime, so a
+            # later flush covers these turns too (order preserved).
+            self._pending_summary_turns = turns + self._pending_summary_turns
+            if self._pending_summary_last_id is None:
+                self._pending_summary_last_id = last_id
+            return None
+
+        self.summary = new_summary
+        return {"summary": new_summary, "last_summarized_message_id": last_id}
 
     # ------------------------------------------------------------------
     # Prompt-based tool mode helpers
@@ -532,13 +631,51 @@ class Agent:
             "results: if you need one, emit the JSON and wait."
         )
 
+    def _system_prompt_content(self) -> str:
+        """
+        The full system prompt for the CURRENT tool mode and tool set:
+        the dated base prompt plus, in prompt-based mode only, the tool
+        instructions (in native mode the tools travel as a request
+        parameter instead). Single source of truth for messages[0] —
+        __init__, refresh_tools() and _switch_to_prompt_mode() all build
+        it from here, so mode/tool changes can never stack duplicates.
+        """
+        content = self._base_system_prompt
+        if self.tools_enabled and not self.native_tools:
+            content += "\n\n" + self._tool_instructions()
+        return content
+
+    def refresh_tools(self) -> None:
+        """
+        Re-sync the agent after the tool registry changed mid-session —
+        e.g. search_documents activated by the first indexed attachment.
+
+        Native mode needs nothing: definitions() is read from the registry
+        on every request, so the next call already carries the new set.
+        Prompt-based mode keeps the definitions inside messages[0], which
+        is rebuilt here.
+
+        Either way, changing the tool set changes the rendered prompt
+        prefix, so the next request pays one full prompt re-processing
+        (llama-server's prefix cache misses). That is a per-change cost by
+        design — callers should change the registry when something real
+        happens (a document was indexed), not speculatively.
+        """
+        self.tools_enabled = (
+            self.registry is not None and len(self.registry.names()) > 0
+        )
+        if not self.native_tools:
+            self.messages[0]["content"] = self._system_prompt_content()
+
     def _switch_to_prompt_mode(self) -> None:
         """
         Runtime fallback: native tools turned out to be unsupported, so
-        inject the tool instructions into the system prompt and flip the mode.
+        flip the mode and rebuild the system prompt with the tool
+        instructions included (rebuild, not append: see
+        _system_prompt_content on idempotence).
         """
         self.native_tools = False
-        self.messages[0]["content"] += "\n\n" + self._tool_instructions()
+        self.messages[0]["content"] = self._system_prompt_content()
 
     def _extract_tool_call(self, text: str) -> Optional[Tuple[str, str]]:
         """

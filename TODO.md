@@ -24,6 +24,8 @@ Unica nota a margine: ho notato che il binario è passato da 9948 a b10001 — p
 
 /tool per gestirli
 
+tool per ricerca web nei primi tot siti
+
 ### embedding
 caricare pdf ecc.
 modelli multimodali

@@ -29,9 +29,15 @@ class TestMcpServer(unittest.TestCase):
         for name in registry_tools:
             self.assertIn(name, mcp_tools)
             
-            # Check that the mapped function is the same as the registry function
+            # Check that the mapped function is the same registry function.
+            # Two independently built registries produce DISTINCT function
+            # objects for closure-based tools (e.g. the wiki tools created
+            # inside register_wiki_tools), so identity comparison is wrong
+            # here: compare by qualified name instead — what matters is that
+            # the same tool implementation is mapped, not that both
+            # registries happen to share one function instance.
             tool = default_registry.get(name)
-            self.assertEqual(mcp_tools[name].fn, tool.func)
+            self.assertEqual(mcp_tools[name].fn.__qualname__, tool.func.__qualname__)
 
 if __name__ == "__main__":
     unittest.main()
