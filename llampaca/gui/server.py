@@ -22,8 +22,12 @@ from llampaca.engine.db import (
 from llampaca.config import load_config
 
 def run_async(coro):
-    """Run an async coroutine synchronously inside the request thread."""
-    return asyncio.run(coro)
+    """Run an async coroutine thread-safely inside the AgentManager's event loop if running."""
+    if agent_manager and agent_manager.loop and agent_manager.loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(coro, agent_manager.loop)
+        return future.result()
+    else:
+        return asyncio.run(coro)
 
 def is_server_running(host="127.0.0.1", port=8080):
     """Quickly check if the llama-server is listening on the configured port."""
@@ -63,6 +67,17 @@ class AgentManager:
                 req = await self.request_queue.get()
                 if req is None: # Shutdown signal
                     break
+                
+                # Check for special server restart request
+                if isinstance(req, tuple) and len(req) == 3 and req[0] == "restart_server":
+                    _, params, response_future = req
+                    try:
+                        success = await self._restart_server_internal(params)
+                        response_future.set_result(success)
+                    except Exception as e:
+                        response_future.set_exception(e)
+                    continue
+
                 self.current_task = asyncio.create_task(self._process_message_coro(*req))
                 try:
                     await self.current_task
@@ -76,6 +91,73 @@ class AgentManager:
                     await asyncio.wait_for(self.mcp_manager.stop(), timeout=1.0)
                 except Exception as e:
                     print(f"Error stopping MCP: {e}", flush=True)
+
+    async def _restart_server_internal(self, params: dict) -> bool:
+        import time
+        # 1. Stop current MCP sessions (if any)
+        if self.mcp_manager:
+            print("[AgentManager] Stopping active MCP manager in main task...", flush=True)
+            await self.mcp_manager.stop()
+            self.mcp_manager = None
+            
+        # 2. Stop current llama-server and start new one
+        from llampaca.engine.server import get_active_server, LlamaServer, set_active_server
+        active_server = get_active_server()
+        if active_server:
+            print(f"[AgentManager] Stopping active llama-server on port {active_server.port}...", flush=True)
+            active_server.stop()
+            time.sleep(0.5)
+            set_active_server(None)
+            
+        config = load_config()
+        model_name = params.get("model_name") or config.get("default_model", "")
+        
+        from llampaca.config import MODELS_DIR, MODEL_PRESETS
+        model_path = MODELS_DIR / model_name
+        if not model_path.exists():
+            model_path = Path(model_name)
+            if not model_path.exists():
+                if model_name in MODEL_PRESETS:
+                    preset_file = MODEL_PRESETS[model_name]["file"]
+                    model_path = MODELS_DIR / preset_file
+                    
+        if not model_path.exists():
+            print(f"[AgentManager] Error: Model '{model_name}' could not be resolved.")
+            return False
+
+        resolved_port = params.get("port") or config.get("server_port", 8080)
+        resolved_ctx = params.get("context_size") or config.get("context_size", 32768)
+        resolved_threads = params.get("n_threads") or config.get("n_threads", 4)
+        resolved_gpu = params.get("gpu_layers") if params.get("gpu_layers") is not None else config.get("gpu_layers", -1)
+
+        new_server = LlamaServer(
+            model_path=model_path,
+            port=resolved_port,
+            context_size=resolved_ctx,
+            n_threads=resolved_threads,
+            gpu_layers=resolved_gpu
+        )
+
+        success = await new_server.start()
+        if success:
+            set_active_server(new_server)
+            from llampaca.engine.client import LlamaClient
+            self.client = LlamaClient(port=new_server.port)
+            
+            # Update registry context size limit
+            from llampaca.tools import build_default_registry
+            self.registry = build_default_registry(max_result_chars=new_server.context_size)
+            
+            # Start fresh MCP manager matching the new registry
+            from llampaca.config import load_mcp_config
+            mcp_config = load_mcp_config()
+            mcp_servers_config = mcp_config.get("mcp_servers", {})
+            if mcp_servers_config:
+                from llampaca.engine.mcp_client import McpClientManager
+                self.mcp_manager = McpClientManager(mcp_servers_config)
+                await self.mcp_manager.start(self.registry)
+                
+        return success
 
     def start(self, config):
         self.config = config
@@ -102,6 +184,17 @@ class AgentManager:
             await self.mcp_manager.start(self.registry)
             
     def stop(self):
+        # Stop active llama-server if any
+        try:
+            from llampaca.engine.server import get_active_server, set_active_server
+            active = get_active_server()
+            if active:
+                print("[AgentManager] Stopping active llama-server on shutdown...", flush=True)
+                active.stop()
+                set_active_server(None)
+        except Exception as e:
+            print(f"Error stopping active llama-server on shutdown: {e}", flush=True)
+
         if self.thread.is_alive() and self.request_queue:
             # 1. Cancel active processing task
             if self.current_task:
@@ -243,22 +336,35 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             sys.stdout.flush()
 
     def do_GET(self):
+        self.path = self.path.split('?')[0]
         if self.path.startswith('/api/conversations'):
             self.handle_get_conversations()
+        elif self.path.startswith('/api/settings'):
+            self.handle_get_settings()
+        elif self.path.startswith('/api/models'):
+            self.handle_get_models()
         else:
             super().do_GET()
 
     def do_POST(self):
+        self.path = self.path.split('?')[0]
         if self.path.startswith('/api/confirm'):
             self.handle_post_confirm()
         elif self.path.startswith('/api/conversations'):
             self.handle_post_conversations()
+        elif self.path.startswith('/api/settings'):
+            self.handle_post_settings()
+        elif self.path.startswith('/api/models/default'):
+            self.handle_post_models_default()
         else:
             self.send_error(404, "Not Found")
 
     def do_DELETE(self):
+        self.path = self.path.split('?')[0]
         if self.path.startswith('/api/conversations'):
             self.handle_delete_conversation()
+        elif self.path.startswith('/api/models/'):
+            self.handle_delete_model()
         else:
             self.send_error(404, "Not Found")
 
@@ -503,6 +609,194 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.flush()
         except Exception:
             pass
+
+    def handle_get_settings(self):
+        try:
+            config = load_config()
+            body = json.dumps(config).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_post_settings(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            
+            config = load_config()
+            need_restart = False
+            
+            # Map keys and check differences
+            if "server_port" in payload and payload["server_port"] != config.get("server_port"):
+                config["server_port"] = int(payload["server_port"])
+                need_restart = True
+            if "context_size" in payload and payload["context_size"] != config.get("context_size"):
+                config["context_size"] = int(payload["context_size"])
+                need_restart = True
+            if "n_threads" in payload and payload["n_threads"] != config.get("n_threads"):
+                config["n_threads"] = int(payload["n_threads"])
+                need_restart = True
+            if "gpu_layers" in payload and payload["gpu_layers"] != config.get("gpu_layers"):
+                config["gpu_layers"] = int(payload["gpu_layers"])
+                need_restart = True
+                
+            from llampaca.config import save_config
+            save_config(config)
+            
+            if need_restart:
+                print(f"[GUI Server] Config changed. Restarting model server...", flush=True)
+                from llampaca.engine.server import restart_active_server
+                success = restart_active_server(
+                    port=config.get("server_port"),
+                    context_size=config.get("context_size"),
+                    n_threads=config.get("n_threads"),
+                    gpu_layers=config.get("gpu_layers")
+                )
+                if not success:
+                    raise Exception("Impossibile riavviare il server dei modelli.")
+            
+            body = json.dumps({"status": "ok", "config": config}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_get_models(self):
+        try:
+            from llampaca.config import MODELS_DIR, MODEL_PRESETS, load_config
+            config = load_config()
+            default_model = config.get("default_model", "")
+            
+            # List local GGUF files
+            from pathlib import Path
+            gguf_files = list(MODELS_DIR.glob("*.gguf"))
+            
+            models_list = []
+            for file in gguf_files:
+                name = file.name
+                # Try to map to presets to get nicer description
+                desc = "Modello GGUF personalizzato caricato localmente."
+                preset_name = None
+                for p_name, preset in MODEL_PRESETS.items():
+                    if preset["file"] == name:
+                        desc = preset["description"]
+                        preset_name = p_name
+                        break
+                
+                # Heuristic for size
+                size_bytes = file.stat().st_size
+                from llampaca.cli import format_size
+                size_str = format_size(size_bytes)
+                
+                # Heuristic for quant
+                quant_str = "Sconosciuta"
+                name_lower = name.lower()
+                for q in ["q4_k_m", "q8_0", "q4_0", "q4_k_s", "q5_k_m", "q5_k_s", "q6_k", "q2_k", "f16"]:
+                    if q in name_lower:
+                        quant_str = q.upper()
+                        break
+                
+                is_active = (default_model == name or default_model == preset_name)
+                
+                models_list.append({
+                    "id": name,
+                    "name": name,
+                    "description": desc,
+                    "size": size_str,
+                    "quant": quant_str,
+                    "active": is_active
+                })
+            
+            # Sort active first
+            models_list.sort(key=lambda m: not m["active"])
+            
+            body = json.dumps(models_list).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_post_models_default(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            model_name = payload.get("model_name")
+            
+            if not model_name:
+                raise Exception("model_name non specificato.")
+                
+            config = load_config()
+            config["default_model"] = model_name
+            from llampaca.config import save_config
+            save_config(config)
+            
+            print(f"[GUI Server] Default model changed to {model_name}. Restarting llama-server...", flush=True)
+            from llampaca.engine.server import restart_active_server
+            success = restart_active_server(model_name=model_name)
+            if not success:
+                raise Exception("Impossibile caricare il nuovo modello.")
+                
+            body = json.dumps({"status": "ok", "default_model": model_name}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_delete_model(self):
+        try:
+            parts = self.path.strip('/').split('/')
+            if len(parts) < 3:
+                raise Exception("Nome modello non specificato.")
+            
+            model_filename = "/".join(parts[2:])
+            import urllib.parse
+            model_filename = urllib.parse.unquote(model_filename)
+            
+            config = load_config()
+            default_model = config.get("default_model", "")
+            
+            from llampaca.config import MODEL_PRESETS
+            preset_file = None
+            if default_model in MODEL_PRESETS:
+                preset_file = MODEL_PRESETS[default_model]["file"]
+                
+            if model_filename == default_model or model_filename == preset_file:
+                raise Exception("Non è possibile eliminare il modello attualmente attivo/predefinito.")
+                
+            from llampaca.config import MODELS_DIR
+            model_path = MODELS_DIR / model_filename
+            if not model_path.exists():
+                raise Exception("Modello non trovato su disco.")
+                
+            model_path.unlink()
+            print(f"[GUI Server] Deleted model file: {model_filename}", flush=True)
+            
+            body = json.dumps({"success": True}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
 
 def find_free_port(start_port=8090):
     port = start_port

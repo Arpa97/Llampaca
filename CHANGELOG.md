@@ -3,6 +3,22 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-20]
+
+### Added — Settings persistence, local models management, and runtime LLM server restarts
+
+- **`llampaca/engine/server.py`** — Added global `_active_server` tracking and an async `restart_active_server` method.
+  - *Why:* Enables dynamically restarting the underlying `llama-server` process with new configurations (model file, context size, CPU threads, GPU layers) without requiring manual CLI intervention.
+
+- **`llampaca/gui/server.py`** — Implemented API endpoints for settings (`GET`/`POST` `/api/settings`) and local GGUF models (`GET` `/api/models`, `POST` `/api/models/default`, `DELETE` `/api/models/<name>`).
+  - *Why:* Acts as a bridge between the frontend GUI actions and the backend server configuration files / subprocess manager.
+
+- **`llampaca/gui/models/settings_model.js`** & **`llampaca/gui/controllers/settings_controller.js`** — Replaced settings mocks with async API requests.
+  - *Why:* Wires the Settings tab input elements to load and save real global configuration values.
+
+- **`llampaca/gui/models/gguf_model.js`** & **`llampaca/gui/controllers/models_controller.js`** — Replaced GGUF models mocks with async API requests.
+  - *Why:* Wires the Models tab layout to display actual downloaded GGUF files and dynamically trigger model switching at runtime.
+
 ## [2026-07-17]
 
 ### Added — External Model Context Protocol (MCP) Client support

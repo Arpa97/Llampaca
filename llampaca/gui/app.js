@@ -14,9 +14,21 @@ createApp({
     },
     setup() {
         const currentTab = ref('chat');
+        const toastMessage = ref('');
+        const toastType = ref('success');
+
+        window.showToast = (msg, type = 'success') => {
+            toastMessage.value = msg;
+            toastType.value = type;
+            setTimeout(() => {
+                toastMessage.value = '';
+            }, 3500);
+        };
 
         return {
-            currentTab
+            currentTab,
+            toastMessage,
+            toastType
         };
     }
 }).mount('#app');

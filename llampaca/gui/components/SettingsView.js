@@ -2,7 +2,12 @@ import { useSettingsController } from '../controllers/settings_controller.js';
 
 export default {
     template: `
-        <div style="display: flex; flex-direction: column; height: 100%;">
+        <div style="display: flex; flex-direction: column; height: 100%; position: relative;">
+            <!-- Loading Overlay -->
+            <div v-if="isSaving" class="loading-overlay">
+                <div class="spinner"></div>
+                <div>Salvataggio e riavvio del server in corso...</div>
+            </div>
             <div class="view-header">
                 <h1 class="view-title">Impostazioni Globali</h1>
             </div>

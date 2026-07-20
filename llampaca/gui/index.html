@@ -799,10 +799,82 @@
             grid-template-columns: 1fr 1fr;
             gap: 20px;
         }
+
+        /* Spinner & Loading Overlay */
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            z-index: 1000;
+            gap: 15px;
+            font-weight: 500;
+            color: var(--dusk-blue);
+            font-size: 15px;
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid var(--border-color);
+            border-top: 4px solid var(--amber-glow);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Toast Notification */
+        .toast-notification {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background-color: #24292e;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            font-size: 13.5px;
+            font-weight: 500;
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: slideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            border-left: 4px solid var(--amber-glow);
+        }
+        .toast-notification.success {
+            border-left: 4px solid var(--tea-green);
+        }
+        .toast-notification.error {
+            border-left: 4px solid var(--crimson-violet);
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateY(20px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
     </style>
 </head>
 <body>
     <div id="app">
+        <!-- Toast Notification -->
+        <div v-if="toastMessage" class="toast-notification" :class="toastType">
+            {{ toastMessage }}
+        </div>
         <!-- Sidebar Navigation -->
         <aside class="sidebar">
             <div class="brand">

@@ -2,7 +2,12 @@ import { useModelsController } from '../controllers/models_controller.js';
 
 export default {
     template: `
-        <div style="display: flex; flex-direction: column; height: 100%;">
+        <div style="display: flex; flex-direction: column; height: 100%; position: relative;">
+            <!-- Loading Overlay -->
+            <div v-if="isRestarting" class="loading-overlay">
+                <div class="spinner"></div>
+                <div>Riavvio del server dei modelli in corso...</div>
+            </div>
             <div class="view-header">
                 <h1 class="view-title">Gestione Modelli GGUF</h1>
             </div>

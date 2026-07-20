@@ -1,11 +1,19 @@
 import { GgufModel } from '../models/gguf_model.js';
 
-const { ref } = Vue;
+const { ref, onMounted } = Vue;
 
 export function useModelsController() {
     const model = new GgufModel();
-    const models = ref(model.getModels());
+    const models = ref([]);
     const downloadUrl = ref('');
+
+    const loadModels = async () => {
+        try {
+            models.value = await model.getModels();
+        } catch (e) {
+            console.error("Errore caricamento modelli:", e);
+        }
+    };
 
     const startDownload = () => {
         if (!downloadUrl.value.trim()) {
@@ -16,23 +24,47 @@ export function useModelsController() {
         downloadUrl.value = '';
     };
 
-    const setDefaultModel = (id) => {
-        model.setDefaultModel(id);
-        models.value = model.getModels();
-    };
+    const isRestarting = ref(false);
 
-    const deleteModel = (id) => {
-        if (confirm("Sei sicuro di voler eliminare definitivamente questo file GGUF?")) {
-            model.deleteModel(id);
-            models.value = model.getModels();
+    const setDefaultModel = async (name) => {
+        try {
+            isRestarting.value = true;
+            await model.setDefaultModel(name);
+            await loadModels();
+            if (window.showToast) {
+                window.showToast(`Modello predefinito impostato su ${name}!`, 'success');
+            }
+        } catch (e) {
+            if (window.showToast) {
+                window.showToast(`Errore: ${e.message}`, 'error');
+            } else {
+                alert("Errore durante l'impostazione del modello: " + e.message);
+            }
+        } finally {
+            isRestarting.value = false;
         }
     };
+
+    const deleteModel = async (name) => {
+        if (confirm(`Sei sicuro di voler eliminare definitivamente il file GGUF "${name}"?`)) {
+            try {
+                await model.deleteModel(name);
+                alert("Modello eliminato con successo.");
+                await loadModels();
+            } catch (e) {
+                alert("Errore durante l'eliminazione: " + e.message);
+            }
+        }
+    };
+
+    onMounted(loadModels);
 
     return {
         models,
         downloadUrl,
         startDownload,
         setDefaultModel,
-        deleteModel
+        deleteModel,
+        isRestarting
     };
 }

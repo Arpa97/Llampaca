@@ -743,7 +743,12 @@ def run_gui(model_name, port, ctx, threads, gpu):
         start_gui_window()
     finally:
         click.echo("Shutting down llama-server...")
-        server.stop()
+        from llampaca.engine.server import get_active_server
+        active = get_active_server()
+        if active:
+            active.stop()
+        else:
+            server.stop()
         click.echo("Goodbye!")
 
 @main.group(name="integrations")

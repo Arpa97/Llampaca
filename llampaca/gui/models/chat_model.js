@@ -1,12 +1,12 @@
 export class ChatModel {
     async getConversations() {
-        const r = await fetch('/api/conversations');
+        const r = await fetch(`/api/conversations?_t=${Date.now()}`);
         if (!r.ok) throw new Error(await r.text());
         return await r.json();
     }
 
     async getConversation(id) {
-        const r = await fetch(`/api/conversations/${id}`);
+        const r = await fetch(`/api/conversations/${id}?_t=${Date.now()}`);
         if (!r.ok) throw new Error(await r.text());
         return await r.json();
     }
