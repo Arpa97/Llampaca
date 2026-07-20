@@ -336,11 +336,14 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             sys.stdout.flush()
 
     def do_GET(self):
+        original_path = self.path
         self.path = self.path.split('?')[0]
         if self.path.startswith('/api/conversations'):
             self.handle_get_conversations()
         elif self.path.startswith('/api/settings'):
             self.handle_get_settings()
+        elif self.path.startswith('/api/models/search'):
+            self.handle_get_models_search(original_path)
         elif self.path.startswith('/api/models'):
             self.handle_get_models()
         else:
@@ -356,6 +359,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_post_settings()
         elif self.path.startswith('/api/models/default'):
             self.handle_post_models_default()
+        elif self.path.startswith('/api/models/download'):
+            self.handle_post_models_download()
         else:
             self.send_error(404, "Not Found")
 
@@ -673,53 +678,209 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def handle_get_models(self):
         try:
             from llampaca.config import MODELS_DIR, MODEL_PRESETS, load_config
+            from llampaca.engine.downloader import active_downloads, downloads_lock
+            
             config = load_config()
             default_model = config.get("default_model", "")
             
             # List local GGUF files
             from pathlib import Path
             gguf_files = list(MODELS_DIR.glob("*.gguf"))
+            installed_filenames = {f.name for f in gguf_files}
+            installed_paths = {f.name: f for f in gguf_files}
+            
+            # Clean up completed or failed downloads from active_downloads
+            with downloads_lock:
+                to_remove = []
+                for fname, dl in active_downloads.items():
+                    if dl["status"] in ["completed", "failed"]:
+                        if fname in installed_filenames or dl["status"] == "failed":
+                            to_remove.append(fname)
+                for fname in to_remove:
+                    del active_downloads[fname]
             
             models_list = []
-            for file in gguf_files:
-                name = file.name
-                # Try to map to presets to get nicer description
-                desc = "Modello GGUF personalizzato caricato localmente."
-                preset_name = None
-                for p_name, preset in MODEL_PRESETS.items():
-                    if preset["file"] == name:
-                        desc = preset["description"]
-                        preset_name = p_name
-                        break
+            
+            # 1. Add presets (either installed, downloading, or available to download)
+            for p_name, preset in MODEL_PRESETS.items():
+                filename = preset["file"]
+                repo_id = preset["repo"]
+                desc = preset["description"]
                 
-                # Heuristic for size
+                is_installed = filename in installed_filenames
+                is_active = (default_model == p_name or default_model == filename)
+                
+                is_downloading = False
+                progress = 0
+                with downloads_lock:
+                    if filename in active_downloads:
+                        dl = active_downloads[filename]
+                        if dl["status"] == "downloading":
+                            is_downloading = True
+                            progress = dl["progress"]
+                        elif dl["status"] == "completed":
+                            is_installed = True
+                            
+                size_str = "Sconosciuta"
+                quant_str = "Sconosciuta"
+                if is_installed and filename in installed_paths:
+                    file = installed_paths[filename]
+                    size_bytes = file.stat().st_size
+                    from llampaca.cli import format_size
+                    size_str = format_size(size_bytes)
+                    
+                    name_lower = filename.lower()
+                    for q in ["q4_k_m", "q8_0", "q4_0", "q4_k_s", "q5_k_m", "q5_k_s", "q6_k", "q2_k", "f16"]:
+                        if q in name_lower:
+                            quant_str = q.upper()
+                            break
+                else:
+                    size_gb = preset.get("size_gb", 0)
+                    size_str = f"{size_gb} GB" if size_gb else "Consigliato"
+                    if "q8_0" in filename.lower():
+                        quant_str = "Q8_0"
+                    elif "q4_k_m" in filename.lower():
+                        quant_str = "Q4_K_M"
+                        
+                models_list.append({
+                    "id": filename,
+                    "name": filename,
+                    "preset_id": p_name,
+                    "description": desc,
+                    "size": size_str,
+                    "quant": quant_str,
+                    "installed": is_installed,
+                    "downloading": is_downloading,
+                    "progress": progress,
+                    "active": is_active,
+                    "repo_id": repo_id
+                })
+                
+            # 2. Add other installed GGUF files (not in presets)
+            preset_filenames = {preset["file"] for preset in MODEL_PRESETS.values()}
+            for filename in installed_filenames:
+                if filename in preset_filenames:
+                    continue
+                
+                file = installed_paths[filename]
                 size_bytes = file.stat().st_size
                 from llampaca.cli import format_size
                 size_str = format_size(size_bytes)
                 
-                # Heuristic for quant
                 quant_str = "Sconosciuta"
-                name_lower = name.lower()
+                name_lower = filename.lower()
                 for q in ["q4_k_m", "q8_0", "q4_0", "q4_k_s", "q5_k_m", "q5_k_s", "q6_k", "q2_k", "f16"]:
                     if q in name_lower:
                         quant_str = q.upper()
                         break
-                
-                is_active = (default_model == name or default_model == preset_name)
+                        
+                is_active = (default_model == filename)
                 
                 models_list.append({
-                    "id": name,
-                    "name": name,
-                    "description": desc,
+                    "id": filename,
+                    "name": filename,
+                    "preset_id": None,
+                    "description": "Modello GGUF personalizzato caricato localmente.",
                     "size": size_str,
                     "quant": quant_str,
-                    "active": is_active
+                    "installed": True,
+                    "downloading": False,
+                    "progress": 100,
+                    "active": is_active,
+                    "repo_id": None
                 })
-            
-            # Sort active first
-            models_list.sort(key=lambda m: not m["active"])
+                
+            # 3. Add other active custom downloads (not in presets)
+            with downloads_lock:
+                for filename, dl in active_downloads.items():
+                    if filename in preset_filenames:
+                        continue
+                    if dl["status"] != "downloading":
+                        continue
+                        
+                    models_list.append({
+                        "id": filename,
+                        "name": filename,
+                        "preset_id": None,
+                        "description": f"Download in corso da repository {dl['repo_id']}...",
+                        "size": "In scaricamento",
+                        "quant": "Sconosciuta",
+                        "installed": False,
+                        "downloading": True,
+                        "progress": dl["progress"],
+                        "active": False,
+                        "repo_id": dl["repo_id"]
+                    })
+                    
+            # Sort: active first, then installed, then downloading, then available
+            def sort_key(m):
+                if m["active"]:
+                    return 0
+                if m["installed"]:
+                    return 1
+                if m["downloading"]:
+                    return 2
+                return 3
+                
+            models_list.sort(key=sort_key)
             
             body = json.dumps(models_list).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_post_models_download(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            
+            repo_id = payload.get("repo_id")
+            filename = payload.get("filename")
+            input_val = payload.get("input_val")
+            
+            if input_val:
+                parsed_repo, parsed_file = parse_hf_input(input_val)
+                if parsed_repo and parsed_file:
+                    repo_id = parsed_repo
+                    filename = parsed_file
+                    
+            if not repo_id or not filename:
+                raise Exception("Impossibile identificare repository HF o nome file. Usa il formato 'utente/repo/nomefile.gguf'.")
+                
+            # Start background download
+            from llampaca.engine.downloader import download_hf_model_async
+            download_hf_model_async(repo_id, filename)
+            
+            body = json.dumps({"status": "download_started", "repo_id": repo_id, "filename": filename}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(400, str(e))
+
+
+    def handle_get_models_search(self, original_path):
+        try:
+            import urllib.parse
+            query_str = ""
+            if "?" in original_path:
+                query_str = original_path.split("?", 1)[1]
+            
+            params = urllib.parse.parse_qs(query_str)
+            search_query = params.get("q", [""])[0].strip()
+            
+            results = search_hf_models(query=search_query)
+            
+            body = json.dumps(results).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -797,6 +958,88 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             self.send_error(500, str(e))
+
+def parse_hf_input(input_str: str):
+    """
+    Parses a Hugging Face input string into (repo_id, filename).
+    Supports:
+    1. Full URL: https://huggingface.co/repo_user/repo_name/resolve/main/filename.gguf
+    2. Short identifier: repo_user/repo_name/filename.gguf
+    """
+    input_str = input_str.strip()
+    if not input_str:
+        return None, None
+        
+    # Case 1: Full URL
+    if "huggingface.co" in input_str:
+        parts = input_str.split("huggingface.co/")[-1].split("/")
+        if len(parts) >= 5:
+            # Reconstruct repo_id from the first two parts
+            repo_id = f"{parts[0]}/{parts[1]}"
+            filename = parts[-1]
+            # Strip query params from filename if any
+            filename = filename.split("?")[0]
+            return repo_id, filename
+            
+    # Case 2: Short identifier
+    parts = input_str.split("/")
+    if len(parts) >= 3:
+        repo_id = f"{parts[0]}/{parts[1]}"
+        filename = parts[-1]
+        return repo_id, filename
+        
+    return None, None
+
+def search_hf_models(query: str = None, limit: int = 8):
+    from huggingface_hub import HfApi
+    api = HfApi()
+    
+    # 1. Search GGUF repos
+    search_term = query if query else None
+    try:
+        repos = api.list_models(
+            filter="gguf",
+            search=search_term,
+            sort="downloads",
+            limit=limit
+        )
+    except Exception as e:
+        print(f"HF Search error: {e}")
+        return []
+        
+    results = []
+    for r in repos:
+        repo_id = r.modelId
+        downloads = getattr(r, "downloads", 0)
+        
+        # 2. Get files metadata
+        try:
+            info = api.model_info(repo_id, files_metadata=True)
+            gguf_files = []
+            for f in info.siblings:
+                if f.rfilename.endswith(".gguf"):
+                    size_bytes = getattr(f, "size", None)
+                    size_gb = round(size_bytes / (1024**3), 2) if size_bytes else None
+                    gguf_files.append({
+                        "filename": f.rfilename,
+                        "size_bytes": size_bytes,
+                        "size_gb": size_gb
+                    })
+                    
+            if gguf_files:
+                # Sort files alphabetically/by name
+                gguf_files.sort(key=lambda x: x["filename"])
+                
+                results.append({
+                    "repo_id": repo_id,
+                    "downloads": downloads,
+                    "files": gguf_files,
+                    "description": f"Repository con {len(gguf_files)} file GGUF."
+                })
+        except Exception as e:
+            print(f"Error reading model info for {repo_id}: {e}")
+            
+    return results
 
 def find_free_port(start_port=8090):
     port = start_port

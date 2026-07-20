@@ -1,28 +1,99 @@
 import { GgufModel } from '../models/gguf_model.js';
 
-const { ref, onMounted } = Vue;
+const { ref, onMounted, onUnmounted } = Vue;
 
 export function useModelsController() {
     const model = new GgufModel();
     const models = ref([]);
     const downloadUrl = ref('');
+    let pollInterval = null;
+
+    const startPolling = () => {
+        if (pollInterval) return;
+        pollInterval = setInterval(async () => {
+            await loadModels();
+        }, 1500);
+    };
+
+    const stopPolling = () => {
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+    };
 
     const loadModels = async () => {
         try {
-            models.value = await model.getModels();
+            const prevModels = models.value;
+            const newModels = await model.getModels();
+            
+            // Notify if a downloading model is now fully installed
+            for (const newM of newModels) {
+                const prevM = prevModels.find(p => p.id === newM.id);
+                if (prevM && prevM.downloading && newM.installed) {
+                    if (window.showToast) {
+                        window.showToast(`Modello ${newM.name} scaricato con successo!`, 'success');
+                    }
+                }
+            }
+            
+            models.value = newModels;
+            
+            // Manage polling based on active downloads
+            const hasActiveDownloads = newModels.some(m => m.downloading);
+            if (hasActiveDownloads) {
+                startPolling();
+            } else {
+                stopPolling();
+            }
         } catch (e) {
             console.error("Errore caricamento modelli:", e);
         }
     };
 
-    const startDownload = () => {
-        if (!downloadUrl.value.trim()) {
-            alert("Inserisci un percorso o repository GGUF valido!");
+    const startDownload = async () => {
+        const val = downloadUrl.value.trim();
+        if (!val) {
+            if (window.showToast) {
+                window.showToast("Inserisci un percorso o repository GGUF valido!", "error");
+            } else {
+                alert("Inserisci un percorso o repository GGUF valido!");
+            }
             return;
         }
-        alert(`Avvio download del modello da: ${downloadUrl.value}\nIl completamento avverrà in background.`);
-        downloadUrl.value = '';
+        try {
+            const res = await model.downloadModel(null, null, val);
+            if (window.showToast) {
+                window.showToast(`Avvio download di ${res.filename}...`, "success");
+            }
+            downloadUrl.value = '';
+            await loadModels();
+        } catch (e) {
+            if (window.showToast) {
+                window.showToast(`Errore: ${e.message}`, "error");
+            } else {
+                alert(`Errore: ${e.message}`);
+            }
+        }
     };
+
+    const downloadPreset = async (repoId, filename) => {
+        try {
+            await model.downloadModel(repoId, filename, null);
+            if (window.showToast) {
+                window.showToast(`Avvio download di ${filename}...`, 'success');
+            }
+            await loadModels();
+        } catch (e) {
+            if (window.showToast) {
+                window.showToast(`Errore: ${e.message}`, 'error');
+            } else {
+                alert(`Errore: ${e.message}`);
+            }
+        }
+    };
+
+    onUnmounted(stopPolling);
 
     const isRestarting = ref(false);
 
@@ -57,7 +128,56 @@ export function useModelsController() {
         }
     };
 
-    onMounted(loadModels);
+    const searchQuery = ref('');
+    const searchResults = ref([]);
+    const isSearching = ref(false);
+
+    const performSearch = async (query = '') => {
+        try {
+            isSearching.value = true;
+            const results = await model.searchHfModels(query);
+            searchResults.value = results.map(r => {
+                return {
+                    ...r,
+                    selected_file: r.files && r.files.length ? r.files[0].filename : ''
+                };
+            });
+        } catch (e) {
+            console.error("Errore ricerca Hugging Face:", e);
+            if (window.showToast) {
+                window.showToast(`Errore ricerca: ${e.message}`, 'error');
+            }
+        } finally {
+            isSearching.value = false;
+        }
+    };
+
+    const downloadSearchModel = async (repoId, filename) => {
+        if (!filename) {
+            if (window.showToast) {
+                window.showToast("Seleziona prima un file GGUF!", "error");
+            }
+            return;
+        }
+        try {
+            await model.downloadModel(repoId, filename, null);
+            if (window.showToast) {
+                window.showToast(`Avvio download di ${filename}...`, 'success');
+            }
+            await loadModels();
+        } catch (e) {
+            if (window.showToast) {
+                window.showToast(`Errore: ${e.message}`, 'error');
+            } else {
+                alert(`Errore: ${e.message}`);
+            }
+        }
+    };
+
+    onMounted(() => {
+        loadModels();
+        performSearch('');
+    });
 
     return {
         models,
@@ -65,6 +185,12 @@ export function useModelsController() {
         startDownload,
         setDefaultModel,
         deleteModel,
-        isRestarting
+        isRestarting,
+        downloadPreset,
+        searchQuery,
+        searchResults,
+        isSearching,
+        performSearch,
+        downloadSearchModel
     };
 }

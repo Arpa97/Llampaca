@@ -17,19 +17,22 @@ MODEL_PRESETS = {
         # Fixed: old filename "Qwen3.5-4B-Instruct-Q4_K_M.gguf" doesn't exist in the repo (404), causing download failures
         "file": "Qwen3.5-4B-Q8_0.gguf",  # "Qwen3.5-4B-Instruct-Q4_K_M.gguf" (previous, invalid value)
         "description": "Qwen 3.5 4B Instruct - Excellent balance of performance and footprint (Recommended)",
-        "default": True
+        "default": True,
+        "size_gb": 4.17
     },
     "qwen2.5-coder-1.5b-instruct": {
         "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
         "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
         "description": "Qwen 2.5 Coder 1.5B Instruct - Super fast, outstanding for coding tasks",
-        "default": False
+        "default": False,
+        "size_gb": 1.04
     },
     "llama3.2-3b-instruct": {
         "repo": "unsloth/Llama-3.2-3B-Instruct-GGUF",
         "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
         "description": "Llama 3.2 3B Instruct - Meta's lightweight general-purpose model",
-        "default": False
+        "default": False,
+        "size_gb": 2.02
     }
 }
 

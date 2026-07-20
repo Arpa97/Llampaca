@@ -867,6 +867,46 @@
                 opacity: 1;
             }
         }
+
+        /* Progress Bar & Badges */
+        .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background-color: var(--border-color);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background-color: var(--amber-glow);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .model-badge.success {
+            background-color: rgba(215, 232, 186, 0.4);
+            color: #4b6a1d;
+        }
+        .model-badge.secondary {
+            background-color: #f1f3f5;
+            color: #495057;
+        }
+        .model-badge.warning {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .model-badge.info {
+            background-color: #e8f4fd;
+            color: #0056b3;
+        }
+        select.download-input {
+            outline: none;
+            cursor: pointer;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+        }
+        select.download-input:focus {
+            border-color: var(--amber-glow);
+            box-shadow: 0 0 0 2px rgba(242, 174, 46, 0.15);
+        }
     </style>
 </head>
 <body>

@@ -22,4 +22,20 @@ export class GgufModel {
         if (!r.ok) throw new Error(await r.text());
         return await r.json();
     }
+
+    async downloadModel(repoId, filename, inputVal) {
+        const r = await fetch('/api/models/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo_id: repoId, filename: filename, input_val: inputVal })
+        });
+        if (!r.ok) throw new Error(await r.text());
+        return await r.json();
+    }
+
+    async searchHfModels(query) {
+        const r = await fetch(`/api/models/search?q=${encodeURIComponent(query || '')}&_t=${Date.now()}`);
+        if (!r.ok) throw new Error(await r.text());
+        return await r.json();
+    }
 }

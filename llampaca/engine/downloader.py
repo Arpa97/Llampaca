@@ -251,6 +251,80 @@ def download_llama_binaries() -> bool:
     print("llama.cpp binaries and libraries installed successfully!")
     return True
 
+import threading
+
+downloads_lock = threading.Lock()
+active_downloads = {}  # key: filename, value: progress info dict
+
+def download_hf_model_async(repo_id: str, filename: str):
+    """Starts the Hugging Face model download in a background thread."""
+    thread = threading.Thread(
+        target=_download_hf_model_thread,
+        args=(repo_id, filename),
+        daemon=True
+    )
+    thread.start()
+
+def _download_hf_model_thread(repo_id: str, filename: str):
+    try:
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        dest_path = MODELS_DIR / filename
+        url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+        
+        with downloads_lock:
+            active_downloads[filename] = {
+                "repo_id": repo_id,
+                "filename": filename,
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "progress": 0,
+                "status": "downloading"
+            }
+            
+        print(f"[Downloader] Starting background download of {filename} from {repo_id}...")
+        response = requests.get(url, stream=True, allow_redirects=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        with downloads_lock:
+            active_downloads[filename]["total_bytes"] = total_size
+            
+        downloaded = 0
+        with open(dest_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=1024 * 1024): # 1MB chunks
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    progress = int((downloaded / total_size) * 100) if total_size else 0
+                    
+                    with downloads_lock:
+                        if filename in active_downloads:
+                            active_downloads[filename]["downloaded_bytes"] = downloaded
+                            active_downloads[filename]["progress"] = progress
+                            
+        with downloads_lock:
+            if filename in active_downloads:
+                active_downloads[filename]["status"] = "completed"
+                active_downloads[filename]["progress"] = 100
+                
+        print(f"[Downloader] Background download of {filename} completed successfully.")
+        
+    except Exception as e:
+        print(f"[Downloader] Error in background download of {filename}: {e}")
+        # Clean up partial file on failure if exists
+        try:
+            partial_file = MODELS_DIR / filename
+            if partial_file.exists():
+                partial_file.unlink()
+        except Exception:
+            pass
+            
+        with downloads_lock:
+            if filename in active_downloads:
+                active_downloads[filename]["status"] = "failed"
+                active_downloads[filename]["error"] = str(e)
+
+
 def download_hf_model(repo_id: str, filename: str) -> Path:
     """
     Download a GGUF model from Hugging Face.
