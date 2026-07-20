@@ -5,7 +5,13 @@ import socket
 import subprocess
 from pathlib import Path
 import requests
-from llampaca.config import BIN_DIR, LOGS_DIR, load_config
+from llampaca.config import (
+    BIN_DIR,
+    LOGS_DIR,
+    load_config,
+    DEFAULT_CONTEXT_SIZE,
+    EMBEDDING_CONTEXT_SIZE,
+)
 
 def is_port_in_use(port: int) -> bool:
     """Check if a port is already open on localhost."""
@@ -135,10 +141,10 @@ class LlamaServer:
             # (see --parallel in _build_command) so the chunk never has to
             # share it.
             self.port = port or config.get("embedding_port", 8180)
-            self.context_size = context_size or 4096
+            self.context_size = context_size or EMBEDDING_CONTEXT_SIZE
         else:
             self.port = port or config.get("server_port", 8080)
-            self.context_size = context_size or config.get("context_size", 8192)
+            self.context_size = context_size or config.get("context_size", DEFAULT_CONTEXT_SIZE)
         self.n_threads = n_threads or config.get("n_threads", 4)
         self.gpu_layers = gpu_layers if gpu_layers is not None else config.get("gpu_layers", -1)
 
@@ -472,7 +478,7 @@ async def _restart_active_server_fallback(model_name: str = None, port: int = No
 
     # 3. Resolve parameters
     resolved_port = port or config.get("server_port", 8080)
-    resolved_ctx = context_size or config.get("context_size", 32768)
+    resolved_ctx = context_size or config.get("context_size", DEFAULT_CONTEXT_SIZE)
     resolved_threads = n_threads or config.get("n_threads", 4)
     resolved_gpu = gpu_layers if gpu_layers is not None else config.get("gpu_layers", -1)
 

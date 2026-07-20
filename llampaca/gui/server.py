@@ -19,7 +19,7 @@ from llampaca.engine.db import (
     update_conversation_title,
     update_conversation_summary
 )
-from llampaca.config import load_config
+from llampaca.config import load_config, DEFAULT_CONTEXT_SIZE
 
 def run_async(coro):
     """Run an async coroutine thread-safely inside the AgentManager's event loop if running."""
@@ -166,7 +166,7 @@ class AgentManager:
             return False
 
         resolved_port = params.get("port") or config.get("server_port", 8080)
-        resolved_ctx = params.get("context_size") or config.get("context_size", 32768)
+        resolved_ctx = params.get("context_size") or config.get("context_size", DEFAULT_CONTEXT_SIZE)
         resolved_threads = params.get("n_threads") or config.get("n_threads", 4)
         resolved_gpu = params.get("gpu_layers") if params.get("gpu_layers") is not None else config.get("gpu_layers", -1)
 
@@ -237,7 +237,7 @@ class AgentManager:
         from llampaca.config import load_mcp_config
         
         self.client = LlamaClient(port=config.get("server_port", 8080))
-        self.registry = build_default_registry(max_result_chars=config.get("context_size", 4096))
+        self.registry = build_default_registry(max_result_chars=config.get("context_size", DEFAULT_CONTEXT_SIZE))
         
         mcp_config = load_mcp_config()
         mcp_servers_config = mcp_config.get("mcp_servers", {})
@@ -483,7 +483,7 @@ class AgentManager:
                 confirm=_confirm_wrapper,
                 system_prompt=system_prompt,
                 model=conv_data.get("model_name", "local-model"),
-                context_size=config.get("context_size", 4096),
+                context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
                 summary=conv_data.get("summary")
             )
             
@@ -878,7 +878,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             config = load_config()
-            context_size = config.get("context_size", 4096)
+            context_size = config.get("context_size", DEFAULT_CONTEXT_SIZE)
 
             # Staging (and, for large files, indexing) happens on the manager's
             # event loop: index_document is async and shares its embedding

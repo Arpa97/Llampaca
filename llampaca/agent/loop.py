@@ -81,7 +81,7 @@ CONTEXT_LOW_WATERMARK = 0.60   # ...and cut it down to this fraction
 # can share the same heuristic without importing this module — this
 # re-export keeps existing `from llampaca.agent.loop import CHARS_PER_TOKEN`
 # users working.
-from llampaca.config import CHARS_PER_TOKEN
+from llampaca.config import CHARS_PER_TOKEN, DEFAULT_CONTEXT_SIZE
 
 # Fixed per-message overhead, in tokens: every message costs a few extra
 # tokens for its role marker and the chat template's framing around it.
@@ -123,7 +123,7 @@ class Agent:
         confirm: Optional[Callable[[str], Any]] = None,
         model: str = "local-model",
         max_iterations: int = MAX_ITERATIONS,
-        context_size: int = 8192,
+        context_size: int = DEFAULT_CONTEXT_SIZE,
         summary: Optional[str] = None,
     ):
         """

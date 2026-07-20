@@ -13,7 +13,8 @@ from llampaca.config import (
     MODELS_DIR,
     MODEL_PRESETS,
     LLAMPACA_DIR,
-    ensure_dirs
+    ensure_dirs,
+    DEFAULT_CONTEXT_SIZE,
 )
 from llampaca.engine.downloader import download_llama_binaries, download_hf_model
 from llampaca.engine.server import LlamaServer, is_port_in_use
@@ -870,7 +871,7 @@ def serve(model_name, port, api_port, ctx, threads, gpu):
         
     # Resolve parameters
     port = port or config.get("server_port", 8080)
-    ctx = ctx or config.get("context_size", 32768)
+    ctx = ctx or config.get("context_size", DEFAULT_CONTEXT_SIZE)
     threads = threads or config.get("n_threads", 4)
     gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
     
@@ -1013,7 +1014,7 @@ def run_gui(model_name, port, ctx, threads, gpu):
         
     # Resolve parameters
     port = port or config.get("server_port", 8080)
-    ctx = ctx or config.get("context_size", 32768)
+    ctx = ctx or config.get("context_size", DEFAULT_CONTEXT_SIZE)
     threads = threads or config.get("n_threads", 4)
     gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
 

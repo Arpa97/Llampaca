@@ -131,7 +131,9 @@
       "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.gui.server; from llampaca import wiki; print\\('render_index preview:'\\); print\\(wiki.render_index\\(\\)[:200]\\)\")",
       "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py syntax OK'\\)\")",
       "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.gui.server; print\\('import OK'\\)\")",
-      "Bash(~/miniconda3/envs/llampaca/bin/python -m compileall -q llampaca/gui/)"
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m compileall -q llampaca/gui/)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"from llampaca.config import DEFAULT_CONTEXT_SIZE, EMBEDDING_CONTEXT_SIZE; print\\('constants:', DEFAULT_CONTEXT_SIZE, EMBEDDING_CONTEXT_SIZE\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('context_size nel tuo config.json:', d.get\\('context_size', '\\(assente → userà il default 8192\\)'\\)\\)\")"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

@@ -11,6 +11,20 @@ from pathlib import Path
 # import cycles.
 CHARS_PER_TOKEN = 4
 
+# Single source of truth for the default CHAT context window (in tokens).
+# Change it HERE and every entry point picks it up: DEFAULT_CONFIG seeds new
+# configs with it, and every `config.get("context_size", ...)` fallback across
+# the codebase (CLI run/serve/gui, the GUI backend, the Agent) references this
+# constant instead of a hard-coded number — so the default can never drift
+# between the terminal and the GUI again.
+DEFAULT_CONTEXT_SIZE = 8192
+
+# The embedding server's context is deliberately INDEPENDENT and much smaller:
+# it is sized for a single ~500-token chunk served to one slot, never for a
+# conversation. It is intentionally NOT tied to DEFAULT_CONTEXT_SIZE — raising
+# the chat window must not bloat the embedder's KV cache.
+EMBEDDING_CONTEXT_SIZE = 4096
+
 # Base directory for the application
 LLAMPACA_DIR = Path.home() / ".llampaca"
 CONFIG_PATH = LLAMPACA_DIR / "config.json"
@@ -80,7 +94,7 @@ DEFAULT_CONFIG = {
     "llama_server_path": "",
     "default_model": "qwen3.5-4b-instruct",
     "server_port": 8080,
-    "context_size": 8192,
+    "context_size": DEFAULT_CONTEXT_SIZE,
     "n_threads": max(1, os.cpu_count() - 2 if os.cpu_count() else 4),
     "gpu_layers": -1,  # -1 means auto (enable metal/cuda if supported)
     "mcp_servers": {},

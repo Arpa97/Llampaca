@@ -5,6 +5,29 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-20]
 
+### Changed — single source of truth for the default context window (CLI, GUI, Agent all aligned to 8192)
+
+- **`llampaca/config.py`** — new `DEFAULT_CONTEXT_SIZE = 8192` constant, used
+  to seed `DEFAULT_CONFIG["context_size"]`. Added `EMBEDDING_CONTEXT_SIZE = 4096`
+  for the (deliberately independent, chunk-sized) embedding server.
+- Replaced every hard-coded chat-context fallback with the constant, so the
+  default can no longer drift between entry points (they had diverged to
+  `32768`, `8192` and `4096`):
+  - **`llampaca/agent/loop.py`** — `Agent(context_size=...)` default.
+  - **`llampaca/cli.py`** — `run`/`serve`/`gui` `--ctx` fallbacks (were 32768).
+  - **`llampaca/engine/server.py`** — chat-mode fallback and
+    `restart_active_server` (were 8192 / 32768); the embedding-mode fallback
+    now uses `EMBEDDING_CONTEXT_SIZE`.
+  - **`llampaca/gui/server.py`** — all four GUI fallbacks (were 4096/32768),
+    including the per-message agent and the attachment budget — this is the
+    part that aligns the GUI to 8192 as requested.
+  - *Why:* the GUI was running at 4096 while the CLI used 8192; the user asked
+    for one place that sets the default for everyone. Change
+    `DEFAULT_CONTEXT_SIZE` in `config.py` and every path picks it up. (An
+    existing `~/.llampaca/config.json` still wins for that user, since
+    `load_config` only fills MISSING keys — the constant governs new configs
+    and every in-code fallback.)
+
 ### Added — GUI: file attachments (📎 button + drag-and-drop), the GUI equivalent of the CLI's `/attach`
 
 - **`llampaca/gui/server.py`** — New upload endpoint and staging pipeline,
