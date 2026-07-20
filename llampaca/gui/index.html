@@ -528,6 +528,85 @@
             opacity: 0.8;
         }
 
+        /* File attachment chips (staged, not yet sent) */
+        .attachment-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .attachment-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            max-width: 100%;
+            padding: 5px 10px;
+            border-radius: 16px;
+            background-color: #f6f8fa;
+            border: 1px solid var(--border-color);
+            font-size: 12px;
+            color: var(--text-main);
+        }
+
+        .attachment-chip.uploading { opacity: 0.7; }
+
+        .attachment-chip.error {
+            background-color: #fee2e2;
+            border-color: #fca5a5;
+            color: #b91c1c;
+        }
+
+        .attachment-chip .chip-name {
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 220px;
+        }
+
+        .attachment-chip .chip-detail {
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+
+        .attachment-chip.error .chip-detail { color: #b91c1c; }
+
+        .attachment-chip .chip-remove {
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 15px;
+            line-height: 1;
+            padding-left: 2px;
+        }
+
+        .attachment-chip .chip-remove:hover { color: var(--text-main); }
+
+        /* Drag-and-drop overlay over the messages panel */
+        .drop-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: rgba(255, 166, 48, 0.08);
+            border: 2px dashed var(--amber-glow);
+            border-radius: 8px;
+            pointer-events: none;
+        }
+
+        .drop-overlay-inner {
+            padding: 16px 24px;
+            border-radius: 12px;
+            background-color: white;
+            border: 1px solid var(--amber-glow);
+            color: var(--text-main);
+            font-weight: 600;
+            font-size: 14px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+        }
+
         /* 4. Models Manager Styling */
         .models-grid {
             display: grid;

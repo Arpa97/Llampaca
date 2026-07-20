@@ -5,6 +5,60 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-20]
 
+### Added — GUI: file attachments (📎 button + drag-and-drop), the GUI equivalent of the CLI's `/attach`
+
+- **`llampaca/gui/server.py`** — New upload endpoint and staging pipeline,
+  reusing the CLI's attachment logic end to end:
+  - `POST /api/conversations/<id>/attach` (`handle_post_attach`): receives the
+    raw file bytes (filename in the `X-Attachment-Filename` header), writes a
+    temp file preserving the suffix, and calls `attachments.extract_text`.
+  - `AgentManager.stage_attachment` applies the CLI's budget rule: within
+    `attachment_token_budget` the extracted text is staged for direct
+    injection; beyond it the document is indexed via a (lazy) `EmbeddingService`
+    and only a search pointer is staged. Staged items are kept per conversation
+    under a lock (`pending_attachments` / `pending_index_notes`).
+  - `handle_post_message` merges the staged items into the user turn *before*
+    persisting (via `build_attachment_block`), so the document travels with the
+    message in the DB and survives resume — the same "document + question as one
+    user turn" shape the CLI uses (Gemma-style templates reject two consecutive
+    user messages).
+  - `AgentManager.activate_document_search` (re)binds the `search_documents`
+    tool to the CURRENT conversation each message, since the GUI rebuilds the
+    agent per turn from one shared registry; the embedding server is stopped on
+    shutdown.
+  - Auto-titling now strips attachment blocks (`_strip_attachment_blocks`) so a
+    first message with a file is not titled after the document's first line.
+  - *Why:* the GUI registered the attachment machinery's dependencies but had
+    no way to actually attach a file; the terminal `/attach` was the only path.
+- **`llampaca/gui/models/chat_model.js`** — `uploadAttachment(convId, file)`.
+- **`llampaca/gui/controllers/chat_controller.js`** — attachment state (chips
+  with uploading/done/error status), `attachFiles` (button + drop share it),
+  drag-and-drop handlers, on-demand conversation creation extracted to
+  `ensureConversation`, and a per-conversation guard so creating a conversation
+  on drop does not wipe the chips just added.
+- **`llampaca/gui/components/ChatView.js`** — wired the (previously inert) 📎
+  button to a hidden file input, drag-and-drop over the messages panel with an
+  overlay, staged-file chips above the input, and collapsing of persisted
+  attachment blocks to a compact "📎 filename" line on reload.
+- **`llampaca/gui/index.html`** — styles for the chips and the drop overlay.
+- Note: verified by import/compile and the offline test suite (102 passing);
+  the upload + RAG path needs a live GUI + running servers to exercise
+  end-to-end.
+
+### Fixed — GUI: wiki index missing from the system prompt (model invented page names)
+
+- **`llampaca/gui/server.py`** — `_process_message_coro` now builds the
+  agent's `system_prompt` as `DEFAULT_SYSTEM_PROMPT + render_index()`, the
+  same way the CLI does at session start. The GUI already registered the
+  wiki tools (via `build_default_registry`) but never injected the wiki
+  index, so the model had no idea which pages actually exist and
+  hallucinated names like "user-identity"/"user-preferences" — while the
+  terminal (which injects the index) worked correctly against the same
+  `~/.llampaca/wiki`.
+  - *Why:* the wiki is only useful if the model knows its contents without
+    a blind tool call; the index is that awareness. `render_index()` reads
+    the real wiki dir, so GUI and terminal now share one memory view.
+
 ### Merged — `dev-umb` (RAG/embeddings + personal wiki) into `GUI_DEV` (GUI + MCP)
 
 - Merged branch `dev-umb` into the new `gui-umb` branch (base `GUI_DEV`),

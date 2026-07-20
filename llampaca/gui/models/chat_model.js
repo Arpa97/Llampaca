@@ -38,4 +38,29 @@ export class ChatModel {
         if (!response.ok) throw new Error(await response.text());
         return response.body; // Returns readable stream for SSE parsing
     }
+
+    // Upload a file to be staged for the conversation's next message.
+    // The raw bytes are the request body; the filename rides in a header
+    // (URL-encoded) because the server drops the query string. Resolves to
+    // {kind:"inject"|"rag", filename, ...} or throws the server's error text.
+    async uploadAttachment(convId, file) {
+        const response = await fetch(`/api/conversations/${convId}/attach`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'X-Attachment-Filename': encodeURIComponent(file.name)
+            },
+            body: file
+        });
+        if (!response.ok) {
+            // The server sends {error: "..."} for both 4xx and 5xx.
+            let message = `Upload fallito (${response.status})`;
+            try {
+                const err = await response.json();
+                if (err && err.error) message = err.error;
+            } catch (_) { /* non-JSON body: keep the generic message */ }
+            throw new Error(message);
+        }
+        return await response.json();
+    }
 }

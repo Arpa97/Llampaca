@@ -29,6 +29,25 @@ def run_async(coro):
     else:
         return asyncio.run(coro)
 
+import re
+
+# Matches an injected attachment block (build_attachment_block output) or a
+# RAG index note, so the user's own words can be recovered from a merged
+# message — used for auto-titling. DOTALL: the document body spans lines.
+_ATTACHMENT_BLOCK_RE = re.compile(
+    r"\[Attached file:.*?\[End of attached file:[^\]]*\]"
+    r"|\[Attached and indexed:[^\]]*\]",
+    re.DOTALL,
+)
+
+
+def _strip_attachment_blocks(text: str) -> str:
+    """Remove attachment/index blocks from a merged user message, leaving the
+    user's actual text (collapsing the whitespace they were joined with)."""
+    stripped = _ATTACHMENT_BLOCK_RE.sub("", text or "")
+    return stripped.strip()
+
+
 def is_server_running(host="127.0.0.1", port=8080):
     """Quickly check if the llama-server is listening on the configured port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -51,7 +70,28 @@ class AgentManager:
         self.config = None
         self.pending_confirmations = {}
         self.current_task = None
-        
+
+        # --- File attachments (GUI equivalent of the CLI's /attach) -------
+        # Attachments uploaded but not yet sent, keyed by conversation id.
+        # Same staging model as the CLI: a file is extracted/indexed the
+        # moment it is uploaded, then merged into the NEXT user message so
+        # the model receives "document + question" as one user turn (chat
+        # templates like Gemma's reject two consecutive user messages).
+        #   pending_attachments[conv_id] -> [(filename, extracted_text), ...]
+        #       small files, injected verbatim into the next message.
+        #   pending_index_notes[conv_id] -> [note_str, ...]
+        #       large files, indexed for RAG; only a pointer travels with
+        #       the message, never the document text.
+        # Mutated from both the HTTP thread (upload/take) and this manager's
+        # event-loop thread (indexing), so every access takes _pending_lock.
+        self.pending_attachments = {}
+        self.pending_index_notes = {}
+        self._pending_lock = threading.Lock()
+        # Lazily created on the first over-budget attachment: constructing it
+        # only resolves the configured embedder; the embedding llama-server
+        # subprocess starts on the first ensure_started()/index_document().
+        self.embedding_service = None
+
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_until_complete(self._main_task())
@@ -221,6 +261,14 @@ class AgentManager:
         except Exception as e:
             print(f"Error stopping active llama-server on shutdown: {e}", flush=True)
 
+        # Stop the embedding llama-server too, if a large attachment ever
+        # started it (idempotent no-op otherwise).
+        try:
+            if self.embedding_service is not None:
+                self.embedding_service.stop()
+        except Exception as e:
+            print(f"Error stopping embedding server on shutdown: {e}", flush=True)
+
         if self.thread.is_alive() and self.request_queue:
             # 1. Cancel active processing task
             if self.current_task:
@@ -260,6 +308,131 @@ class AgentManager:
         result = self.pending_confirmations.pop(confirm_id)["result"]
         return result
 
+    # ------------------------------------------------------------------ #
+    # File attachments                                                    #
+    # ------------------------------------------------------------------ #
+    def _ensure_embedding_service(self):
+        """Create the EmbeddingService once (lazy). The subprocess it drives
+        is NOT started here — that happens on ensure_started()/index_document,
+        so a session that never attaches a large file never spawns it."""
+        if self.embedding_service is None:
+            from llampaca.engine.embedding import EmbeddingService
+            self.embedding_service = EmbeddingService()
+        return self.embedding_service
+
+    async def stage_attachment(self, conv_id, filename, text, context_size):
+        """
+        Stage an already-extracted document for a conversation, mirroring the
+        CLI's /attach decision: within the attachment budget the text is
+        injected verbatim into the next message; beyond it the document is
+        indexed for RAG and only a search pointer is staged.
+
+        Runs on this manager's event loop (index_document is async). Returns a
+        dict the HTTP handler serializes back to the browser.
+        """
+        from llampaca.attachments import (
+            attachment_token_budget,
+            estimate_tokens,
+        )
+
+        budget = attachment_token_budget(context_size)
+        with self._pending_lock:
+            staged = sum(
+                estimate_tokens(t)
+                for _, t in self.pending_attachments.get(conv_id, [])
+            )
+        new_tokens = estimate_tokens(text)
+
+        # Fits the budget: inject directly (phase 1). The check is on the
+        # cumulative staged size, so many small files that jointly overflow
+        # get the same treatment as one big one.
+        if staged + new_tokens <= budget:
+            with self._pending_lock:
+                self.pending_attachments.setdefault(conv_id, []).append(
+                    (filename, text)
+                )
+            used_pct = (staged + new_tokens) * 100 // budget if budget else 0
+            return {
+                "kind": "inject",
+                "filename": filename,
+                "tokens": new_tokens,
+                "budget_used_pct": used_pct,
+            }
+
+        # Too large for direct injection: index for search (RAG). Useless
+        # without a tool registry to expose search_documents, so guard it.
+        if self.registry is None:
+            raise RuntimeError(
+                f"'{filename}' is too large to inject (~{new_tokens} tokens vs "
+                f"a budget of ~{budget}) and tools are disabled, so it cannot "
+                "be indexed for search either. Attach a smaller file."
+            )
+
+        service = self._ensure_embedding_service()
+        info = await service.index_document(conv_id, filename, text)
+        pages_part = f", {info['pages']} pages" if info["pages"] else ""
+        note = (
+            f"[Attached and indexed: {filename} "
+            f"({info['chunks']} searchable passages{pages_part}). "
+            "This document is NOT in your context: use the search_documents "
+            "tool to read passages from it.]"
+        )
+        with self._pending_lock:
+            self.pending_index_notes.setdefault(conv_id, []).append(note)
+        return {
+            "kind": "rag",
+            "filename": filename,
+            "chunks": info["chunks"],
+            "pages": info["pages"],
+        }
+
+    def take_pending(self, conv_id):
+        """Atomically pop and return (attachments, index_notes) staged for a
+        conversation, clearing them. Called from the HTTP thread right before
+        the user message is persisted, so the attachments ride along with it
+        exactly once."""
+        with self._pending_lock:
+            attachments = self.pending_attachments.pop(conv_id, [])
+            notes = self.pending_index_notes.pop(conv_id, [])
+        return attachments, notes
+
+    async def activate_document_search(self, conv_id):
+        """
+        Ensure the search_documents tool on self.registry is bound to
+        `conv_id` when that conversation has indexed documents, and absent
+        otherwise. Because the GUI rebuilds the Agent per message from one
+        shared registry, the tool must be (re)bound to the CURRENT
+        conversation each turn — otherwise a message in conversation B could
+        search conversation A's documents.
+        """
+        if self.registry is None:
+            return
+        from llampaca.engine.db import list_documents
+        from llampaca.tools import register_document_tools
+
+        docs = await list_documents(conv_id)
+        has_tool = "search_documents" in self.registry.names()
+
+        if not docs:
+            # No documents for this conversation: drop any stale binding left
+            # over from a previously active conversation.
+            if has_tool and "search_documents" in self.registry._tools:
+                del self.registry._tools["search_documents"]
+            return
+
+        # (Re)bind the tool to this conversation. Registering unconditionally
+        # is cheapest and guarantees the closure captures the right conv_id;
+        # remove the previous one first so registration never conflicts.
+        service = self._ensure_embedding_service()
+        await service.ensure_started()
+        if "search_documents" in self.registry._tools:
+            del self.registry._tools["search_documents"]
+        register_document_tools(
+            self.registry,
+            embed_query=service.query_embedder(),
+            conversation_id=conv_id,
+        )
+
     def process_message(self, conv_id, content, user_msg_id, conv_data, config, result_queue):
         if self.request_queue:
             asyncio.run_coroutine_threadsafe(
@@ -269,19 +442,46 @@ class AgentManager:
         
     async def _process_message_coro(self, conv_id, content, user_msg_id, conv_data, config, result_queue):
         try:
-            from llampaca.agent.loop import Agent
-            
+            from llampaca.agent.loop import Agent, DEFAULT_SYSTEM_PROMPT
+            from llampaca import wiki
+
             last_tool_call = {}
-            
+
             async def _confirm_wrapper(prompt):
                 if last_tool_call:
                     return await self.confirm_tool(last_tool_call.get("name"), last_tool_call.get("arguments"), result_queue)
                 return False
-                
+
+            # Bind (or unbind) the search_documents tool to THIS conversation
+            # before the agent is built: if the conversation has documents
+            # that were indexed by an over-budget attachment, the model must
+            # be able to search them; if it has none, any stale binding from a
+            # previously active conversation must be removed. Best-effort — a
+            # missing embedder must not break plain chat.
+            try:
+                await self.activate_document_search(conv_id)
+            except Exception as e:
+                result_queue.put((
+                    "event", "warning",
+                    f"Ricerca documenti non disponibile: {e}",
+                ))
+
+            # The wiki index (the model's persistent memory: page names +
+            # descriptions) must ride in the system prompt so the model
+            # knows what it actually remembers instead of guessing page
+            # names. The CLI does this at session start (cli.py); the GUI
+            # rebuilds the agent per message, so we build the index here.
+            # render_index() reads the real ~/.llampaca/wiki, so this stays
+            # in sync with what /remember stores from the terminal too.
+            system_prompt = None
+            if self.registry is not None:
+                system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+
             agent = Agent(
                 client=self.client,
                 registry=self.registry,
                 confirm=_confirm_wrapper,
+                system_prompt=system_prompt,
                 model=conv_data.get("model_name", "local-model"),
                 context_size=config.get("context_size", 4096),
                 summary=conv_data.get("summary")
@@ -331,7 +531,11 @@ class AgentManager:
                 # Auto-titling for new conversations
                 if len(conv_data.get("messages", [])) <= 1:
                     try:
-                        title_prompt = f"Scrivi un titolo molto breve (massimo 4-5 parole) che riassuma questo messaggio. Restituisci SOLO il titolo senza virgolette o preamboli: {content}"
+                        # Title on the user's own words, not on the injected
+                        # document text (which would produce a title made of
+                        # the attachment's first sentence).
+                        title_source = _strip_attachment_blocks(content)
+                        title_prompt = f"Scrivi un titolo molto breve (massimo 4-5 parole) che riassuma questo messaggio. Restituisci SOLO il titolo senza virgolette o preamboli: {title_source}"
                         title_res = ""
                         async for chunk in self.client.chat_stream([{"role": "user", "content": title_prompt}]):
                             title_res += chunk
@@ -473,6 +677,11 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.handle_post_message(conv_id)
                 return
 
+            if len(parts) == 4 and parts[3] == 'attach':  # POST /api/conversations/<id>/attach
+                conv_id = parts[2]
+                self.handle_post_attach(conv_id)
+                return
+
             # Otherwise: POST /api/conversations (Create new conversation)
             content_length = int(self.headers.get('Content-Length', 0))
             payload = {}
@@ -515,6 +724,23 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             role = payload.get('role', 'user')
             content = payload.get('content', '')
             print(f"--- [API POST MESSAGE] Content payload: '{content[:100]}...'", flush=True)
+
+            # Merge any files staged for this conversation into the user turn,
+            # mirroring the CLI: injected attachments (document text) and RAG
+            # index notes go BEFORE the user's request, as one user message.
+            # Done here — before persisting — so the document travels with the
+            # message in the DB and stays available for follow-up questions on
+            # resume, not just for the single turn it was attached on.
+            attachments, index_notes = agent_manager.take_pending(conv_id)
+            if attachments or index_notes:
+                from llampaca.attachments import build_attachment_block
+                blocks = [build_attachment_block(n, t) for n, t in attachments]
+                blocks.extend(index_notes)
+                content = "\n\n".join(blocks + [content])
+                names = ", ".join(n for n, _ in attachments)
+                if index_notes:
+                    names = f"{names + ', ' if names else ''}{len(index_notes)} indexed doc(s)"
+                print(f"--- [API POST MESSAGE] Merged attachments: {names}", flush=True)
 
             # 1. Add user message to DB
             user_msg_id = run_async(add_message(conv_id, role, content))
@@ -607,6 +833,87 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(500, str(e))
             except Exception:
                 pass
+
+    def handle_post_attach(self, conv_id):
+        """
+        Upload a file to stage for the conversation's next message (the GUI
+        equivalent of the CLI's /attach). The raw file bytes are the request
+        body; the original filename rides in the X-Attachment-Filename header
+        (URL-encoded) because do_POST already stripped the query string and
+        the suffix is what extract_text dispatches on.
+
+        Responds with JSON describing whether the file was injected directly
+        or indexed for RAG, or a 4xx/5xx with a user-facing error message.
+        """
+        import tempfile
+        import os
+        from urllib.parse import unquote
+
+        print(f"\n>>> [API POST ATTACH] Conversation ID: {conv_id}", flush=True)
+        tmp_path = None
+        try:
+            raw_name = self.headers.get('X-Attachment-Filename', '')
+            filename = os.path.basename(unquote(raw_name)) or "attachment"
+
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length <= 0:
+                self.send_error(400, "Empty upload")
+                return
+            data = self.rfile.read(content_length)
+
+            # Persist to a temp file preserving the suffix: extract_text keys
+            # off the extension, and pypdf/python-docx read from a path.
+            suffix = Path(filename).suffix
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+
+            from llampaca.attachments import extract_text, AttachmentError
+            try:
+                text = extract_text(Path(tmp_path))
+            except AttachmentError as e:
+                # User-facing extraction problem (unsupported type, encrypted
+                # PDF, empty file...): 400 with the message shown verbatim.
+                self._send_json({"error": str(e)}, status=400)
+                return
+
+            config = load_config()
+            context_size = config.get("context_size", 4096)
+
+            # Staging (and, for large files, indexing) happens on the manager's
+            # event loop: index_document is async and shares its embedding
+            # server. run_coroutine_threadsafe blocks this HTTP thread until
+            # it finishes, which is exactly the request/response we want.
+            future = asyncio.run_coroutine_threadsafe(
+                agent_manager.stage_attachment(
+                    conv_id, filename, text, context_size
+                ),
+                agent_manager.loop,
+            )
+            result = future.result()
+            print(f"<<< [API POST ATTACH] {result}", flush=True)
+            self._send_json(result)
+
+        except Exception as e:
+            print("!!! [API POST ATTACH ERROR] Exception occurred:", flush=True)
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    def _send_json(self, obj, status=200):
+        """Serialize a dict as a JSON response (small helper for the attach
+        endpoint's success/error replies)."""
+        body = json.dumps(obj).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def handle_delete_conversation(self):
         print(f"\n>>> [API DELETE] {self.path}", flush=True)

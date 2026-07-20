@@ -125,7 +125,13 @@
       "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.cli, llampaca.agent.loop, llampaca.engine.server, llampaca.config; print\\('imports OK'\\)\")",
       "Bash(~/miniconda3/envs/llampaca/bin/python -m unittest discover tests -q)",
       "Bash(git worktree *)",
-      "Bash(~/miniconda3/envs/llampaca/bin/python -m unittest discover -s /private/tmp/wt-devumb/tests -t /private/tmp/wt-devumb -q)"
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m unittest discover -s /private/tmp/wt-devumb/tests -t /private/tmp/wt-devumb -q)",
+      "Bash(git commit *)",
+      "Bash(git ls-remote *)",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.gui.server; from llampaca import wiki; print\\('render_index preview:'\\); print\\(wiki.render_index\\(\\)[:200]\\)\")",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py syntax OK'\\)\")",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import llampaca.gui.server; print\\('import OK'\\)\")",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m compileall -q llampaca/gui/)"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

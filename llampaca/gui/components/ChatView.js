@@ -23,7 +23,11 @@ export default {
                 </div>
                 
                 <!-- Messages Panel (Scrolls independently, input pinned at the bottom) -->
-                <div class="chat-main">
+                <div class="chat-main" style="position: relative;"
+                     @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
+                    <div v-if="isDragging" class="drop-overlay">
+                        <div class="drop-overlay-inner">📎 Rilascia i file per allegarli</div>
+                    </div>
                     <div class="messages-list" ref="messagesContainer">
                         <div v-if="!getActiveMessages.length" style="margin: auto; text-align: center; color: var(--text-muted); max-width: 320px;">
                             <img src="logo.png" alt="Llampaca" style="width: 140px; border-radius: 12px; margin-bottom: 20px; opacity: 0.15;">
@@ -55,8 +59,17 @@ export default {
                         <div v-if="contextBudget" style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-align: right; padding-right: 10px;">
                             Contesto occupato: {{ Math.round((contextBudget.used_chars / contextBudget.max_chars) * 100) }}% ({{ Math.round(contextBudget.used_chars/1000) }}k / {{ Math.round(contextBudget.max_chars/1000) }}k char)
                         </div>
+                        <div v-if="attachments.length" class="attachment-chips">
+                            <div v-for="(a, i) in attachments" :key="i" class="attachment-chip" :class="a.status">
+                                <span class="chip-icon">{{ a.status === 'uploading' ? '⏳' : (a.status === 'error' ? '⚠️' : (a.kind === 'rag' ? '🔍' : '📄')) }}</span>
+                                <span class="chip-name" :title="a.name">{{ a.name }}</span>
+                                <span v-if="a.detail" class="chip-detail">{{ a.detail }}</span>
+                                <span class="chip-remove" @click="removeAttachment(i)" title="Rimuovi">&times;</span>
+                            </div>
+                        </div>
                         <div class="chat-input-box">
-                            <button class="attachment-btn" title="Allega un file">
+                            <input type="file" ref="fileInput" multiple @change="onFileChange" style="display: none;" />
+                            <button class="attachment-btn" title="Allega un file" @click="openFilePicker">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                             </button>
                             <input class="chat-input-field" v-model="userInput" @keyup.enter="sendMessage" placeholder="Digita una domanda o chiedi un'azione mail/tool..." />
@@ -71,13 +84,45 @@ export default {
     `,
     setup() {
         const chatCtrl = useChatController();
+
+        // Hidden <input type="file"> driven by the 📎 button. Kept here (not
+        // in the controller) because it is a pure view concern — the DOM
+        // element and the click that opens the native picker.
+        const fileInput = Vue.ref(null);
+        const openFilePicker = () => {
+            if (fileInput.value) fileInput.value.click();
+        };
+        const onFileChange = (e) => {
+            chatCtrl.attachFiles(e.target.files);
+            // Reset so selecting the same file again re-fires @change.
+            e.target.value = '';
+        };
+
+        // Collapse the attachment blocks that the backend merges into a user
+        // message down to a compact "📎 filename" line, so a reloaded
+        // conversation shows a tidy chip instead of the whole document text
+        // (the model still received the full block; this is display-only).
+        const collapseAttachments = (text) => {
+            if (!text) return text;
+            return text
+                .replace(
+                    /\[Attached file: (.+?) —[\s\S]*?\[End of attached file:[^\]]*\]/g,
+                    (_m, name) => `📎 *${name.trim()}*`
+                )
+                .replace(
+                    /\[Attached and indexed: (.+?) \([\s\S]*?\]/g,
+                    (_m, name) => `📎 *${name.trim()}*`
+                );
+        };
+
         const parseMarkdown = (text) => {
             if (!text) return '';
+            const clean = collapseAttachments(text);
             // Use marked if available, fallback to plain text replacing newlines
             if (window.marked) {
-                return window.marked.parse(text, { breaks: true });
+                return window.marked.parse(clean, { breaks: true });
             }
-            return text.replace(/\n/g, '<br>');
+            return clean.replace(/\n/g, '<br>');
         };
         const formatArguments = (argsJson) => {
             try {
@@ -89,6 +134,9 @@ export default {
         };
         return {
             ...chatCtrl,
+            fileInput,
+            openFilePicker,
+            onFileChange,
             parseMarkdown,
             formatArguments
         };
