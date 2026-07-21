@@ -32,6 +32,10 @@ def run_shell_command(command: str) -> str:
     env["NODE_PATH"] = f"{node_modules_path}:{existing_node_path}".strip(":") if existing_node_path else node_modules_path
     env["NODE_OPTIONS"] = "--unhandled-rejections=strict"
 
+    # Enforce isolated node_modules: redirect any direct `npm install` to ~/.llampaca
+    if "npm install" in command and "--prefix" not in command:
+        command = command.replace("npm install", f"npm install --prefix \"{LLAMPACA_DIR}\"")
+
     try:
         completed = subprocess.run(
             command,
