@@ -125,6 +125,12 @@ def read_skill(name: str, skills_dir: Optional[Path] = None) -> str:
 def write_skill(name: str, content: str, skills_dir: Optional[Path] = None) -> str:
     """
     Create or overwrite a skill Markdown file.
+
+    The on-disk slug is derived from the name declared *inside* the file
+    (YAML frontmatter `name:`/`title:` or the first Markdown header) when
+    present, so the filename matches the skill's declared identity and the
+    slug advertised in the system-prompt index. The `name` argument is only
+    used as a fallback when the content declares no name of its own.
     """
     if not content.strip():
         raise ValueError("Il contenuto della skill non può essere vuoto.")
@@ -133,7 +139,10 @@ def write_skill(name: str, content: str, skills_dir: Optional[Path] = None) -> s
             f"Il contenuto della skill supera il limite massimo di {MAX_SKILL_CHARS} caratteri."
         )
 
-    path = skill_path(name, skills_dir)
+    # Prefer the name declared in the file so file and content stay aligned;
+    # fall back to the provided argument (already validated by slugify).
+    meta = _parse_skill_metadata(content, fallback_stem=slugify(name))
+    path = skill_path(meta["name"], skills_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path.stem

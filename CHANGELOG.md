@@ -5,6 +5,15 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-21]
 
+### Fixed — Skills Discovery in CLI + Skill Slug/Name Alignment
+
+- **`llampaca/cli.py`**:
+  - Injected the Markdown skills index (`skills.render_skills_index()`) into the CLI system prompt, next to the wiki index. Reason: the `read_skill_page` tool was registered for terminal sessions but the model had no way to discover which skills existed — the index was only built in the GUI server. Now skills are discoverable from the terminal too.
+- **`llampaca/skills.py`**:
+  - `write_skill()` now derives the on-disk slug from the name declared *inside* the file (YAML frontmatter `name:`/`title:` or first Markdown header) when present, falling back to the `name` argument otherwise. Reason: previously the filename slug came from the `name` argument while the declared name could differ, so the slug advertised in the prompt index did not match the skill's declared identity.
+- **`tests/test_skills.py`**:
+  - Updated `test_write_and_read_skill` / `test_delete_skill` to use content without a conflicting declared name, and added `test_slug_derived_from_declared_name` to lock in the new slug-alignment behavior. Reason: the two old tests encoded the previous inconsistency.
+
 ### Added — Smithery.ai MCP Search, GGUF/MCP Pagination, Self-Aware AI Error Explanations
 
 - **`llampaca/gui/server.py`**:

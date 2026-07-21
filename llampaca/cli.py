@@ -23,6 +23,7 @@ from llampaca.agent import Agent
 from llampaca.agent.loop import DEFAULT_SYSTEM_PROMPT
 from llampaca.tools import build_default_registry
 from llampaca import wiki
+from llampaca import skills
 
 def format_size(bytes_size: int) -> str:
     """Format bytes into human-readable size."""
@@ -326,6 +327,15 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
     system_prompt = None
     if registry is not None:
         system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+        # The Markdown skills index (slug + short description of each
+        # installed skill) also rides in the system prompt so the model
+        # knows which skills exist and can pull the full instructions with
+        # read_skill_page(). Without this the tool is registered but the
+        # model has no way to discover the available slugs. Mirrors what the
+        # GUI server already does per message.
+        skills_idx = skills.render_skills_index()
+        if skills_idx:
+            system_prompt += "\n\n" + skills_idx
 
     agent = Agent(
         client=client,

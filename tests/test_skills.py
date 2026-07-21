@@ -20,12 +20,31 @@ class TestSkills(unittest.TestCase):
         self.assertEqual(skills.slugify("Git Workflow"), "git_workflow")
 
     def test_write_and_read_skill(self):
-        content = "# Python Skill\n\nIstruzioni per Python."
+        # When no name is declared inside the content, the slug falls back to
+        # the provided name argument.
+        content = "Istruzioni per Python."
         slug = skills.write_skill("python_expert", content, skills_dir=self.skills_dir)
         self.assertEqual(slug, "python_expert")
 
         read_content = skills.read_skill("python_expert", skills_dir=self.skills_dir)
         self.assertEqual(read_content, content)
+
+    def test_slug_derived_from_declared_name(self):
+        # The slug is taken from the name declared inside the file (YAML
+        # frontmatter or first header), not from the name argument, so the
+        # filename stays aligned with the skill's declared identity and the
+        # slug advertised in the system-prompt index.
+        header_slug = skills.write_skill(
+            "arg_ignored", "# Python Skill\n\nIstruzioni.", skills_dir=self.skills_dir
+        )
+        self.assertEqual(header_slug, "python_skill")
+
+        yaml_slug = skills.write_skill(
+            "arg_ignored_2",
+            "---\nname: Guida Fatturazione\ndescription: IVA\n---\n# X\n",
+            skills_dir=self.skills_dir,
+        )
+        self.assertEqual(yaml_slug, "guida_fatturazione")
 
     def test_yaml_frontmatter_metadata(self):
         content = """---
@@ -44,7 +63,8 @@ description: Istruzioni per scrivere codice pulito e modulare.
         self.assertEqual(skill_list[0]["description"], "Istruzioni per scrivere codice pulito e modulare.")
 
     def test_delete_skill(self):
-        skills.write_skill("temp_skill", "# Temp", skills_dir=self.skills_dir)
+        slug = skills.write_skill("temp_skill", "Contenuto temporaneo.", skills_dir=self.skills_dir)
+        self.assertEqual(slug, "temp_skill")
         self.assertTrue(skills.delete_skill("temp_skill", skills_dir=self.skills_dir))
         self.assertEqual(len(skills.list_skills(skills_dir=self.skills_dir)), 0)
 
