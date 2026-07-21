@@ -36,21 +36,21 @@ WORKSPACE_ROOT = Path.cwd().resolve()
 
 def _resolve_in_workspace(path: str) -> Path:
     """
-    Resolve a model-provided path safely inside the workspace root.
+    Resolve a model-provided path safely inside the workspace root or user home.
 
-    Relative paths are resolved against the workspace root. Absolute paths
-    are allowed only if they already point inside it. Raises PermissionError
-    for anything that escapes the sandbox.
+    Relative paths are resolved against the workspace root. Tilde (~) and
+    absolute paths pointing inside the user home directory are expanded and allowed.
     """
-    candidate = Path(path)
+    candidate = Path(path).expanduser()
     if not candidate.is_absolute():
         candidate = WORKSPACE_ROOT / candidate
     resolved = candidate.resolve()
 
-    if not resolved.is_relative_to(WORKSPACE_ROOT):
+    home = Path.home().resolve()
+    if not (resolved.is_relative_to(WORKSPACE_ROOT) or resolved.is_relative_to(home)):
         raise PermissionError(
-            f"Path '{path}' is outside the workspace ({WORKSPACE_ROOT}). "
-            "Only paths inside the workspace are allowed."
+            f"Path '{path}' is outside the workspace ({WORKSPACE_ROOT}) and home directory ({home}). "
+            "Only paths inside the workspace or home directory are allowed."
         )
     return resolved
 

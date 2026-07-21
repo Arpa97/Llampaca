@@ -45,14 +45,19 @@ export default {
 
                     </div>
                     
-                    <!-- Sticky Prompt Confirmation Banner (Always visible above input bar) -->
-                    <div v-if="pendingConfirmation" class="confirmation-box-sticky" style="margin: 10px 20px; padding: 16px; background: var(--bg-card); border: 2px solid var(--amber-glow); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 100;">
-                        <div class="confirmation-title" style="font-size: 14px; font-weight: 600; color: var(--amber-glow); margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                            Autorizzazione Richiesta: <strong>{{ pendingConfirmation.name }}</strong>
+                    <!-- Sticky Prompt Confirmation Banner (FIFO Queue, Always visible above input bar) -->
+                    <div v-if="currentConfirmation" class="confirmation-box-sticky" style="margin: 10px 20px; padding: 16px; background: var(--bg-card); border: 2px solid var(--amber-glow); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 100;">
+                        <div class="confirmation-title" style="font-size: 14px; font-weight: 600; color: var(--amber-glow); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                                Autorizzazione Richiesta: <strong>{{ currentConfirmation.name }}</strong>
+                            </div>
+                            <span v-if="pendingConfirmations.length > 1" style="font-size: 11px; background: var(--amber-glow); color: #000; padding: 2px 8px; border-radius: 10px; font-weight: bold;">
+                                1 di {{ pendingConfirmations.length }} in coda
+                            </span>
                         </div>
                         <div class="confirmation-args" style="margin-bottom: 12px; max-height: 200px; overflow-y: auto; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px;">
-                            <pre style="margin: 0; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;">{{ formatArguments(pendingConfirmation.arguments) }}</pre>
+                            <pre style="margin: 0; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;">{{ formatArguments(currentConfirmation.arguments) }}</pre>
                         </div>
                         <div class="confirmation-actions" style="display: flex; justify-content: flex-end; gap: 10px;">
                             <button class="btn btn-danger" @click="resolveConfirmation(false)" style="padding: 6px 14px; font-size: 12.5px;">Rifiuta Operazione</button>

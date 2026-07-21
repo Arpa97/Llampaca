@@ -54,6 +54,8 @@ from llampaca.tools.registry import ToolRegistry
 # message. Prevents a confused model from looping on tool calls forever.
 MAX_ITERATIONS = 10
 
+DECLINED_MARKER = "[DECLINED]"
+
 # Minimum number of recent messages (turns) that are guaranteed to remain
 # in the active context window and never get trimmed/summarized.
 MIN_ACTIVE_WINDOW = 6
@@ -91,7 +93,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are Llampaca, a helpful local AI personal assistant running entirely "
     "on the user's machine. You can use the available tools to read and write "
     "files in the user's workspace, run shell commands, search the web, and "
-    "fetch web pages. When the user asks about current events or facts that may "
+    "fetch web pages. "
+    "CRITICAL RULE FOR SKILLS: If the user's request matches any Available Markdown Skill listed below (such as creating/editing Word .docx files using the 'docx' skill, etc.), you MUST call read_skill_page('<skill_slug>') FIRST to read the complete workflow and instructions before calling file or shell tools! "
+    "When the user asks about current events or facts that may "
     "have changed since your training, or anything you are unsure of or do "
     "not know, use web_search rather than guessing, and cite what you found. "
     # Language models tokenize text, so they cannot reliably see individual
@@ -415,6 +419,11 @@ class Agent:
                     "role": "user",
                     "content": f"[Result of tool '{name}']\n{result}",
                 })
+                if result.startswith(DECLINED_MARKER):
+                    cancel_msg = "\n\n⚠️ **Operazione annullata:** L'utente ha rifiutato l'autorizzazione per eseguire l'operazione."
+                    yield ("text", cancel_msg)
+                    self.messages.append({"role": "assistant", "content": cancel_msg.strip()})
+                    return
                 continue  # let the model see the result
 
             # --- 2b. Native mode: structured tool_calls from the server -
@@ -438,6 +447,12 @@ class Agent:
                     "tool_call_id": tool_call["id"],
                     "content": result,
                 })
+
+                if result.startswith(DECLINED_MARKER):
+                    cancel_msg = "\n\n⚠️ **Operazione annullata:** L'utente ha rifiutato l'autorizzazione per eseguire l'operazione."
+                    yield ("text", cancel_msg)
+                    self.messages.append({"role": "assistant", "content": cancel_msg.strip()})
+                    return
 
             # --- 3. Loop: let the model see the results and continue ----
 
@@ -773,13 +788,25 @@ class Agent:
                 )
             prompt = self._format_confirmation(name, arguments_json)
 
+            try:
+                sig = inspect.signature(self.confirm)
+                num_params = len(sig.parameters)
+            except Exception:
+                num_params = 1
+
             if inspect.iscoroutinefunction(self.confirm):
-                confirmed = await self.confirm(prompt)
+                if num_params >= 3:
+                    confirmed = await self.confirm(prompt, name, arguments_json)
+                else:
+                    confirmed = await self.confirm(prompt)
             else:
-                confirmed = self.confirm(prompt)
+                if num_params >= 3:
+                    confirmed = self.confirm(prompt, name, arguments_json)
+                else:
+                    confirmed = self.confirm(prompt)
 
             if not confirmed:
-                return "The user declined to execute this action."
+                return f"{DECLINED_MARKER} L'utente ha rifiutato l'autorizzazione per eseguire l'operazione '{name}'."
 
         return await self.registry.execute(name, arguments_json)
 

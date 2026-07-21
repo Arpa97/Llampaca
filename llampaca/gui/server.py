@@ -545,10 +545,10 @@ class AgentManager:
 
             last_tool_call = {}
 
-            async def _confirm_wrapper(prompt):
-                name = last_tool_call.get("name") or "strumento"
-                arguments = last_tool_call.get("arguments") or prompt
-                return await self.confirm_tool(name, arguments, result_queue)
+            async def _confirm_wrapper(prompt, name=None, arguments=None):
+                tool_name = name or last_tool_call.get("name") or "strumento"
+                tool_args = arguments or last_tool_call.get("arguments") or prompt
+                return await self.confirm_tool(tool_name, tool_args, result_queue)
 
             # Bind (or unbind) the search_documents tool to THIS conversation
             # before the agent is built: if the conversation has documents

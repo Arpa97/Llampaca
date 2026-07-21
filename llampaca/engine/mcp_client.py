@@ -134,9 +134,10 @@ class McpClientManager:
                     def make_wrapper(s_name, t_name):
                         async def mcp_tool_wrapper(**kwargs):
                             sess = self.sessions.get(s_name)
-                            if not sess:
-                                raise RuntimeError(f"MCP server session for '{s_name}' is not active")
-                            result = await sess.call_tool(t_name, kwargs)
+                            try:
+                                result = await asyncio.wait_for(sess.call_tool(t_name, kwargs), timeout=60.0)
+                            except asyncio.TimeoutError:
+                                raise RuntimeError(f"Il server MCP '{s_name}' non ha risposto per il tool '{t_name}' entro 60 secondi.")
                             formatted = format_mcp_result(result)
                             if getattr(result, "isError", False):
                                 raise RuntimeError(formatted)

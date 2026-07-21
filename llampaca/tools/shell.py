@@ -12,7 +12,7 @@ import subprocess
 
 # Commands are killed after this many seconds so a hanging command
 # (e.g. an interactive program waiting for input) cannot freeze the agent.
-COMMAND_TIMEOUT_SECONDS = 60
+COMMAND_TIMEOUT_SECONDS = 25
 
 
 def run_shell_command(command: str) -> str:
@@ -30,6 +30,7 @@ def run_shell_command(command: str) -> str:
     node_modules_path = str(LLAMPACA_DIR / "node_modules")
     existing_node_path = env.get("NODE_PATH", "")
     env["NODE_PATH"] = f"{node_modules_path}:{existing_node_path}".strip(":") if existing_node_path else node_modules_path
+    env["NODE_OPTIONS"] = "--unhandled-rejections=strict"
 
     try:
         completed = subprocess.run(

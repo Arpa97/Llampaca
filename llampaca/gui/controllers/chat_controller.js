@@ -1,6 +1,6 @@
 import { ChatModel } from '../models/chat_model.js';
 
-const { ref, watch, nextTick } = Vue;
+const { ref, watch, nextTick, computed } = Vue;
 
 export function useChatController() {
     const model = new ChatModel();
@@ -10,7 +10,8 @@ export function useChatController() {
     const userInput = ref('');
     const messagesContainer = ref(null);
     const contextBudget = ref(null);
-    const pendingConfirmation = ref(null);
+    const pendingConfirmations = ref([]);
+    const currentConfirmation = computed(() => pendingConfirmations.value.length ? pendingConfirmations.value[0] : null);
     // Files uploaded for the next message but not yet sent. Each entry:
     // { name, status: 'uploading'|'done'|'error', kind: 'inject'|'rag'|null,
     //   detail: string }. Cleared once the message that carries them is sent
@@ -42,6 +43,7 @@ export function useChatController() {
 
     // Watch activeConversationId and load full history for the selected conversation
     watch(activeConversationId, async (newVal) => {
+        pendingConfirmations.value = [];
         // Staged files belong to a single conversation (the backend keys its
         // pending list by conversation id); leaving for a DIFFERENT one
         // abandons its chips so they can't be sent with the wrong message.
@@ -54,10 +56,14 @@ export function useChatController() {
             activeMessages.value = [];
             return;
         }
+        // If a message is actively streaming, don't overwrite activeMessages with stale fetch
+        if (isStreaming.value) return;
         try {
             const detail = await model.getConversation(newVal);
-            activeMessages.value = detail ? detail.messages : [];
-            scrollToBottom();
+            if (!isStreaming.value) {
+                activeMessages.value = detail ? detail.messages : [];
+                scrollToBottom();
+            }
         } catch (err) {
             console.error("Errore caricamento dettaglio conversazione:", err);
         }
@@ -170,22 +176,28 @@ export function useChatController() {
                             const kind = payload.kind;
                             const data = payload.data;
 
+                            const getMsg = () => activeMessages.value[assistantIndex];
+
                             if (kind === "status_update") {
-                                activeMessages.value[assistantIndex].thought = data;
+                                const msg = getMsg();
+                                if (msg) msg.thought = data;
                                 scrollToBottom();
                             } else if (kind === "text") {
                                 // Accumulate streaming text
-                                if (activeMessages.value[assistantIndex].thought) {
-                                    activeMessages.value[assistantIndex].thought = ''; // clear thought
+                                const msg = getMsg();
+                                if (msg) {
+                                    if (msg.thought) msg.thought = '';
+                                    msg.content += data;
                                 }
-                                activeMessages.value[assistantIndex].content += data;
                                 scrollToBottom();
                             } else if (kind === "tool_call") {
-                                activeMessages.value[assistantIndex].thought = `Uso lo strumento: ${data.name}...`;
+                                const msg = getMsg();
+                                if (msg) msg.thought = `Uso lo strumento: ${data.name}...`;
                                 console.log(`[tool] ${data.name}(${JSON.stringify(data.arguments)})`);
                                 scrollToBottom();
                             } else if (kind === "tool_result") {
-                                activeMessages.value[assistantIndex].thought = `Elaboro il risultato di: ${data.name}...`;
+                                const msg = getMsg();
+                                if (msg) msg.thought = `Elaboro il risultato di: ${data.name}...`;
                                 let preview = data.result.replace(/\n/g, " ");
                                 if (preview.length > 100) preview = preview.slice(0, 100) + "...";
                                 console.log(`[risultato] ${preview}`);
@@ -199,23 +211,30 @@ export function useChatController() {
                                 const conv = conversations.value.find(c => c.id === convId);
                                 if (conv) conv.title = data.title;
                             } else if (kind === "tool_confirm_request") {
-                                pendingConfirmation.value = data;
-                                activeMessages.value[assistantIndex].thought = `⚠️ Autorizzazione richiesta per l'operazione: ${data.name}...`;
+                                pendingConfirmations.value.push(data);
+                                const msg = getMsg();
+                                if (msg) msg.thought = `⚠️ Autorizzazione richiesta per l'operazione: ${data.name}...`;
                                 scrollToBottom();
                             } else if (kind === "warning") {
                                 console.warn(`[avviso] ${data}`);
                             } else if (kind === "error") {
                                 console.error(`[errore] ${data}`);
-                                activeMessages.value[assistantIndex].thought = '';
-                                activeMessages.value[assistantIndex].content += `\n❌ **[Errore di sistema, vedi console]**`;
+                                const msg = getMsg();
+                                if (msg) {
+                                    msg.thought = '';
+                                    msg.content += `\n❌ **[Errore di sistema, vedi console]**`;
+                                }
                                 scrollToBottom();
                             } else if (kind === "cancelled") {
                                 // Backend confirmed the stop: keep whatever was
                                 // streamed, drop the "thinking" line, mark it.
                                 markStopped(assistantIndex);
                             } else if (kind === "done") {
-                                activeMessages.value[assistantIndex].thought = '';
-                                activeMessages.value[assistantIndex].timestamp = new Date().toTimeString().split(' ')[0];
+                                const msg = getMsg();
+                                if (msg) {
+                                    msg.thought = '';
+                                    msg.timestamp = new Date().toTimeString().split(' ')[0];
+                                }
                                 // Reload conversations list to update sidebar titles if needed
                                 conversations.value = await model.getConversations();
                             }
@@ -261,7 +280,7 @@ export function useChatController() {
             console.error("Errore durante l'annullamento:", e);
         }
         if (abortController) abortController.abort();
-        pendingConfirmation.value = null;
+        pendingConfirmations.value = [];
         isStreaming.value = false;
     };
 
@@ -289,9 +308,9 @@ export function useChatController() {
     };
 
     const resolveConfirmation = async (allow) => {
-        if (!pendingConfirmation.value) return;
-        const confirmId = pendingConfirmation.value.confirm_id;
-        pendingConfirmation.value = null; // Hide UI immediately
+        if (!pendingConfirmations.value.length) return;
+        const current = pendingConfirmations.value.shift();
+        const confirmId = current.confirm_id;
         
         try {
             await fetch('/api/confirm', {
@@ -386,7 +405,8 @@ export function useChatController() {
         userInput,
         messagesContainer,
         contextBudget,
-        pendingConfirmation,
+        pendingConfirmations,
+        currentConfirmation,
         attachments,
         isDragging,
         isStreaming,
