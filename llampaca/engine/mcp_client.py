@@ -103,19 +103,29 @@ class McpClientManager:
                 )
 
                 print(f"Connecting to MCP server '{name}'...", file=sys.stderr)
-                read_stream, write_stream = await self.exit_stack.enter_async_context(
-                    stdio_client(params)
-                )
+                
+                async def _connect_and_init():
+                    read_stream, write_stream = await self.exit_stack.enter_async_context(
+                        stdio_client(params)
+                    )
 
-                session = await self.exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream)
-                )
+                    session = await self.exit_stack.enter_async_context(
+                        ClientSession(read_stream, write_stream)
+                    )
 
-                await session.initialize()
-                self.sessions[name] = session
+                    await session.initialize()
+                    self.sessions[name] = session
 
-                # Fetch tools and register them
-                tools_result = await session.list_tools()
+                    # Fetch tools and register them
+                    tools_result = await session.list_tools()
+                    return tools_result
+
+                import asyncio
+                try:
+                    tools_result = await asyncio.wait_for(_connect_and_init(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    raise RuntimeError("Connection or initialization timed out after 300 seconds")
+
                 registered_count = 0
                 for mcp_tool in tools_result.tools:
                     prefixed_name = f"{name}__{mcp_tool.name}"

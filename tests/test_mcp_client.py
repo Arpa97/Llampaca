@@ -149,6 +149,37 @@ class TestMcpClient(unittest.IsolatedAsyncioTestCase):
         await manager.stop()
         self.assertEqual(len(manager.sessions), 0)
 
+    @patch("llampaca.engine.mcp_client.stdio_client")
+    @patch("llampaca.engine.mcp_client.ClientSession")
+    @patch("asyncio.wait_for")
+    async def test_mcp_client_manager_timeout(self, mock_wait_for, mock_client_session_class, mock_stdio_client):
+        import asyncio
+        async def mock_wait_for_impl(coro, timeout):
+            try:
+                coro.close()
+            except RuntimeError:
+                pass
+            raise asyncio.TimeoutError()
+        mock_wait_for.side_effect = mock_wait_for_impl
+
+        mcp_config = {
+            "gmail": {
+                "command": "npx",
+                "args": ["-y", "mcp-gmail"],
+                "env": {"GMAIL_TOKEN": "secret_token"},
+                "requires_confirmation": False
+            }
+        }
+
+        manager = McpClientManager(mcp_config)
+        registry = ToolRegistry()
+
+        # Should complete without throwing exceptions as timeout is handled gracefully
+        await manager.start(registry)
+
+        # The tool should not be registered since it timed out
+        self.assertNotIn("gmail__get_emails", registry.names())
+
     def test_load_save_mcp_config(self):
         import tempfile
         import os

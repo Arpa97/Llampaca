@@ -131,17 +131,36 @@ export function useModelsController() {
     const searchQuery = ref('');
     const searchResults = ref([]);
     const isSearching = ref(false);
+    const currentPage = ref(1);
+    const hasNextPage = ref(false);
+    const currentQuery = ref('');
 
-    const performSearch = async (query = '') => {
+    const performSearch = async (query = '', isLoadMore = false) => {
         try {
             isSearching.value = true;
-            const results = await model.searchHfModels(query);
-            searchResults.value = results.map(r => {
+            if (!isLoadMore) {
+                currentPage.value = 1;
+                currentQuery.value = query;
+                searchResults.value = [];
+                hasNextPage.value = false;
+            }
+            const data = await model.searchHfModels(currentQuery.value, currentPage.value);
+            const mapped = data.models.map(r => {
                 return {
                     ...r,
                     selected_file: r.files && r.files.length ? r.files[0].filename : ''
                 };
             });
+            
+            if (isLoadMore) {
+                searchResults.value = [...searchResults.value, ...mapped];
+            } else {
+                searchResults.value = mapped;
+            }
+            
+            if (data.pagination) {
+                hasNextPage.value = data.pagination.hasNextPage || false;
+            }
         } catch (e) {
             console.error("Errore ricerca Hugging Face:", e);
             if (window.showToast) {
@@ -149,6 +168,13 @@ export function useModelsController() {
             }
         } finally {
             isSearching.value = false;
+        }
+    };
+
+    const loadMore = async () => {
+        if (hasNextPage.value) {
+            currentPage.value++;
+            await performSearch(currentQuery.value, true);
         }
     };
 
@@ -191,6 +217,9 @@ export function useModelsController() {
         searchResults,
         isSearching,
         performSearch,
-        downloadSearchModel
+        downloadSearchModel,
+        currentPage,
+        hasNextPage,
+        loadMore
     };
 }

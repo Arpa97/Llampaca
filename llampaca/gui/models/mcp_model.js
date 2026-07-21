@@ -5,8 +5,14 @@ export class McpModel {
         return await r.json();
     }
 
-    async searchRegistry(query) {
-        const r = await fetch(`/api/mcp/search?q=${encodeURIComponent(query || '')}&_t=${Date.now()}`);
+    async searchRegistry(query, page = 1) {
+        const r = await fetch(`/api/mcp/search?q=${encodeURIComponent(query || '')}&page=${page}&_t=${Date.now()}`);
+        if (!r.ok) throw new Error(await r.text());
+        return await r.json();
+    }
+
+    async getConfigSchema(name) {
+        const r = await fetch(`/api/mcp/config-schema?name=${encodeURIComponent(name)}&_t=${Date.now()}`);
         if (!r.ok) throw new Error(await r.text());
         return await r.json();
     }

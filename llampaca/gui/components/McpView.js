@@ -3,8 +3,14 @@ import { useMcpController } from '../controllers/mcp_controller.js';
 export default {
     template: `
         <div style="display: flex; flex-direction: column; height: 100%; position: relative;">
-            <div class="view-header">
+            <div class="view-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                 <h1 class="view-title">Integrazioni MCP</h1>
+                <button class="btn btn-pacific" style="display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 13px;" @click="loadActiveIntegrations" :disabled="isInstalling">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; margin-right: 2px;">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                    </svg>
+                    Aggiorna
+                </button>
             </div>
             <div class="view-body" style="padding: 30px;">
                 <!-- Active Integrations -->
@@ -31,7 +37,7 @@ export default {
                 
                 <!-- Browse Registry -->
                 <h3 class="mcp-section-header" style="display: flex; align-items: center; gap: 12px;">
-                    Esplora Registro Glama (Disponibili per l'installazione)
+                    Esplora Registro Smithery (Disponibili per l'installazione)
                     <span v-if="isSearching" class="spinner" style="width: 16px; height: 16px; border-width: 2.5px; border-top-color: var(--amber-glow); display: inline-block;"></span>
                 </h3>
                 <div style="margin-bottom: 20px; display: flex; gap: 15px;">
@@ -60,6 +66,13 @@ export default {
                     </div>
                 </div>
 
+                <div v-if="searchResults.length > 0 && currentPage < totalPages" style="text-align: center; margin-top: 30px;">
+                    <button class="btn btn-pacific" @click="loadMore" :disabled="isSearching" style="display: inline-flex; align-items: center; gap: 8px;">
+                        <span v-if="isSearching" class="spinner" style="width: 14px; height: 14px; border-width: 2px; border-top-color: var(--amber-glow); display: inline-block; vertical-align: middle;"></span>
+                        Carica Altri Risultati
+                    </button>
+                </div>
+                
                 <!-- Environment Variables Modal Overlay -->
                 <div v-if="installingItem" class="modal-overlay">
                     <div class="modal-container">

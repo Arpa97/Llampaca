@@ -119,6 +119,13 @@ export default {
                         </div>
                     </div>
                 </div>
+                
+                <div v-if="searchResults.length > 0 && hasNextPage" style="text-align: center; margin-top: 30px;">
+                    <button class="btn btn-pacific" @click="loadMore" :disabled="isSearching" style="display: inline-flex; align-items: center; gap: 8px;">
+                        <span v-if="isSearching" class="spinner" style="width: 14px; height: 14px; border-width: 2px; border-top-color: var(--amber-glow); display: inline-block; vertical-align: middle;"></span>
+                        Carica Altri Risultati
+                    </button>
+                </div>
             </div>
         </div>
     `,

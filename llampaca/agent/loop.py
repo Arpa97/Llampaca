@@ -350,7 +350,36 @@ class Agent:
                         "Switching to prompt-based tools for this session.",
                     )
                     continue  # retry the same turn in prompt mode
-                yield ("error", self._describe_error(e))
+                error_desc = self._describe_error(e)
+                yield ("text", "\n\n❌ **ATTENZIONE:**\n\n")
+                
+                explanation_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Sei l'assistente AI integrato in Llampaca (un'applicazione desktop locale per modelli di linguaggio e integrazioni MCP).\n"
+                            "L'utente ha riscontrato un errore tecnico nell'agente. "
+                            "Analizza l'errore e spiegalo in italiano in modo semplice, cordiale e diretto.\n"
+                            "Fornisci istruzioni precise relative all'interfaccia grafica di Llampaca per risolverlo:\n"
+                            "- Di' all'utente che può aumentare la dimensione del contesto (Context Size / Max tokens per la sessione) cliccando sulla scheda 'Impostazioni' (Settings) dell'applicazione e inserendo un valore maggiore (es. 65536 o 98304).\n"
+                            "- Se l'errore riguarda i token di contesto esauriti a causa di troppi strumenti MCP (come accade se si attiva un server con decine/centinaia di tool), consiglia di andare nella scheda 'MCP' per disinstallare i server MCP superflui o disattivare quelli con troppi tool.\n"
+                            "Parla al plurale come Llampaca o come assistente di Llampaca, usa formattazione markdown chiara e sii molto specifico."
+                        )
+                    },
+                    {"role": "user", "content": f"spiegami questo errore: {error_desc}"}
+                ]
+                
+                full_explanation = "❌ **ATTENZIONE:**\n\n"
+                try:
+                    async for chunk in self.client.chat_stream(explanation_messages, model=self.model):
+                        yield ("text", chunk)
+                        full_explanation += chunk
+                except Exception as stream_err:
+                    fallback_err = f"Non è stato possibile caricare i dettagli dell'errore tramite il modello: {stream_err}.\n\nL'errore originale riscontrato è:\n`{error_desc}`"
+                    yield ("text", fallback_err)
+                    full_explanation += fallback_err
+                
+                self.messages.append({"role": "assistant", "content": full_explanation})
                 return
 
             if assistant_message is None:

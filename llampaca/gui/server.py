@@ -70,6 +70,8 @@ class AgentManager:
         self.config = None
         self.pending_confirmations = {}
         self.current_task = None
+        self._mcp_reload_lock = None
+        self.mcp_config_mtime = 0
 
         # --- File attachments (GUI equivalent of the CLI's /attach) -------
         # Attachments uploaded but not yet sent, keyed by conversation id.
@@ -118,6 +120,26 @@ class AgentManager:
                         response_future.set_exception(e)
                     continue
 
+                # Check for special MCP reload request
+                if isinstance(req, tuple) and len(req) == 2 and req[0] == "reload_mcp":
+                    _, response_future = req
+                    try:
+                        await self._reload_mcp_manager_internal()
+                        response_future.set_result(True)
+                    except Exception as e:
+                        response_future.set_exception(e)
+                    continue
+
+                from llampaca.config import MCP_CONFIG_PATH
+                if MCP_CONFIG_PATH.exists():
+                    try:
+                        mtime = MCP_CONFIG_PATH.stat().st_mtime
+                        if mtime > self.mcp_config_mtime:
+                            self.mcp_config_mtime = mtime
+                            await self._reload_mcp_manager_internal()
+                    except Exception as e:
+                        print(f"[AgentManager] Error checking/reloading MCP config on message: {e}", flush=True)
+
                 self.current_task = asyncio.create_task(self._process_message_coro(*req))
                 try:
                     await self.current_task
@@ -133,62 +155,100 @@ class AgentManager:
                     print(f"Error stopping MCP: {e}", flush=True)
 
     async def _restart_server_internal(self, params: dict) -> bool:
-        import time
-        # 1. Stop current MCP sessions (if any)
-        if self.mcp_manager:
-            print("[AgentManager] Stopping active MCP manager in main task...", flush=True)
-            await self.mcp_manager.stop()
-            self.mcp_manager = None
+        if self._mcp_reload_lock is None:
+            self._mcp_reload_lock = asyncio.Lock()
+        async with self._mcp_reload_lock:
+            import time
+            # 1. Stop current MCP sessions (if any)
+            if self.mcp_manager:
+                print("[AgentManager] Stopping active MCP manager in main task...", flush=True)
+                await self.mcp_manager.stop()
+                self.mcp_manager = None
+                
+            # 2. Stop current llama-server and start new one
+            from llampaca.engine.server import get_active_server, LlamaServer, set_active_server
+            active_server = get_active_server()
+            if active_server:
+                print(f"[AgentManager] Stopping active llama-server on port {active_server.port}...", flush=True)
+                active_server.stop()
+                time.sleep(0.5)
+                set_active_server(None)
+                
+            config = load_config()
+            model_name = params.get("model_name") or config.get("default_model", "")
             
-        # 2. Stop current llama-server and start new one
-        from llampaca.engine.server import get_active_server, LlamaServer, set_active_server
-        active_server = get_active_server()
-        if active_server:
-            print(f"[AgentManager] Stopping active llama-server on port {active_server.port}...", flush=True)
-            active_server.stop()
-            time.sleep(0.5)
-            set_active_server(None)
-            
-        config = load_config()
-        model_name = params.get("model_name") or config.get("default_model", "")
-        
-        from llampaca.config import MODELS_DIR, MODEL_PRESETS
-        model_path = MODELS_DIR / model_name
-        if not model_path.exists():
-            model_path = Path(model_name)
+            from llampaca.config import MODELS_DIR, MODEL_PRESETS
+            model_path = MODELS_DIR / model_name
             if not model_path.exists():
-                if model_name in MODEL_PRESETS:
-                    preset_file = MODEL_PRESETS[model_name]["file"]
-                    model_path = MODELS_DIR / preset_file
+                model_path = Path(model_name)
+                if not model_path.exists():
+                    if model_name in MODEL_PRESETS:
+                        preset_file = MODEL_PRESETS[model_name]["file"]
+                        model_path = MODELS_DIR / preset_file
+                        
+            if not model_path.exists():
+                print(f"[AgentManager] Error: Model '{model_name}' could not be resolved.")
+                return False
+
+            resolved_port = params.get("port") or config.get("server_port", 8080)
+            resolved_ctx = params.get("context_size") or config.get("context_size", DEFAULT_CONTEXT_SIZE)
+            resolved_threads = params.get("n_threads") or config.get("n_threads", 4)
+            resolved_gpu = params.get("gpu_layers") if params.get("gpu_layers") is not None else config.get("gpu_layers", -1)
+
+            new_server = LlamaServer(
+                model_path=model_path,
+                port=resolved_port,
+                context_size=resolved_ctx,
+                n_threads=resolved_threads,
+                gpu_layers=resolved_gpu
+            )
+
+            success = await new_server.start()
+            if success:
+                set_active_server(new_server)
+                from llampaca.engine.client import LlamaClient
+                self.client = LlamaClient(port=new_server.port)
+                
+                # Update registry context size limit
+                from llampaca.tools import build_default_registry
+                self.registry = build_default_registry(max_result_chars=new_server.context_size)
+                
+                # Start fresh MCP manager matching the new registry
+                from llampaca.config import load_mcp_config
+                mcp_config = load_mcp_config()
+                mcp_servers_config = mcp_config.get("mcp_servers", {})
+                if mcp_servers_config:
+                    from llampaca.engine.mcp_client import McpClientManager
+                    self.mcp_manager = McpClientManager(mcp_servers_config)
+                    await self.mcp_manager.start(self.registry)
                     
-        if not model_path.exists():
-            print(f"[AgentManager] Error: Model '{model_name}' could not be resolved.")
-            return False
+            return success
 
-        resolved_port = params.get("port") or config.get("server_port", 8080)
-        resolved_ctx = params.get("context_size") or config.get("context_size", DEFAULT_CONTEXT_SIZE)
-        resolved_threads = params.get("n_threads") or config.get("n_threads", 4)
-        resolved_gpu = params.get("gpu_layers") if params.get("gpu_layers") is not None else config.get("gpu_layers", -1)
+    async def reload_mcp_manager(self):
+        fut = asyncio.get_running_loop().create_future()
+        await self.request_queue.put(("reload_mcp", fut))
+        await fut
 
-        new_server = LlamaServer(
-            model_path=model_path,
-            port=resolved_port,
-            context_size=resolved_ctx,
-            n_threads=resolved_threads,
-            gpu_layers=resolved_gpu
-        )
-
-        success = await new_server.start()
-        if success:
-            set_active_server(new_server)
-            from llampaca.engine.client import LlamaClient
-            self.client = LlamaClient(port=new_server.port)
-            
-            # Update registry context size limit
-            from llampaca.tools import build_default_registry
-            self.registry = build_default_registry(max_result_chars=new_server.context_size)
-            
-            # Start fresh MCP manager matching the new registry
+    async def _reload_mcp_manager_internal(self):
+        if self._mcp_reload_lock is None:
+            self._mcp_reload_lock = asyncio.Lock()
+        async with self._mcp_reload_lock:
+            # 1. Stop current MCP sessions (if any)
+            if self.mcp_manager:
+                print("[AgentManager] Reloading MCP: stopping active manager...", flush=True)
+                try:
+                    await self.mcp_manager.stop()
+                except Exception as e:
+                    print(f"Error stopping MCP on reload: {e}", flush=True)
+                self.mcp_manager = None
+                
+            # 2. Clear old MCP tools (tools with '__' prefix) from registry
+            to_remove = [t for t in self.registry.names() if "__" in t]
+            for t in to_remove:
+                if t in self.registry._tools:
+                    del self.registry._tools[t]
+                    
+            # 3. Load fresh config and start new sessions
             from llampaca.config import load_mcp_config
             mcp_config = load_mcp_config()
             mcp_servers_config = mcp_config.get("mcp_servers", {})
@@ -196,34 +256,7 @@ class AgentManager:
                 from llampaca.engine.mcp_client import McpClientManager
                 self.mcp_manager = McpClientManager(mcp_servers_config)
                 await self.mcp_manager.start(self.registry)
-                
-        return success
-
-    async def reload_mcp_manager(self):
-        # 1. Stop current MCP sessions (if any)
-        if self.mcp_manager:
-            print("[AgentManager] Reloading MCP: stopping active manager...", flush=True)
-            try:
-                await self.mcp_manager.stop()
-            except Exception as e:
-                print(f"Error stopping MCP on reload: {e}", flush=True)
-            self.mcp_manager = None
-            
-        # 2. Clear old MCP tools (tools with '__' prefix) from registry
-        to_remove = [t for t in self.registry.names() if "__" in t]
-        for t in to_remove:
-            if t in self.registry._tools:
-                del self.registry._tools[t]
-                
-        # 3. Load fresh config and start new sessions
-        from llampaca.config import load_mcp_config
-        mcp_config = load_mcp_config()
-        mcp_servers_config = mcp_config.get("mcp_servers", {})
-        if mcp_servers_config:
-            from llampaca.engine.mcp_client import McpClientManager
-            self.mcp_manager = McpClientManager(mcp_servers_config)
-            await self.mcp_manager.start(self.registry)
-        print("[AgentManager] Reloading MCP: new sessions started and registered.", flush=True)
+            print("[AgentManager] Reloading MCP: new sessions started and registered.", flush=True)
 
     def start(self, config):
         self.config = config
@@ -231,6 +264,7 @@ class AgentManager:
         self.ready_event.wait()
         
     async def _init_async(self, config):
+        self._mcp_reload_lock = asyncio.Lock()
         from llampaca.tools import build_default_registry
         from llampaca.engine.client import LlamaClient
         from llampaca.engine.mcp_client import McpClientManager
@@ -240,6 +274,9 @@ class AgentManager:
         self.registry = build_default_registry(max_result_chars=config.get("context_size", DEFAULT_CONTEXT_SIZE))
         
         mcp_config = load_mcp_config()
+        from llampaca.config import MCP_CONFIG_PATH
+        if MCP_CONFIG_PATH.exists():
+            self.mcp_config_mtime = MCP_CONFIG_PATH.stat().st_mtime
         mcp_servers_config = mcp_config.get("mcp_servers", {})
         legacy_mcp = config.get("mcp_servers", {})
         if legacy_mcp:
@@ -632,6 +669,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_models_search(original_path)
         elif self.path.startswith('/api/models'):
             self.handle_get_models()
+        elif self.path.startswith('/api/mcp/config-schema'):
+            self.handle_get_mcp_schema(original_path)
         elif self.path.startswith('/api/mcp/search'):
             self.handle_get_mcp_search(original_path)
         elif self.path.startswith('/api/mcp'):
@@ -1390,10 +1429,21 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             
             params = urllib.parse.parse_qs(query_str)
             search_query = params.get("q", [""])[0].strip()
+            page = int(params.get("page", ["1"])[0].strip())
             
-            results = search_hf_models(query=search_query)
+            limit = 8
+            results = search_hf_models(query=search_query, page=page, limit=limit)
+            has_next = len(results) == limit
             
-            body = json.dumps(results).encode('utf-8')
+            response_data = {
+                "models": results,
+                "pagination": {
+                    "currentPage": page,
+                    "hasNextPage": has_next
+                }
+            }
+            
+            body = json.dumps(response_data).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -1405,7 +1455,18 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_get_mcp(self):
         try:
-            from llampaca.config import load_mcp_config
+            from llampaca.config import MCP_CONFIG_PATH, load_mcp_config
+            if MCP_CONFIG_PATH.exists():
+                try:
+                    mtime = MCP_CONFIG_PATH.stat().st_mtime
+                    if mtime > agent_manager.mcp_config_mtime:
+                        agent_manager.mcp_config_mtime = mtime
+                        import asyncio
+                        fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
+                        fut.result(timeout=60.0)
+                except Exception as e:
+                    print(f"Error checking/reloading MCP config on get: {e}", flush=True)
+
             mcp_config = load_mcp_config()
             servers = mcp_config.get("mcp_servers", {})
             
@@ -1436,6 +1497,41 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             self.send_error(500, str(e))
 
+    def handle_get_mcp_schema(self, original_path):
+        try:
+            import urllib.parse
+            import requests
+            
+            query_str = ""
+            if "?" in original_path:
+                query_str = original_path.split("?", 1)[1]
+                
+            params = urllib.parse.parse_qs(query_str)
+            name = params.get("name", [""])[0].strip()
+            
+            if not name:
+                raise Exception("Parametro 'name' obbligatorio.")
+                
+            url = f"https://api.smithery.ai/servers/{name}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            config_schema = {"type": "object", "properties": {}}
+            connections = data.get("connections", [])
+            if connections:
+                config_schema = connections[0].get("configSchema", config_schema)
+                
+            body = json.dumps(config_schema).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
     def handle_get_mcp_search(self, original_path):
         try:
             import urllib.parse
@@ -1447,18 +1543,33 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 
             params = urllib.parse.parse_qs(query_str)
             search_query = params.get("q", [""])[0].strip()
-            
-            from llampaca.config import DEFAULT_REGISTRY
-            url = f"{DEFAULT_REGISTRY}?limit=12"
+            page = params.get("page", ["1"])[0].strip()
+
+            url = f"https://api.smithery.ai/servers?pageSize=12&page={page}"
             if search_query:
-                url += f"&query={urllib.parse.quote(search_query)}"
+                url += f"&q={urllib.parse.quote(search_query)}"
                 
             response = requests.get(url, timeout=10)
             response.raise_for_status()
             data = response.json()
             
             servers = data.get("servers", [])
-            body = json.dumps(servers).encode('utf-8')
+            mapped_servers = []
+            for s in servers:
+                mapped_servers.append({
+                    "name": s.get("displayName") or s.get("qualifiedName"),
+                    "slug": s.get("qualifiedName"),
+                    "description": s.get("description"),
+                    "repository": {"url": s.get("homepage") or f"https://smithery.ai/server/{s.get('qualifiedName')}"},
+                    "environmentVariablesJsonSchema": {"type": "object", "properties": {}}
+                })
+            
+            response_data = {
+                "servers" : mapped_servers,
+                "pagination": data.get("pagination", {"currentPage":1, "totalPages":1})
+            }
+
+            body = json.dumps(response_data).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -1493,7 +1604,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             # Reload MCP manager thread-safely
             import asyncio
             fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
-            fut.result(timeout=10.0)
+            fut.result(timeout=60.0)
             
             body = json.dumps({"success": True}).encode('utf-8')
             self.send_response(200)
@@ -1510,7 +1621,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             parts = self.path.strip('/').split('/')
             if len(parts) < 4:
                 raise Exception("Nome server MCP non specificato.")
-            name = parts[3]
+            import urllib.parse
+            name = urllib.parse.unquote(parts[3])
             
             from llampaca.config import load_mcp_config, save_mcp_config
             mcp_config = load_mcp_config()
@@ -1521,7 +1633,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             # Reload MCP manager thread-safely
             import asyncio
             fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
-            fut.result(timeout=10.0)
+            fut.result(timeout=60.0)
             
             body = json.dumps({"success": True}).encode('utf-8')
             self.send_response(200)
@@ -1633,19 +1745,21 @@ def parse_hf_input(input_str: str):
         
     return None, None
 
-def search_hf_models(query: str = None, limit: int = 8):
+def search_hf_models(query: str = None, page: int = 1, limit: int = 8):
     from huggingface_hub import HfApi
     api = HfApi()
     
     # 1. Search GGUF repos
     search_term = query if query else None
     try:
-        repos = api.list_models(
+        repos_iter = api.list_models(
             filter="gguf",
             search=search_term,
-            sort="downloads",
-            limit=limit
+            sort="downloads"
         )
+        import itertools
+        start_idx = (page - 1) * limit
+        repos = list(itertools.islice(repos_iter, start_idx, start_idx + limit))
     except Exception as e:
         print(f"HF Search error: {e}")
         return []

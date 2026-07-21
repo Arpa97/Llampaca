@@ -9,7 +9,9 @@ export function useMcpController() {
     const searchResults = ref([]);
     const isSearching = ref(false);
     const isInstalling = ref(false);
-    
+    const currentPage = ref(1);
+    const totalPages = ref(1);
+    const currentQuery = ref('');
     // Installation configuration states
     const installingItem = ref(null);
     const envInputs = ref({});
@@ -24,10 +26,26 @@ export function useMcpController() {
         }
     };
 
-    const performSearch = async (query = '') => {
+    const performSearch = async (query = '', isLoadMore = false) => {
         try {
             isSearching.value = true;
-            searchResults.value = await model.searchRegistry(query);
+
+            if (!isLoadMore) {
+                currentPage.value = 1;
+                currentQuery.value = query;
+                totalPages.value = 1;
+                searchResults.value = [];
+            }
+            const data = await model.searchRegistry(currentQuery.value, currentPage.value);
+            if (isLoadMore) {
+                searchResults.value = [...searchResults.value, ...data.servers];
+            } else {
+                searchResults.value = data.servers;
+            }
+
+            if (data.pagination) {
+                totalPages.value = data.pagination.totalPages || 1;
+            }
         } catch (e) {
             console.error("Errore ricerca registro MCP:", e);
             if (window.showToast) {
@@ -35,6 +53,13 @@ export function useMcpController() {
             }
         } finally {
             isSearching.value = false;
+        }
+    };
+
+    const loadMore = async () => {
+        if (currentPage.value < totalPages.value) {
+            currentPage.value++;
+            await performSearch(currentQuery.value, true);
         }
     };
 
@@ -59,17 +84,30 @@ export function useMcpController() {
         }
     };
 
-    const triggerInstall = (item) => {
-        installingItem.value = item;
-        customCommand.value = "npx";
-        const slug = item.slug || item.name.toLowerCase().replace(/\s+/g, '-');
-        customArgs.value = `-y ${slug}`;
-        
-        envInputs.value = {};
-        const schema = item.environmentVariablesJsonSchema || {};
-        const props = schema.properties || {};
-        for (const k in props) {
-            envInputs.value[k] = '';
+    const triggerInstall = async (item) => {
+        try {
+            isInstalling.value = true;
+            const schema = await model.getConfigSchema(item.slug);
+            item.environmentVariablesJsonSchema = schema;
+
+            installingItem.value = item;
+            customCommand.value = "npx";
+            customArgs.value = `-y @smithery/cli run ${item.slug}`;
+
+            envInputs.value = {};
+            const props = schema.properties || {};
+            for (const k in props) {
+                envInputs.value[k] = '';
+            }
+        } catch (e) {
+            console.error("Errore recupero schema configurazione:", e);
+            if (window.showToast) {
+                window.showToast(`Errore caricamento parametri: ${e.message}`, 'error');
+            } else {
+                alert(`Errore: ${e.message}`);
+            }
+        } finally {
+            isInstalling.value = false;
         }
     };
 
@@ -80,10 +118,10 @@ export function useMcpController() {
 
     const confirmInstall = async () => {
         if (!installingItem.value) return;
-        
+
         const item = installingItem.value;
         const name = item.slug || item.name.toLowerCase().replace(/\s+/g, '-');
-        
+
         const schema = item.environmentVariablesJsonSchema || {};
         const required = schema.required || [];
         for (const k of required) {
@@ -96,22 +134,22 @@ export function useMcpController() {
                 return;
             }
         }
-        
+
         try {
             isInstalling.value = true;
             const args = customArgs.value.trim().split(/\s+/).filter(Boolean);
-            
+
             await model.installIntegration(
                 name,
                 customCommand.value.trim(),
                 args,
                 envInputs.value
             );
-            
+
             if (window.showToast) {
                 window.showToast(`Integrazione '${name}' installata con successo!`, 'success');
             }
-            
+
             installingItem.value = null;
             envInputs.value = {};
             await loadActiveIntegrations();
@@ -145,6 +183,10 @@ export function useMcpController() {
         removeIntegration,
         triggerInstall,
         cancelInstall,
-        confirmInstall
+        confirmInstall,
+        loadActiveIntegrations,
+        loadMore,
+        currentPage,
+        totalPages
     };
 }

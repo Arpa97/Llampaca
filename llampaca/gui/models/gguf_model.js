@@ -33,8 +33,8 @@ export class GgufModel {
         return await r.json();
     }
 
-    async searchHfModels(query) {
-        const r = await fetch(`/api/models/search?q=${encodeURIComponent(query || '')}&_t=${Date.now()}`);
+    async searchHfModels(query, page = 1) {
+        const r = await fetch(`/api/models/search?q=${encodeURIComponent(query || '')}&page=${page}&_t=${Date.now()}`);
         if (!r.ok) throw new Error(await r.text());
         return await r.json();
     }
