@@ -5,6 +5,27 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-21]
 
+### Added — Smithery.ai MCP Search, GGUF/MCP Pagination, Self-Aware AI Error Explanations
+
+- **`llampaca/gui/server.py`**:
+  - Migrated `/api/mcp/search` to fetch integrations from Smithery.ai registry APIs.
+  - Implemented `/api/mcp/config-schema` to retrieve dynamic server setup schemas.
+  - Paginated MCP search results using a `page` parameter.
+  - Paginated Hugging Face model search results using a page parameter and lazy-iterator slicing via `itertools.islice`.
+  - Added URL-decoding (`urllib.parse.unquote`) when deleting MCP servers to resolve uninstall issues.
+- **`llampaca/engine/mcp_client.py`**:
+  - Increased connection startup timeout from 30.0s to 300.0s to support OAuth browser authorizations.
+- **`llampaca/agent/loop.py`**:
+  - Intercepted inference exceptions to display an interactive explanation.
+  - Streamed dynamic error descriptions from the local LLM using a customized, self-aware system prompt guiding users to Llampaca's Settings and MCP tabs.
+- **`llampaca/gui/controllers/mcp_controller.js`, `mcp_model.js`, `McpView.js`**:
+  - Wired Dynamic Installation Modal with config schema parameters and `@smithery/cli` runner.
+  - Added a "Carica Altri Risultati" pagination button for MCP searches.
+  - Added a manual "Aggiorna" button to reload MCP servers in real-time.
+- **`llampaca/gui/controllers/models_controller.js`, `gguf_model.js`, `ModelsView.js`**:
+  - Exposed GGUF pagination states (`currentPage`, `hasNextPage`, `loadMore`).
+  - Added a "Carica Altri Risultati" pagination button for GGUF model searches.
+
 ### Changed — Documentation: bring README.md up to date with the branch
 
 - **`README.md`**: documented features present in the code but missing from

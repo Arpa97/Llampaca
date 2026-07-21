@@ -112,7 +112,7 @@ You > /remember I prefer answers in Italian and I use conda, not venv
 | `llampaca history list` | List all stored conversation sessions |
 | `llampaca history delete <id>` | Delete a conversation session by its ID |
 | `llampaca integrations list` | List all configured MCP integrations |
-| `llampaca integrations browse` | Search and install servers from the Glama registry |
+| `llampaca integrations browse` | Search and install servers from the Smithery.ai registry |
 | `llampaca integrations add <name>` | Manually add a local or external MCP server |
 | `llampaca integrations remove <name>` | Uninstall/remove an MCP server |
 | `llampaca integrations setup <name> --repo <url>` | Clone a Git repository and run its setup script |
@@ -175,7 +175,7 @@ MCP servers are spawned dynamically in the background via stdio streams when sta
 
 ### 🔍 How to use it
 
-1. **Browse and Install integrations** from the official Glama Registry:
+1. **Browse and Install integrations** from the official Smithery.ai Registry:
    ```bash
    llampaca integrations browse
    ```
@@ -239,7 +239,7 @@ llampaca gui [model_name] [--port port] [--ctx ctx] [--threads threads] [--gpu g
 
 #### 🔌 MCP Integrations Manager
 * **Live Connection States**: View connected/disconnected statuses for configured MCP servers along with the exact count of registered tools.
-* **Glama MCP Registry**: Browse and search integrations in real-time using Glama APIs.
+* **Smithery.ai MCP Registry**: Browse and search integrations in real-time using Smithery.ai APIs.
 * **Variables Configuration Overlay Modal**: Fill out environment variables and credential requirements (like API keys) through dynamic graphical forms mapping schemas directly.
 * **Runtime Hot-Reloading**: Automatically connect, spawn, and load MCP tools without having to restart the LLM inference server.
 
