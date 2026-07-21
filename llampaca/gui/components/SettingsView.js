@@ -44,6 +44,16 @@ export default {
                             <button class="btn btn-primary" @click="saveSettings">Salva Configurazione</button>
                         </div>
                     </div>
+
+                    <div class="settings-card" style="margin-top: 20px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 20px;">
+                        <h3 style="margin-top: 0; font-size: 15px; font-weight: 600; color: var(--text-color);">📋 Registro di Sistema & Log</h3>
+                        <p style="margin: 4px 0 12px 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.5;">
+                            Tutti i log di esecuzione del server d'inferenza locale (llama-server) e dell'applicazione sono registrati in tempo reale su disco.
+                        </p>
+                        <div style="background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: var(--amber-glow);">
+                            ~/.llampaca/logs/llama-server-8080.log
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

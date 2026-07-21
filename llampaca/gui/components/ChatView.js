@@ -36,9 +36,9 @@ export default {
                         </div>
                         <div v-for="(m, index) in getActiveMessages" :key="index" class="message-row" :class="m.role">
                             <div class="message-bubble markdown-body" v-html="parseMarkdown(m.content)" v-if="m.content"></div>
-                            <div class="message-meta" v-if="m.thought" style="color: var(--amber-glow); font-style: italic;">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px; margin-right: 2px;"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-                                {{ m.thought }}
+                            <div class="message-meta" v-if="m.thought" style="color: var(--amber-glow); font-style: italic; display: inline-flex; align-items: center; gap: 6px;">
+                                <span class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></span>
+                                <span>{{ m.thought }}</span>
                             </div>
                             <div class="message-meta" v-else-if="m.timestamp">{{ m.timestamp }}</div>
                         </div>

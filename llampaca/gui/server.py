@@ -130,6 +130,16 @@ class AgentManager:
                         response_future.set_exception(e)
                     continue
 
+                # Check for special registry reload request
+                if isinstance(req, tuple) and len(req) == 2 and req[0] == "reload_registry":
+                    _, response_future = req
+                    try:
+                        await self._reload_registry_internal()
+                        response_future.set_result(True)
+                    except Exception as e:
+                        response_future.set_exception(e)
+                    continue
+
                 from llampaca.config import MCP_CONFIG_PATH
                 if MCP_CONFIG_PATH.exists():
                     try:
@@ -228,6 +238,39 @@ class AgentManager:
         fut = asyncio.get_running_loop().create_future()
         await self.request_queue.put(("reload_mcp", fut))
         await fut
+
+    async def reload_registry(self):
+        fut = asyncio.get_running_loop().create_future()
+        await self.request_queue.put(("reload_registry", fut))
+        await fut
+
+    async def _reload_registry_internal(self):
+        if self._mcp_reload_lock is None:
+            self._mcp_reload_lock = asyncio.Lock()
+        async with self._mcp_reload_lock:
+            # 1. Stop current MCP sessions (if any)
+            if self.mcp_manager:
+                print("[AgentManager] Reloading registry: stopping active MCP manager...", flush=True)
+                try:
+                    await self.mcp_manager.stop()
+                except Exception as e:
+                    print(f"Error stopping MCP on registry reload: {e}", flush=True)
+                self.mcp_manager = None
+
+            # 2. Re-build default registry (which loads built-in + custom tools)
+            from llampaca.tools import build_default_registry
+            max_result_chars = self.registry.max_result_chars if self.registry else None
+            self.registry = build_default_registry(max_result_chars=max_result_chars)
+
+            # 3. Restart MCP sessions if configured
+            from llampaca.config import load_mcp_config
+            mcp_config = load_mcp_config()
+            mcp_servers_config = mcp_config.get("mcp_servers", {})
+            if mcp_servers_config:
+                from llampaca.engine.mcp_client import McpClientManager
+                self.mcp_manager = McpClientManager(mcp_servers_config)
+                await self.mcp_manager.start(self.registry)
+            print("[AgentManager] Registry and MCP reloaded.", flush=True)
 
     async def _reload_mcp_manager_internal(self):
         if self._mcp_reload_lock is None:
@@ -500,9 +543,9 @@ class AgentManager:
             last_tool_call = {}
 
             async def _confirm_wrapper(prompt):
-                if last_tool_call:
-                    return await self.confirm_tool(last_tool_call.get("name"), last_tool_call.get("arguments"), result_queue)
-                return False
+                name = last_tool_call.get("name") or "strumento"
+                arguments = last_tool_call.get("arguments") or prompt
+                return await self.confirm_tool(name, arguments, result_queue)
 
             # Bind (or unbind) the search_documents tool to THIS conversation
             # before the agent is built: if the conversation has documents
@@ -567,6 +610,7 @@ class AgentManager:
             gen_tokens = 0
             gen_ms = 0.0
 
+            result_queue.put(("event", "status_update", "Elaborazione contesto in corso con llama-server..."))
             async for kind, data in agent.send(content, message_id=user_msg_id):
                 if kind == "tool_call":
                     last_tool_call["name"] = data.get("name")
@@ -675,6 +719,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_mcp_search(original_path)
         elif self.path.startswith('/api/mcp'):
             self.handle_get_mcp()
+        elif self.path.startswith('/api/tools'):
+            self.handle_get_tools()
         elif self.path.startswith('/api/wiki'):
             self.handle_get_wiki()
         else:
@@ -696,6 +742,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_post_models_download()
         elif self.path.startswith('/api/mcp/install'):
             self.handle_post_mcp_install()
+        elif self.path.startswith('/api/tools/custom'):
+            self.handle_post_tools_custom()
         elif self.path.startswith('/api/wiki'):
             self.handle_post_wiki()
         else:
@@ -709,6 +757,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_delete_model()
         elif self.path.startswith('/api/mcp/uninstall/'):
             self.handle_delete_mcp()
+        elif self.path.startswith('/api/tools/custom/'):
+            self.handle_delete_tools_custom()
         elif self.path.startswith('/api/wiki/'):
             self.handle_delete_wiki()
         else:
@@ -1704,6 +1754,193 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             model_path.unlink()
             print(f"[GUI Server] Deleted model file: {model_filename}", flush=True)
             
+            body = json.dumps({"success": True}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_get_tools(self):
+        try:
+            if agent_manager.registry is None:
+                body = json.dumps([]).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            import inspect
+            results = []
+            for name, tool in agent_manager.registry._tools.items():
+                is_mcp = False
+                mcp_server = ""
+                display_name = name
+                if "__" in name:
+                    is_mcp = True
+                    parts = name.split("__", 1)
+                    mcp_server = parts[0]
+                    display_name = parts[1]
+
+                is_custom = False
+                source_code = ""
+                file_path = ""
+                try:
+                    file_path = inspect.getsourcefile(tool.func) or ""
+                    if "custom_tools" in file_path:
+                        is_custom = True
+                        source_code = inspect.getsource(tool.func)
+                except Exception:
+                    pass
+
+                results.append({
+                    "name": name,
+                    "display_name": display_name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                    "requires_confirmation": tool.requires_confirmation,
+                    "is_custom": is_custom,
+                    "is_mcp": is_mcp,
+                    "mcp_server": mcp_server,
+                    "file_path": file_path,
+                    "source_code": source_code
+                })
+
+            # Sort tools: custom first, then built-in, then MCP, alphabetically
+            def sort_key(t):
+                if t["is_custom"]:
+                    return (0, t["name"])
+                elif t["is_mcp"]:
+                    return (2, t["mcp_server"], t["name"])
+                else:
+                    return (1, t["name"])
+
+            results.sort(key=sort_key)
+
+            body = json.dumps(results).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_post_tools_custom(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            
+            name = payload.get("name", "").strip()
+            code = payload.get("code", "")
+            requires_confirmation = bool(payload.get("requires_confirmation", False))
+
+            if not name:
+                raise Exception("Il nome dello strumento è obbligatorio.")
+            
+            import re
+            if not re.match("^[a-zA-Z0-9_]+$", name):
+                raise Exception("Nome non valido. Usa solo lettere, numeri e underscore.")
+
+            # Ensure the primary function in code is named `name`
+            if re.search(r'^\s*def\s+[a-zA-Z0-9_]+', code, flags=re.MULTILINE):
+                code = re.sub(r'^\s*def\s+[a-zA-Z0-9_]+', f'def {name}', code, count=1, flags=re.MULTILINE)
+
+            # Validate syntax using ast and extract top-level function names only
+            import ast
+            try:
+                tree = ast.parse(code)
+            except SyntaxError as se:
+                raise Exception(f"Errore di sintassi in Python: {se.msg} alla riga {se.lineno}")
+
+            # Strip existing requires_confirmation lines to prevent duplicate accumulation
+            cleaned_code = re.sub(r'\n[a-zA-Z0-9_]+\.requires_confirmation\s*=\s*(True|False)\s*', '', code)
+            tree_cleaned = ast.parse(cleaned_code)
+
+            # Find all TOP-LEVEL function definitions (ignore nested inner functions)
+            func_names = [
+                node.name for node in tree_cleaned.body
+                if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+            ]
+            if not func_names:
+                raise Exception("Il codice deve contenere almeno una funzione pubblica (def nome_funzione(...):).")
+
+            # Append requires_confirmation flag for each top-level public function
+            flag_lines = "".join(f"\n{fn}.requires_confirmation = {requires_confirmation}\n" for fn in func_names)
+            code_to_write = cleaned_code.rstrip() + "\n" + flag_lines
+
+            from llampaca.config import LLAMPACA_DIR
+            custom_dir = LLAMPACA_DIR / "custom_tools"
+            custom_dir.mkdir(parents=True, exist_ok=True)
+
+            file_path = custom_dir / f"{name}.py"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(code_to_write)
+
+            # Reload registry thread-safely
+            import asyncio
+            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_registry(), agent_manager.loop)
+            fut.result(timeout=60.0)
+
+            body = json.dumps({"success": True}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(400, str(e))
+
+    def handle_delete_tools_custom(self):
+        try:
+            parts = self.path.strip('/').split('/')
+            if len(parts) < 4:
+                raise Exception("Nome dello strumento non specificato.")
+            
+            import urllib.parse
+            name = urllib.parse.unquote(parts[3]).strip()
+
+            from llampaca.config import LLAMPACA_DIR
+            custom_dir = LLAMPACA_DIR / "custom_tools"
+            
+            # 1. Direct file stem match
+            file_path = custom_dir / f"{name}.py"
+            if file_path.exists():
+                file_path.unlink()
+
+            # 2. Search for any .py file in custom_tools containing function `name`
+            if custom_dir.exists():
+                for py_file in list(custom_dir.glob("*.py")):
+                    try:
+                        with open(py_file, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        import ast
+                        tree = ast.parse(content)
+                        funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+                        if name in funcs or py_file.stem == name:
+                            py_file.unlink()
+                    except Exception:
+                        pass
+
+            # Evict cached modules from sys.modules
+            import sys
+            modules_to_del = [m for m in sys.modules if m.startswith("llampaca_custom_")]
+            for m in modules_to_del:
+                if name in m or f"llampaca_custom_{name}" == m:
+                    del sys.modules[m]
+
+            # Reload registry thread-safely
+            import asyncio
+            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_registry(), agent_manager.loop)
+            fut.result(timeout=60.0)
+
             body = json.dumps({"success": True}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')

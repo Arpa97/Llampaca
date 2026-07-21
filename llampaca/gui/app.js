@@ -3,6 +3,7 @@ import ModelsView from './components/ModelsView.js';
 import McpView from './components/McpView.js';
 import SettingsView from './components/SettingsView.js';
 import WikiView from './components/WikiView.js';
+import ToolsView from './components/ToolsView.js';
 
 const { createApp, ref } = Vue;
 
@@ -12,7 +13,8 @@ createApp({
         ModelsView,
         McpView,
         SettingsView,
-        WikiView
+        WikiView,
+        ToolsView
     },
     setup() {
         const currentTab = ref('chat');

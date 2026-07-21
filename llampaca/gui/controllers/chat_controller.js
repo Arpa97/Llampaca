@@ -170,7 +170,10 @@ export function useChatController() {
                             const kind = payload.kind;
                             const data = payload.data;
 
-                            if (kind === "text") {
+                            if (kind === "status_update") {
+                                activeMessages.value[assistantIndex].thought = data;
+                                scrollToBottom();
+                            } else if (kind === "text") {
                                 // Accumulate streaming text
                                 if (activeMessages.value[assistantIndex].thought) {
                                     activeMessages.value[assistantIndex].thought = ''; // clear thought

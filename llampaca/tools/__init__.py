@@ -17,6 +17,42 @@ from llampaca.tools.wiki import register_wiki_tools
 from llampaca.tools.documents import register_document_tools, make_query_embedder
 
 
+def register_custom_tools(registry) -> None:
+    """
+    Load custom Python functions defined in ~/.llampaca/custom_tools/
+    and register them on the given ToolRegistry.
+    """
+    from llampaca.config import LLAMPACA_DIR
+    import importlib.util
+    import sys
+    import inspect
+
+    custom_dir = LLAMPACA_DIR / "custom_tools"
+    custom_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in custom_dir.glob("*.py"):
+        if path.name.startswith("_"):
+            continue
+        try:
+            module_name = f"llampaca_custom_{path.stem}"
+            # Evict cached module to force reload on subsequent calls
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+            
+            spec = importlib.util.spec_from_file_location(module_name, str(path))
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+
+                for name, func in inspect.getmembers(module, inspect.isfunction):
+                    if func.__module__ == module_name and not name.startswith("_"):
+                        req_conf = getattr(func, "requires_confirmation", False)
+                        registry.register(func, requires_confirmation=req_conf)
+        except Exception as e:
+            print(f"Error loading custom tool {path.name}: {e}", flush=True)
+
+
 def build_default_registry(max_result_chars: int = None) -> ToolRegistry:
     """
     Create a ToolRegistry pre-loaded with all built-in tools.
@@ -41,6 +77,11 @@ def build_default_registry(max_result_chars: int = None) -> ToolRegistry:
     # The wiki (persistent cross-session memory) is always available:
     # unlike search_documents it is global, not tied to one conversation.
     register_wiki_tools(registry)
+    # Load custom user-defined tools
+    try:
+        register_custom_tools(registry)
+    except Exception as e:
+        print(f"Failed to load custom tools: {e}", flush=True)
     return registry
 
 
@@ -51,4 +92,5 @@ __all__ = [
     "register_document_tools",
     "make_query_embedder",
     "register_wiki_tools",
+    "register_custom_tools",
 ]
