@@ -4,6 +4,7 @@ import McpView from './components/McpView.js';
 import SettingsView from './components/SettingsView.js';
 import WikiView from './components/WikiView.js';
 import ToolsView from './components/ToolsView.js';
+import SkillsView from './components/SkillsView.js';
 
 const { createApp, ref } = Vue;
 
@@ -14,7 +15,8 @@ createApp({
         McpView,
         SettingsView,
         WikiView,
-        ToolsView
+        ToolsView,
+        SkillsView
     },
     setup() {
         const currentTab = ref('chat');

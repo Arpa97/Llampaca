@@ -383,10 +383,14 @@ class AgentManager:
             "confirm_id": confirm_id
         }))
         
-        await event.wait()
-        
-        result = self.pending_confirmations.pop(confirm_id)["result"]
-        return result
+        try:
+            await asyncio.wait_for(event.wait(), timeout=300.0)
+            return self.pending_confirmations.get(confirm_id, {}).get("result", False)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            print(f"[confirm_tool] Conferma per '{name}' (id: {confirm_id}) annullata o scaduta.", flush=True)
+            return False
+        finally:
+            self.pending_confirmations.pop(confirm_id, None)
 
     # ------------------------------------------------------------------ #
     # File attachments                                                    #
@@ -514,14 +518,13 @@ class AgentManager:
         )
 
     def cancel_current(self) -> bool:
-        """Cancel the message currently being processed, if any.
-
-        Thread-safe: called from an HTTP handler thread (the /api/cancel
-        request), it hops onto the event loop to cancel the task. The
-        coroutine's `finally` still puts ("close", None) on its result queue,
-        so the streaming request unblocks and ends cleanly instead of hanging
-        — cancelling never crashes the server or the session.
-        """
+        """Cancel the message currently being processed, if any."""
+        for cid, data in list(self.pending_confirmations.items()):
+            try:
+                data["result"] = False
+                self.loop.call_soon_threadsafe(data["event"].set)
+            except Exception:
+                pass
         task = self.current_task
         if task is not None and not task.done():
             self.loop.call_soon_threadsafe(task.cancel)
@@ -568,9 +571,13 @@ class AgentManager:
             # rebuilds the agent per message, so we build the index here.
             # render_index() reads the real ~/.llampaca/wiki, so this stays
             # in sync with what /remember stores from the terminal too.
+            from llampaca import skills
             system_prompt = None
             if self.registry is not None:
                 system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+                skills_idx = skills.render_skills_index()
+                if skills_idx:
+                    system_prompt += "\n\n" + skills_idx
 
             agent = Agent(
                 client=self.client,
@@ -723,6 +730,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_tools()
         elif self.path.startswith('/api/wiki'):
             self.handle_get_wiki()
+        elif self.path.startswith('/api/skills'):
+            self.handle_get_skills()
         else:
             super().do_GET()
 
@@ -746,6 +755,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_post_tools_custom()
         elif self.path.startswith('/api/wiki'):
             self.handle_post_wiki()
+        elif self.path.startswith('/api/skills'):
+            self.handle_post_skills()
         else:
             self.send_error(404, "Not Found")
 
@@ -761,6 +772,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_delete_tools_custom()
         elif self.path.startswith('/api/wiki/'):
             self.handle_delete_wiki()
+        elif self.path.startswith('/api/skills/'):
+            self.handle_delete_skills()
         else:
             self.send_error(404, "Not Found")
 
@@ -1226,6 +1239,80 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             if path.is_file():
                 path.unlink()
             self._send_json({"success": True, "name": wiki.slugify(name)})
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
+
+    # ------------------------------------------------------------------ #
+    # Markdown Skills ("Skills .md") — view/edit/import ~/.llampaca/skills #
+    # ------------------------------------------------------------------ #
+    def handle_get_skills(self):
+        """GET /api/skills -> list of all skills with metadata;
+        GET /api/skills/<name> -> {slug, name, content} for one skill."""
+        from urllib.parse import unquote
+        from llampaca import skills
+        try:
+            parts = self.path.strip('/').split('/')
+            if len(parts) == 3:  # /api/skills/<name>
+                name = unquote(parts[2])
+                try:
+                    content = skills.read_skill(name)
+                except FileNotFoundError:
+                    self._send_json({"error": "Skill non trovata"}, status=404)
+                    return
+                self._send_json({"slug": skills.slugify(name), "content": content})
+            else:  # /api/skills
+                skill_list = skills.list_skills()
+                self._send_json({"skills": skill_list, "max_chars": skills.MAX_SKILL_CHARS})
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
+
+    def handle_post_skills(self):
+        """POST /api/skills with {name, content, url} -> create, overwrite or import a skill.
+        Returns {slug} with the slugified name written."""
+        from llampaca import skills
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
+            name = (payload.get("name") or "").strip()
+            content = payload.get("content", "")
+            url = (payload.get("url") or "").strip()
+
+            if url and not content.strip():
+                import urllib.request
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    content = resp.read().decode('utf-8', errors='replace')
+                if not name:
+                    name = url.split('/')[-1].replace('.md', '')
+
+            if not name:
+                self._send_json({"error": "Il nome della skill è obbligatorio."}, status=400)
+                return
+
+            try:
+                slug = skills.write_skill(name, content)
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            self._send_json({"slug": slug, "success": True})
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
+
+    def handle_delete_skills(self):
+        """DELETE /api/skills/<name> -> remove a skill file."""
+        from urllib.parse import unquote
+        from llampaca import skills
+        try:
+            parts = self.path.strip('/').split('/')
+            if len(parts) != 3:
+                self.send_error(400, "Bad Request")
+                return
+            name = unquote(parts[2])
+            deleted = skills.delete_skill(name)
+            self._send_json({"success": deleted, "slug": skills.slugify(name)})
         except Exception as e:
             traceback.print_exc()
             self._send_json({"error": str(e)}, status=500)
@@ -2053,7 +2140,15 @@ def start_http_server(directory, port):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(directory), **kwargs)
 
-    server = socketserver.ThreadingTCPServer(('127.0.0.1', port), Handler)
+    class ThreadedServer(socketserver.ThreadingTCPServer):
+        def handle_error(self, request, client_address):
+            import sys, socket
+            exc_type, exc_val = sys.exc_info()[:2]
+            if exc_type and issubclass(exc_type, (ConnectionResetError, BrokenPipeError, socket.error)):
+                return
+            super().handle_error(request, client_address)
+
+    server = ThreadedServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever)
     thread.daemon = True

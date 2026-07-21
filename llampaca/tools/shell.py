@@ -23,6 +23,14 @@ def run_shell_command(command: str) -> str:
     Args:
         command: The shell command to execute (e.g. 'ls -la', 'git status').
     """
+    import os
+    from llampaca.config import LLAMPACA_DIR
+
+    env = os.environ.copy()
+    node_modules_path = str(LLAMPACA_DIR / "node_modules")
+    existing_node_path = env.get("NODE_PATH", "")
+    env["NODE_PATH"] = f"{node_modules_path}:{existing_node_path}".strip(":") if existing_node_path else node_modules_path
+
     try:
         completed = subprocess.run(
             command,
@@ -30,6 +38,7 @@ def run_shell_command(command: str) -> str:
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_SECONDS,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {COMMAND_TIMEOUT_SECONDS} seconds."

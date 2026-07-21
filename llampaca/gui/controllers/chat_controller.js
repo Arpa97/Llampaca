@@ -200,6 +200,7 @@ export function useChatController() {
                                 if (conv) conv.title = data.title;
                             } else if (kind === "tool_confirm_request") {
                                 pendingConfirmation.value = data;
+                                activeMessages.value[assistantIndex].thought = `⚠️ Autorizzazione richiesta per l'operazione: ${data.name}...`;
                                 scrollToBottom();
                             } else if (kind === "warning") {
                                 console.warn(`[avviso] ${data}`);

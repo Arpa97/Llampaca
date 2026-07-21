@@ -36,6 +36,9 @@ DB_PATH = LLAMPACA_DIR / "history.db"
 # and update across sessions. Lives in the app data dir — NOT in the launch
 # workspace — because it is the user's memory, shared by every project.
 WIKI_DIR = LLAMPACA_DIR / "wiki"
+# Modular markdown skills (.md): instructions and domain workflows
+# that can be imported, downloaded, or written by the user.
+SKILLS_DIR = LLAMPACA_DIR / "skills"
 
 # Recommended model presets.
 # The "kind" field separates chat models (loaded by `llampaca run`) from

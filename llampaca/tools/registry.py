@@ -16,6 +16,7 @@ loop. The registry does two jobs:
    the error and try a different approach.
 """
 
+import asyncio
 import inspect
 import json
 from dataclasses import dataclass, field
@@ -227,7 +228,7 @@ class ToolRegistry:
             if inspect.iscoroutinefunction(tool.func):
                 result = await tool.func(**arguments)
             else:
-                result = tool.func(**arguments)
+                result = await asyncio.to_thread(tool.func, **arguments)
                 if inspect.isawaitable(result):
                     result = await result
         except TypeError as e:

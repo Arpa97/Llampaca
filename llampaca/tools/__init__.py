@@ -11,6 +11,8 @@ from llampaca.tools.filesystem import register_filesystem_tools
 from llampaca.tools.shell import register_shell_tools
 from llampaca.tools.web import register_web_tools
 from llampaca.tools.wiki import register_wiki_tools
+from llampaca.tools.skills import register_skills_tools
+from llampaca.tools.packages import register_package_tools
 # search_documents is exported but deliberately NOT part of
 # build_default_registry: it is registered dynamically, only for sessions
 # whose conversation has indexed attachments (see tools/documents.py).
@@ -77,6 +79,8 @@ def build_default_registry(max_result_chars: int = None) -> ToolRegistry:
     # The wiki (persistent cross-session memory) is always available:
     # unlike search_documents it is global, not tied to one conversation.
     register_wiki_tools(registry)
+    register_skills_tools(registry)
+    register_package_tools(registry)
     # Load custom user-defined tools
     try:
         register_custom_tools(registry)

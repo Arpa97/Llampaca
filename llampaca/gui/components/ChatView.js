@@ -43,18 +43,23 @@ export default {
                             <div class="message-meta" v-else-if="m.timestamp">{{ m.timestamp }}</div>
                         </div>
 
-                        <div v-if="pendingConfirmation" class="confirmation-box">
-                            <div class="confirmation-title">🛠️ L'agente vuole eseguire: <strong>{{ pendingConfirmation.name }}</strong></div>
-                            <div class="confirmation-args">
-                                <pre>{{ formatArguments(pendingConfirmation.arguments) }}</pre>
-                            </div>
-                            <div class="confirmation-actions">
-                                <button class="btn btn-danger" @click="resolveConfirmation(false)">Rifiuta</button>
-                                <button class="btn btn-primary" @click="resolveConfirmation(true)">Consenti</button>
-                            </div>
-                        </div>
                     </div>
                     
+                    <!-- Sticky Prompt Confirmation Banner (Always visible above input bar) -->
+                    <div v-if="pendingConfirmation" class="confirmation-box-sticky" style="margin: 10px 20px; padding: 16px; background: var(--bg-card); border: 2px solid var(--amber-glow); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 100;">
+                        <div class="confirmation-title" style="font-size: 14px; font-weight: 600; color: var(--amber-glow); margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            Autorizzazione Richiesta: <strong>{{ pendingConfirmation.name }}</strong>
+                        </div>
+                        <div class="confirmation-args" style="margin-bottom: 12px; max-height: 200px; overflow-y: auto; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px;">
+                            <pre style="margin: 0; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;">{{ formatArguments(pendingConfirmation.arguments) }}</pre>
+                        </div>
+                        <div class="confirmation-actions" style="display: flex; justify-content: flex-end; gap: 10px;">
+                            <button class="btn btn-danger" @click="resolveConfirmation(false)" style="padding: 6px 14px; font-size: 12.5px;">Rifiuta Operazione</button>
+                            <button class="btn btn-primary" @click="resolveConfirmation(true)" style="padding: 6px 16px; font-size: 12.5px; font-weight: 600;">Consenti ed Esegui</button>
+                        </div>
+                    </div>
+
                     <div class="chat-input-area">
                         <div v-if="contextBudget" style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-align: right; padding-right: 10px;">
                             Contesto: ~{{ contextBudget.used_percent }}% usato ({{ Math.round(contextBudget.used_tokens/1000 * 10)/10 }}k / {{ Math.round(contextBudget.total_tokens/1000 * 10)/10 }}k token)<template v-if="contextBudget.turn_seconds != null"> · {{ contextBudget.turn_seconds }}s</template><template v-if="contextBudget.tok_s != null"> · {{ contextBudget.gen_tokens }} tok @ {{ contextBudget.tok_s }} tok/s</template>
