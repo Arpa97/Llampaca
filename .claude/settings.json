@@ -141,7 +141,8 @@
       "Bash(node --check llampaca/gui/controllers/chat_controller.js)",
       "Bash(curl -sN -m 120 -X POST http://localhost:8095/api/conversations/97c060a4-85d2-4c78-b90a-a0765074be6b/messages -H 'Content-Type: application/json' -d '{\"content\":\"Read the file pyproject.toml and summarize it in one sentence\"}')",
       "Bash(pkill -f \"llampaca serve\")",
-      "Bash(pkill -f \"llama-server\")"
+      "Bash(pkill -f \"llama-server\")",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c ' *)"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

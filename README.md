@@ -11,7 +11,7 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 ## ✨ Features
 
 - 🔧 **Zero setup** — downloads `llama-server` binaries automatically for your OS and architecture (macOS arm64/Intel, Linux, Windows)
-- 🤖 **GPU accelerated** — uses Apple Metal (`-ngl 99`) on Apple Silicon, CUDA on NVIDIA out or HIP on AMD out zof the box
+- 🤖 **GPU accelerated** — uses Apple Metal (`-ngl 99`) on Apple Silicon, CUDA on NVIDIA or HIP on AMD out of the box
 - 🔀 **Smart port management** — automatically finds a free port if the default is in use (8080 → 8081 → ...)
 - 🧹 **Orphan-safe** — on startup, kills any leftover `llama-server` processes from crashed previous sessions
 - 📦 **Model management** — download GGUF models from Hugging Face with a single command, or load your own
@@ -107,6 +107,8 @@ You > /remember I prefer answers in Italian and I use conda, not venv
 | `llampaca models remove <filename>` | Delete a local model |
 | `llampaca run [model_name]` | Start the server and open an interactive chat session |
 | `llampaca gui [model_name]` | Start the standalone desktop app with GUI dashboard |
+| `llampaca serve [model_name]` | Start the full Llampaca backend (`llama-server` + HTTP API) headless, without a GUI — e.g. to drive it from another frontend |
+| `llampaca mcp` | Run Llampaca itself as an MCP server (stdio), exposing its built-in tools to VSCode or Claude Desktop |
 | `llampaca history list` | List all stored conversation sessions |
 | `llampaca history delete <id>` | Delete a conversation session by its ID |
 | `llampaca integrations list` | List all configured MCP integrations |
@@ -219,8 +221,15 @@ llampaca gui [model_name] [--port port] [--ctx ctx] [--threads threads] [--gpu g
 ### Key Modules
 
 #### 💬 Chat & Session Manager
-* Stream agent outputs word-by-word with markdown formatting.
+* Stream agent outputs word-by-word with markdown formatting, including live tool-call and "thinking" indicators.
 * List, load, and delete conversation history persisted in the local SQLite database.
+* **File attachments** — attach PDF/Word/text files directly in the chat; small files are injected, large ones are indexed for RAG and searched via `search_documents`, exactly like the CLI `/attach` flow.
+* **Stop button** — interrupt an in-progress answer at any time; the partial output is kept and the backend is cancelled cleanly.
+* **Context & speed indicator** — after each turn the composer shows how much of the context window the conversation now occupies plus the generation speed and elapsed time (e.g. `Contesto: ~27% usato (2.3k / 8.2k token) · 33s · 658 tok @ 26.5 tok/s`), matching the CLI footer.
+
+#### 🧠 Personal Wiki ("Profilo")
+* Two-pane list + editor over the same markdown pages in `~/.llampaca/wiki/` used by the CLI.
+* Read, create, edit, and delete durable facts about yourself from the GUI; `/remember` in the chat also stores facts here (with confirmation), and the page index rides in the system prompt so the agent knows what it remembers.
 
 #### 📦 GGUF Model Catalogue
 * **Recommended Presets**: View pre-configured presets showing exact file sizes in GB. Download them in one click.

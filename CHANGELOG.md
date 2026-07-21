@@ -3,6 +3,26 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-21]
+
+### Changed — Documentation: bring README.md up to date with the branch
+
+- **`README.md`**: documented features present in the code but missing from
+  the docs.
+  - Added `llampaca serve` (headless backend: `llama-server` + HTTP API) and
+    `llampaca mcp` (run Llampaca itself as an MCP stdio server) to the CLI
+    Reference table — both existed in `cli.py` but were undocumented.
+  - Added a new GUI "Personal Wiki (Profilo)" module section (backed by
+    `WikiView.js`, wired in `app.js`) and expanded the GUI Chat section to
+    cover the features added on this branch: in-chat file attachments + RAG,
+    the Stop button, and the context/speed/time indicator.
+  - Fixed a garbled sentence in the GPU-acceleration feature bullet
+    ("...NVIDIA out or HIP on AMD out zof the box" → "...NVIDIA or HIP on AMD
+    out of the box").
+  - *Reason*: the README had drifted behind the GUI/CLI work merged into
+    `gui-umb`; keeping it accurate is part of the project's documentation
+    convention (CLAUDE.md).
+
 ## [2026-07-20]
 
 ### Changed — Unify the context indicator across CLI and GUI + add speed/time
