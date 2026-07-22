@@ -709,6 +709,23 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             sys.stdout.write(f"[{self.log_date_time_string()}] API REQUEST: {self.command} {self.path} -> Response Code: {args[1]}\n")
             sys.stdout.flush()
 
+    def end_headers(self):
+        # Force revalidation of static frontend assets (JS/CSS/HTML).
+        # Without an explicit Cache-Control, both browsers and the pywebview
+        # WebKit backend apply "heuristic caching" and keep serving an old
+        # cached copy of the frontend WITHOUT revalidating — so after the
+        # source is updated the running window still executes stale JS. That
+        # is exactly what caused the multi-tool confirmation bug to persist
+        # for some users while others (with a fresh cache) never saw it.
+        # 'no-cache' does not mean "never cache": paired with the
+        # Last-Modified/304 handling SimpleHTTPRequestHandler already does, it
+        # means "always revalidate first", so unchanged files stay fast (304)
+        # and changed files are always re-fetched. API responses are skipped
+        # (they set their own cache semantics, e.g. the SSE stream).
+        if not self.path.startswith('/api/'):
+            self.send_header('Cache-Control', 'no-cache, must-revalidate')
+        super().end_headers()
+
     def do_GET(self):
         original_path = self.path
         self.path = self.path.split('?')[0]
@@ -1137,11 +1154,35 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             traceback.print_exc()
             self.send_error(500, str(e))
 
+    # WebKit (Safari and the pywebview WKWebView backend) buffers a streamed
+    # fetch() response body and does not hand small chunks to the JS
+    # ReadableStream reader until roughly ~1 KB has accumulated. Chrome/Blink
+    # delivers each chunk immediately. That buffering deadlocks the tool
+    # confirmation flow: an isolated `tool_confirm_request` event that is not
+    # followed by more streamed bytes stays trapped in WebKit's buffer, so the
+    # UI never shows the prompt and the server blocks forever waiting for a
+    # confirmation the user can't give. (The FIRST confirmation usually works
+    # because enough model text streamed just before it to flush the buffer;
+    # a SECOND back-to-back tool call often has little text in between, so it
+    # hangs — exactly the reported symptom.) Padding every event up to this
+    # size with an ignored SSE comment line guarantees each event on its own
+    # exceeds the threshold and is delivered instantly.
+    _SSE_MIN_CHUNK_BYTES = 2048
+
     def emit_sse(self, kind, data):
         """Helper to send event stream chunks to the frontend."""
         try:
             event_data = json.dumps({"kind": kind, "data": data})
-            payload = f"data: {event_data}\n\n".encode('utf-8')
+            body = f"data: {event_data}\n"
+            # Pad to _SSE_MIN_CHUNK_BYTES with an SSE comment line (starts with
+            # ':'). The frontend parser only reads lines beginning with
+            # "data: ", so the padding is inert; native EventSource would treat
+            # it as a comment too. The trailing blank line terminates the event.
+            pad_needed = self._SSE_MIN_CHUNK_BYTES - len(body.encode('utf-8')) - 3
+            if pad_needed > 0:
+                body += ":" + (" " * pad_needed) + "\n"
+            body += "\n"
+            payload = body.encode('utf-8')
             chunk_size = f"{len(payload):X}\r\n".encode('utf-8')
             self.wfile.write(chunk_size + payload + b"\r\n")
             self.wfile.flush()
@@ -2158,6 +2199,7 @@ def start_http_server(directory, port):
 def start_gui_window():
     """Start the background HTTP server and launch the pywebview standalone native window."""
     import sys
+    import os
     
     # macOS runtime hack: override Application Menu Name in menu bar
     if sys.platform == 'darwin':
@@ -2187,14 +2229,27 @@ def start_gui_window():
     print("Opening native window...", flush=True)
 
     try:
+        # Per-launch cache-buster on the window URL. pywebview's WebKit
+        # backend keeps its own persistent HTTP cache (not fully cleared by
+        # wiping ~/Library/WebKit/<app>/WebsiteData), so it can keep loading a
+        # stale index.html / JS bundle across launches — making already-fixed
+        # frontend bugs reappear. A fresh query string every launch forces the
+        # main document (and, via the no-cache headers, its subresources) to
+        # be re-fetched. Files are local, so always-fresh has no real cost.
+        import time as _time
+        cache_buster = int(_time.time())
         webview.create_window(
             "Llampaca Dashboard",
-            f"http://127.0.0.1:{port}/index.html",
+            f"http://127.0.0.1:{port}/index.html?v={cache_buster}",
             width=1150,
             height=780,
             min_size=(950, 680)
         )
-        webview.start()
+        # Setting LLAMPACA_DEBUG=1 enables the WebKit Web Inspector
+        # (right-click -> Inspect Element) so the Console/Network tabs can be
+        # used to diagnose frontend issues live.
+        debug = os.environ.get("LLAMPACA_DEBUG", "").strip() in ("1", "true", "yes")
+        webview.start(debug=debug)
     finally:
         print("Window closed. Stopping HTTP server...", flush=True)
         server.shutdown()

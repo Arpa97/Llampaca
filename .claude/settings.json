@@ -144,7 +144,14 @@
       "Bash(pkill -f \"llama-server\")",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/python -c ' *)",
       "Bash(~/miniconda3/envs/llampaca/bin/python -)",
-      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import cowsay\")"
+      "Bash(~/miniconda3/envs/llampaca/bin/python -c \"import cowsay\")",
+      "Bash(~/miniconda3/envs/llampaca/bin/python -m pip uninstall -y cowsay)",
+      "Bash(git log *)",
+      "Bash(~/miniconda3/envs/dropgnn/bin/python3 -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py parses ok'\\)\")",
+      "Read(//Users/umbertodilaudo/Library/WebKit/**)",
+      "Read(//Users/umbertodilaudo/Library/Caches/**)",
+      "Bash(~/miniconda3/envs/dropgnn/bin/python3 -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
+      "Bash(awk '/def emit_sse/,/def [a-z_]+\\\\\\(self.*\\\\\\):.*$/{print NR\": \"$0}' llampaca/gui/server.py)"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

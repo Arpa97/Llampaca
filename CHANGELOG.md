@@ -5,6 +5,18 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-21]
 
+### Fixed — WebKit SSE Buffering Deadlocked the 2nd Consecutive Tool Confirmation
+
+- **`llampaca/gui/server.py`**:
+  - `emit_sse()` now pads every Server-Sent Event up to 2048 bytes with an inert SSE comment line. Reason (root cause of the reported bug): WebKit (Safari and the pywebview WKWebView native window) buffers a streamed `fetch()` response body and withholds small chunks from the JS `ReadableStream` reader until ~1 KB has accumulated, whereas Chrome/Blink delivers each chunk immediately. An isolated `tool_confirm_request` event (typical of a second back-to-back tool call, with little model text preceding it) stayed trapped in WebKit's buffer, so the confirmation banner never appeared and the backend blocked forever waiting on a confirmation the user could not give — the tool "did not work" only in Safari and the native GUI window, never in Chrome. Padding each event past the threshold forces immediate delivery. The frontend parser only reads `data:` lines, so the padding comment is inert. This is the actual fix; the cache changes below remain as defense-in-depth.
+
+### Fixed — Stale Frontend Cache Causing Ghost Bugs (e.g. Multi-Tool Confirmations)
+
+- **`llampaca/gui/server.py`**:
+  - Added a `Cache-Control: no-cache, must-revalidate` header to all static frontend responses (JS/CSS/HTML) via an `end_headers()` override on `QuietSimpleHTTPRequestHandler`; API responses are excluded. Reason: without an explicit cache directive, both browsers and the pywebview WebKit backend applied heuristic caching and kept executing an old cached copy of the frontend without revalidating. This made already-fixed bugs (notably the queued multi-tool confirmation fix in commit `8f1fe5e`) reappear for users whose cache still held the pre-fix JavaScript, while users with a fresh cache never saw them. Paired with the existing Last-Modified/304 handling, unchanged files stay fast and changed files are always re-fetched.
+  - Appended a per-launch cache-buster query string (`?v=<timestamp>`) to the pywebview window URL in `start_gui_window()`. Reason: the WebKit backend keeps a persistent HTTP cache that wiping `~/Library/WebKit/<app>/WebsiteData` does not fully clear, so it could keep loading a stale `index.html`/JS bundle across launches; a fresh query string each launch forces the main document to be re-fetched.
+  - Added an optional `LLAMPACA_DEBUG=1` environment variable that enables the WebKit Web Inspector (`webview.start(debug=True)`) for live Console/Network diagnosis of frontend issues.
+
 ### Fixed — Skills Discovery in CLI + Skill Slug/Name Alignment
 
 - **`llampaca/cli.py`**:
