@@ -34,12 +34,23 @@ export default {
                                 <div class="form-help">Numero di core CPU dedicati all'inferenza.</div>
                             </div>
                             <div class="form-group">
-                                <label class="form-label">Offload GPU Layers</label>
+                                <label class="form-label">Offload GPU Layers (Modello Chat)</label>
                                 <input class="form-input" type="number" v-model="settings.gpuLayers" />
-                                <div class="form-help">-1 per abilitazione automatica (Metal su Mac).</div>
+                                <div class="form-help">-1 per abilitazione automatica (Metal su Mac), 0 per solo CPU.</div>
                             </div>
                         </div>
-                        
+
+                        <!-- Embedder GPU offload: independent from the chat model
+                             because the embedder is a separate llama-server. -->
+                        <div style="border-top: 1px solid var(--border-color); margin: 8px 0 16px;"></div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Offload GPU Layers (Modello Embedding)</label>
+                                <input class="form-input" type="number" v-model="settings.embeddingGpuLayers" />
+                                <div class="form-help">Dove gira l'embedder per la ricerca documenti (RAG): 0 = solo CPU (default, lascia GPU e budget termico al modello di chat), -1 = automatico, oppure il numero di layer da spostare su GPU. Indipendente dal modello di chat; si applica al prossimo avvio del server di embedding.</div>
+                            </div>
+                        </div>
+
                         <div style="margin-top: 10px; display:flex; justify-content: flex-end;">
                             <button class="btn btn-primary" @click="saveSettings">Salva Configurazione</button>
                         </div>

@@ -7,7 +7,9 @@ export class SettingsModel {
             port: data.server_port,
             contextSize: data.context_size,
             threads: data.n_threads,
-            gpuLayers: data.gpu_layers
+            gpuLayers: data.gpu_layers,
+            // Embedder's own GPU offload, independent from the chat model's.
+            embeddingGpuLayers: data.embedding_gpu_layers
         };
     }
 
@@ -16,7 +18,8 @@ export class SettingsModel {
             server_port: parseInt(newSettings.port),
             context_size: parseInt(newSettings.contextSize),
             n_threads: parseInt(newSettings.threads),
-            gpu_layers: parseInt(newSettings.gpuLayers)
+            gpu_layers: parseInt(newSettings.gpuLayers),
+            embedding_gpu_layers: parseInt(newSettings.embeddingGpuLayers)
         };
         const r = await fetch('/api/settings', {
             method: 'POST',
@@ -29,7 +32,8 @@ export class SettingsModel {
             port: data.config.server_port,
             contextSize: data.config.context_size,
             threads: data.config.n_threads,
-            gpuLayers: data.config.gpu_layers
+            gpuLayers: data.config.gpu_layers,
+            embeddingGpuLayers: data.config.embedding_gpu_layers
         };
     }
 }

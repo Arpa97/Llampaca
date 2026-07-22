@@ -8,7 +8,9 @@ export function useSettingsController() {
         port: 8080,
         contextSize: 32768,
         threads: 4,
-        gpuLayers: -1
+        gpuLayers: -1,
+        // Embedder GPU offload: 0 = CPU-only (default), -1 = auto, N = N layers.
+        embeddingGpuLayers: 0
     });
 
     const loadSettings = async () => {

@@ -5,6 +5,13 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-22]
 
+### Added — GUI Setting for the Embedder's GPU/CPU Offload
+
+- **`llampaca/gui/server.py`**: `handle_post_settings()` now reads an optional `embedding_gpu_layers` from the payload. Changing it persists the value and resets any already-built `agent_manager.embedding_service` (so the next RAG/attach rebuilds the embedding server with the new value) but deliberately does NOT set `need_restart`: the embedder is a separate, lazily-started llama-server, so restarting the chat server for this setting would needlessly interrupt the conversation. (`handle_get_settings()` already returned the whole config, so the value was exposed for reads with no change.)
+- **`llampaca/gui/models/settings_model.js`**: `getSettings()`/`saveSettings()` now map `embedding_gpu_layers` <-> `embeddingGpuLayers`.
+- **`llampaca/gui/controllers/settings_controller.js`**: added `embeddingGpuLayers` (default `0`) to the settings ref.
+- **`llampaca/gui/components/SettingsView.js`**: added an "Offload GPU Layers (Modello Embedding)" numeric field mirroring the existing chat-model GPU field, in its own separated row, and clarified the chat field's label/help. Reason: the embedder ran CPU-only (`embedding_gpu_layers: 0`) with no way to change where it runs from the GUI; now the user can move it to GPU (`-1` auto, or a layer count) the same way as for the LLM.
+
 ### Added — Separate LLM and Embedding Models in the GUI, With Independent Defaults
 
 - **`llampaca/gui/server.py`**:

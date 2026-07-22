@@ -1379,9 +1379,29 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             if "gpu_layers" in payload and payload["gpu_layers"] != config.get("gpu_layers"):
                 config["gpu_layers"] = int(payload["gpu_layers"])
                 need_restart = True
-                
+
+            # The embedder's GPU offload is independent from the chat model's:
+            # it drives a SEPARATE, lazily-started llama-server, so changing it
+            # must NOT restart the chat server (that would interrupt the
+            # conversation for a setting the chat server ignores). We only
+            # persist it and drop any already-built EmbeddingService, so the
+            # next RAG/attach rebuilds the embedding server with the new value.
+            embedding_gpu_changed = False
+            if "embedding_gpu_layers" in payload and payload["embedding_gpu_layers"] != config.get("embedding_gpu_layers"):
+                config["embedding_gpu_layers"] = int(payload["embedding_gpu_layers"])
+                embedding_gpu_changed = True
+
             from llampaca.config import save_config
             save_config(config)
+
+            if embedding_gpu_changed:
+                try:
+                    if agent_manager.embedding_service is not None:
+                        agent_manager.embedding_service.stop()
+                        agent_manager.embedding_service = None
+                    print("[GUI Server] Embedding GPU layers changed; embedding service reset.", flush=True)
+                except Exception as e:
+                    print(f"[GUI Server] Could not reset embedding service: {e}", flush=True)
             
             if need_restart:
                 print(f"[GUI Server] Config changed. Restarting model server...", flush=True)
