@@ -1,12 +1,22 @@
 import { GgufModel } from '../models/gguf_model.js';
 
-const { ref, onMounted, onUnmounted } = Vue;
+const { ref, computed, onMounted, onUnmounted } = Vue;
 
 export function useModelsController() {
     const model = new GgufModel();
     const models = ref([]);
     const downloadUrl = ref('');
     let pollInterval = null;
+
+    // Split the flat catalog coming from the backend into the two kinds so the
+    // view can render them as separate sections. Anything not explicitly marked
+    // "embedding" (including custom local files with no kind) is a chat model.
+    const chatModels = computed(() =>
+        models.value.filter(m => (m.kind || 'chat') !== 'embedding')
+    );
+    const embeddingModels = computed(() =>
+        models.value.filter(m => m.kind === 'embedding')
+    );
 
     const startPolling = () => {
         if (pollInterval) return;
@@ -97,13 +107,18 @@ export function useModelsController() {
 
     const isRestarting = ref(false);
 
-    const setDefaultModel = async (name) => {
+    // kind: "chat" restarts the llama-server (chat model swap needs a reload,
+    // hence the blocking overlay); "embedding" only persists the choice, so no
+    // overlay is shown for it.
+    const setDefaultModel = async (name, kind = 'chat') => {
+        const isChat = kind !== 'embedding';
         try {
-            isRestarting.value = true;
-            await model.setDefaultModel(name);
+            if (isChat) isRestarting.value = true;
+            await model.setDefaultModel(name, kind);
             await loadModels();
             if (window.showToast) {
-                window.showToast(`Modello predefinito impostato su ${name}!`, 'success');
+                const label = isChat ? 'Modello di chat predefinito' : 'Modello di embedding predefinito';
+                window.showToast(`${label} impostato su ${name}!`, 'success');
             }
         } catch (e) {
             if (window.showToast) {
@@ -112,7 +127,7 @@ export function useModelsController() {
                 alert("Errore durante l'impostazione del modello: " + e.message);
             }
         } finally {
-            isRestarting.value = false;
+            if (isChat) isRestarting.value = false;
         }
     };
 
@@ -207,6 +222,8 @@ export function useModelsController() {
 
     return {
         models,
+        chatModels,
+        embeddingModels,
         downloadUrl,
         startDownload,
         setDefaultModel,

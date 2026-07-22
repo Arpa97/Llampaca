@@ -5,11 +5,13 @@ export class GgufModel {
         return await r.json();
     }
 
-    async setDefaultModel(name) {
+    // kind: "chat" (default) sets the chat/LLM default model; "embedding" sets
+    // the default embedding model. The two are stored independently server-side.
+    async setDefaultModel(name, kind = 'chat') {
         const r = await fetch('/api/models/default', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model_name: name })
+            body: JSON.stringify({ model_name: name, kind: kind })
         });
         if (!r.ok) throw new Error(await r.text());
         return await r.json();

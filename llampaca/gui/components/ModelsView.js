@@ -1,6 +1,73 @@
 import { useModelsController } from '../controllers/models_controller.js';
 
+// A single catalog card. Extracted so the LLM and embedding sections can each
+// render the same card markup without duplication. It stays presentational:
+// all actions are emitted up to the parent (which owns the controller).
+const ModelCard = {
+    props: { m: { type: Object, required: true } },
+    emits: ['set-default', 'delete', 'download'],
+    // "Imposta default" wording depends on the kind so the user knows whether
+    // they are choosing the chat model or the embedding model.
+    computed: {
+        defaultLabel() {
+            return this.m.kind === 'embedding' ? 'Imposta come embedding' : 'Imposta default';
+        }
+    },
+    template: `
+        <div class="model-card" :class="{ active: m.active, downloading: m.downloading }">
+            <div class="model-card-header">
+                <div class="model-card-title">{{ m.preset_id || m.name }}</div>
+                <div v-if="m.active" class="model-badge success">Attivo</div>
+                <div v-else-if="m.installed" class="model-badge secondary">Installato</div>
+                <div v-else-if="m.downloading" class="model-badge warning">Scaricamento...</div>
+                <div v-else class="model-badge info">Disponibile</div>
+            </div>
+
+            <!-- Technical filename -->
+            <div v-if="m.preset_id" style="font-size: 11px; color: var(--text-muted); font-family: monospace; margin-top: -6px; word-break: break-all;">
+                {{ m.name }}
+            </div>
+
+            <div class="model-card-desc">{{ m.description }}</div>
+
+            <div class="model-card-meta">
+                <span>Dimensioni: {{ m.size }}</span>
+                <span>Quantizzazione: {{ m.quant }}</span>
+            </div>
+
+            <!-- Progress Bar for active downloads -->
+            <div v-if="m.downloading" style="margin-top: 8px;">
+                <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; color: var(--text-muted);">
+                    <span>Avanzamento download</span>
+                    <strong>{{ m.progress }}%</strong>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar-fill" :style="{ width: m.progress + '%' }"></div>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="model-card-actions" style="margin-top: auto; padding-top: 15px;">
+                <!-- Case 1: Installed -->
+                <template v-if="m.installed">
+                    <button v-if="!m.active" class="btn btn-secondary" @click="$emit('set-default', m)">{{ defaultLabel }}</button>
+                    <button class="btn btn-danger" @click="$emit('delete', m.id)">Elimina</button>
+                </template>
+                <!-- Case 2: Downloading -->
+                <template v-else-if="m.downloading">
+                    <button class="btn btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed; width: 100%;">Scaricamento in corso...</button>
+                </template>
+                <!-- Case 3: Available to download -->
+                <template v-else>
+                    <button class="btn btn-pacific" @click="$emit('download', m)" style="width: 100%;">Scarica Modello</button>
+                </template>
+            </div>
+        </div>
+    `
+};
+
 export default {
+    components: { ModelCard },
     template: `
         <div style="display: flex; flex-direction: column; height: 100%; position: relative;">
             <!-- Loading Overlay -->
@@ -12,57 +79,41 @@ export default {
                 <h1 class="view-title">Gestione Modelli GGUF</h1>
             </div>
             <div class="view-body" style="padding: 30px;">
-                <h3 class="mcp-section-header">Catalogo Modelli</h3>
+                <!-- LLM (chat) models: the model that answers in chat. -->
+                <h3 class="mcp-section-header">Modelli LLM (Chat)</h3>
+                <p style="font-size: 12.5px; color: var(--text-muted); margin: -4px 0 16px;">
+                    Modelli linguistici che generano le risposte in chat. Il modello impostato come default è quello usato per conversare.
+                </p>
                 <div class="models-grid">
-                    <div v-for="m in models" :key="m.id" class="model-card" :class="{ active: m.active, downloading: m.downloading }">
-                        <div class="model-card-header">
-                            <div class="model-card-title">{{ m.preset_id || m.name }}</div>
-                            <div v-if="m.active" class="model-badge success">Attivo</div>
-                            <div v-else-if="m.installed" class="model-badge secondary">Installato</div>
-                            <div v-else-if="m.downloading" class="model-badge warning">Scaricamento...</div>
-                            <div v-else class="model-badge info">Disponibile</div>
-                        </div>
+                    <model-card
+                        v-for="m in chatModels"
+                        :key="m.id"
+                        :m="m"
+                        @set-default="onSetDefault"
+                        @delete="deleteModel"
+                        @download="onDownload"
+                    />
+                </div>
 
-                        <!-- Technical filename -->
-                        <div v-if="m.preset_id" style="font-size: 11px; color: var(--text-muted); font-family: monospace; margin-top: -6px; word-break: break-all;">
-                            {{ m.name }}
-                        </div>
-
-                        <div class="model-card-desc">{{ m.description }}</div>
-                        
-                        <div class="model-card-meta">
-                            <span>Dimensioni: {{ m.size }}</span>
-                            <span>Quantizzazione: {{ m.quant }}</span>
-                        </div>
-
-                        <!-- Progress Bar for active downloads -->
-                        <div v-if="m.downloading" style="margin-top: 8px;">
-                            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; color: var(--text-muted);">
-                                <span>Avanzamento download</span>
-                                <strong>{{ m.progress }}%</strong>
-                            </div>
-                            <div class="progress-bar-container">
-                                <div class="progress-bar-fill" :style="{ width: m.progress + '%' }"></div>
-                            </div>
-                        </div>
-
-                        <!-- Action Buttons -->
-                        <div class="model-card-actions" style="margin-top: auto; padding-top: 15px;">
-                            <!-- Case 1: Installed -->
-                            <template v-if="m.installed">
-                                <button v-if="!m.active" class="btn btn-secondary" @click="setDefaultModel(m.id)">Imposta default</button>
-                                <button class="btn btn-danger" @click="deleteModel(m.id)">Elimina</button>
-                            </template>
-                            <!-- Case 2: Downloading -->
-                            <template v-else-if="m.downloading">
-                                <button class="btn btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed; width: 100%;">Scaricamento in corso...</button>
-                            </template>
-                            <!-- Case 3: Available to download -->
-                            <template v-else>
-                                <button class="btn btn-pacific" @click="downloadPreset(m.repo_id, m.name)" style="width: 100%;">Scarica Modello</button>
-                            </template>
-                        </div>
-                    </div>
+                <!-- Embedding models: used ONLY for document search / RAG, never
+                     to chat. Selecting one here sets the embedding default, not
+                     the chat default. -->
+                <h3 class="mcp-section-header" style="margin-top: 40px;">Modelli di Embedding</h3>
+                <p style="font-size: 12.5px; color: var(--text-muted); margin: -4px 0 16px;">
+                    Modelli usati per la ricerca semantica nei documenti (RAG). Non generano risposte: servono solo a indicizzare e cercare. Il default qui è indipendente dal modello di chat.
+                </p>
+                <div v-if="embeddingModels.length === 0" style="padding: 24px; text-align: center; color: var(--text-muted); background: var(--bg-hover); border-radius: 8px; border: 1px dashed var(--border-color); margin-bottom: 10px;">
+                    Nessun modello di embedding nel catalogo.
+                </div>
+                <div v-else class="models-grid">
+                    <model-card
+                        v-for="m in embeddingModels"
+                        :key="m.id"
+                        :m="m"
+                        @set-default="onSetDefault"
+                        @delete="deleteModel"
+                        @download="onDownload"
+                    />
                 </div>
                 <div style="height: 20px;"></div>
 
@@ -130,6 +181,12 @@ export default {
         </div>
     `,
     setup() {
-        return useModelsController();
+        const ctrl = useModelsController();
+        // Adapt the card's object-payload events to the controller's explicit
+        // argument signatures, forwarding the model kind so the chat and
+        // embedding defaults stay separate.
+        const onSetDefault = (m) => ctrl.setDefaultModel(m.id, m.kind || 'chat');
+        const onDownload = (m) => ctrl.downloadPreset(m.repo_id, m.name);
+        return { ...ctrl, onSetDefault, onDownload };
     }
 };

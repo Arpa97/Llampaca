@@ -1412,7 +1412,12 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             
             config = load_config()
             default_model = config.get("default_model", "")
-            
+            # The embedding default is tracked SEPARATELY from the chat default:
+            # picking an embedding model must never overwrite the chat model
+            # (and vice versa), so the two "active" flags are computed against
+            # two different config keys below.
+            embedding_model = config.get("embedding_model", "")
+
             # List local GGUF files
             from pathlib import Path
             gguf_files = list(MODELS_DIR.glob("*.gguf"))
@@ -1437,9 +1442,18 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 repo_id = preset["repo"]
                 desc = preset["description"]
                 
+                # "kind" separates chat (LLM) models from embedding models.
+                # Presets without an explicit "kind" are chat models (see
+                # config.MODEL_PRESETS). The active flag is compared against the
+                # matching config key: embedding models against embedding_model,
+                # chat models against default_model.
+                kind = preset.get("kind", "chat")
                 is_installed = filename in installed_filenames
-                is_active = (default_model == p_name or default_model == filename)
-                
+                if kind == "embedding":
+                    is_active = (embedding_model == p_name or embedding_model == filename)
+                else:
+                    is_active = (default_model == p_name or default_model == filename)
+
                 is_downloading = False
                 progress = 0
                 with downloads_lock:
@@ -1483,7 +1497,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "downloading": is_downloading,
                     "progress": progress,
                     "active": is_active,
-                    "repo_id": repo_id
+                    "repo_id": repo_id,
+                    "kind": kind
                 })
                 
             # 2. Add other installed GGUF files (not in presets)
@@ -1517,7 +1532,10 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "downloading": False,
                     "progress": 100,
                     "active": is_active,
-                    "repo_id": None
+                    "repo_id": None,
+                    # Custom local GGUF files are not in the preset table, so
+                    # their kind is unknown; they are treated as chat models.
+                    "kind": "chat"
                 })
                 
             # 3. Add other active custom downloads (not in presets)
@@ -1539,7 +1557,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         "downloading": True,
                         "progress": dl["progress"],
                         "active": False,
-                        "repo_id": dl["repo_id"]
+                        "repo_id": dl["repo_id"],
+                        "kind": "chat"
                     })
                     
             # Sort: active first, then installed, then downloading, then available
@@ -1828,22 +1847,46 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             content_length = int(self.headers.get('Content-Length', 0))
             payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
             model_name = payload.get("model_name")
-            
+            # "kind" tells us WHICH default to change: the chat model
+            # (default_model) or the embedding model (embedding_model). It
+            # defaults to "chat" so older frontends keep working unchanged.
+            kind = payload.get("kind", "chat")
+
             if not model_name:
                 raise Exception("model_name non specificato.")
-                
-            config = load_config()
-            config["default_model"] = model_name
+
             from llampaca.config import save_config
-            save_config(config)
-            
-            print(f"[GUI Server] Default model changed to {model_name}. Restarting llama-server...", flush=True)
-            from llampaca.engine.server import restart_active_server
-            success = restart_active_server(model_name=model_name)
-            if not success:
-                raise Exception("Impossibile caricare il nuovo modello.")
-                
-            body = json.dumps({"status": "ok", "default_model": model_name}).encode('utf-8')
+            config = load_config()
+
+            if kind == "embedding":
+                # Embedding default: only persist it. The embedding llama-server
+                # is started lazily per chat session (see EmbeddingService), so
+                # there is no long-lived chat server to restart here — the new
+                # embedder is picked up the next time embeddings are needed.
+                config["embedding_model"] = model_name
+                save_config(config)
+                # Drop any already-constructed EmbeddingService so the next
+                # RAG/attach operation rebuilds it against the new model instead
+                # of the stale one resolved at construction time.
+                try:
+                    if agent_manager.embedding_service is not None:
+                        agent_manager.embedding_service.stop()
+                        agent_manager.embedding_service = None
+                except Exception as e:
+                    print(f"[GUI Server] Could not reset embedding service: {e}", flush=True)
+                print(f"[GUI Server] Default embedding model changed to {model_name}.", flush=True)
+                body = json.dumps({"status": "ok", "embedding_model": model_name}).encode('utf-8')
+            else:
+                config["default_model"] = model_name
+                save_config(config)
+
+                print(f"[GUI Server] Default model changed to {model_name}. Restarting llama-server...", flush=True)
+                from llampaca.engine.server import restart_active_server
+                success = restart_active_server(model_name=model_name)
+                if not success:
+                    raise Exception("Impossibile caricare il nuovo modello.")
+
+                body = json.dumps({"status": "ok", "default_model": model_name}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -1865,14 +1908,23 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             
             config = load_config()
             default_model = config.get("default_model", "")
-            
+            embedding_model = config.get("embedding_model", "")
+
             from llampaca.config import MODEL_PRESETS
+            # Resolve both active defaults (chat and embedding) to their GGUF
+            # filenames so we can block deletion whether the config stores a
+            # preset name or a raw filename.
             preset_file = None
             if default_model in MODEL_PRESETS:
                 preset_file = MODEL_PRESETS[default_model]["file"]
-                
-            if model_filename == default_model or model_filename == preset_file:
-                raise Exception("Non è possibile eliminare il modello attualmente attivo/predefinito.")
+            embedding_preset_file = None
+            if embedding_model in MODEL_PRESETS:
+                embedding_preset_file = MODEL_PRESETS[embedding_model]["file"]
+
+            if model_filename in (default_model, preset_file):
+                raise Exception("Non è possibile eliminare il modello di chat attualmente attivo/predefinito.")
+            if model_filename in (embedding_model, embedding_preset_file):
+                raise Exception("Non è possibile eliminare il modello di embedding attualmente predefinito.")
                 
             from llampaca.config import MODELS_DIR
             model_path = MODELS_DIR / model_filename

@@ -3,6 +3,18 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-22]
+
+### Added — Separate LLM and Embedding Models in the GUI, With Independent Defaults
+
+- **`llampaca/gui/server.py`**:
+  - `handle_get_models()` now emits a `"kind"` field (`"chat"` or `"embedding"`) for every catalog entry, taken from the preset table (`preset.get("kind", "chat")`); custom local GGUF files default to `"chat"`. The `active` flag for embedding presets is now compared against `config["embedding_model"]` instead of `config["default_model"]`. Reason: the Models view listed chat and embedding models together and only ever marked/changed the chat default, so selecting an embedding model there silently overwrote the chat model (breaking chat), and the embedding default could not be set from the GUI at all.
+  - `handle_post_models_default()` now accepts an optional `"kind"` field. With `"embedding"` it persists `config["embedding_model"]` and does NOT restart the chat llama-server (the embedding server is started lazily per session), also dropping any already-constructed `agent_manager.embedding_service` so the next RAG/attach rebuilds against the new model; with `"chat"` (default, backward compatible) it keeps the previous behaviour of setting `default_model` and restarting the server.
+  - `handle_delete_model()` now also refuses to delete the active embedding model (previously only the active chat model was protected), and reports which of the two is blocking the deletion.
+- **`llampaca/gui/models/gguf_model.js`**: `setDefaultModel(name, kind = 'chat')` now sends the `kind` in the request body.
+- **`llampaca/gui/controllers/models_controller.js`**: added `chatModels`/`embeddingModels` computed splits of the flat catalog; `setDefaultModel(name, kind)` only shows the blocking "restart" overlay for chat swaps (embedding is a config-only change) and uses a kind-aware success toast.
+- **`llampaca/gui/components/ModelsView.js`**: extracted the catalog card into a reusable `ModelCard` presentational component and split the catalog into two labelled sections — "Modelli LLM (Chat)" and "Modelli di Embedding" — each with its own "Imposta default"/"Imposta come embedding" action. The Hugging Face search/browse area below stays a single combined list, as requested.
+
 ## [2026-07-21]
 
 ### Fixed — WebKit SSE Buffering Deadlocked the 2nd Consecutive Tool Confirmation

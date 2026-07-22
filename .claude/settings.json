@@ -151,7 +151,9 @@
       "Read(//Users/umbertodilaudo/Library/WebKit/**)",
       "Read(//Users/umbertodilaudo/Library/Caches/**)",
       "Bash(~/miniconda3/envs/dropgnn/bin/python3 -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
-      "Bash(awk '/def emit_sse/,/def [a-z_]+\\\\\\(self.*\\\\\\):.*$/{print NR\": \"$0}' llampaca/gui/server.py)"
+      "Bash(awk '/def emit_sse/,/def [a-z_]+\\\\\\(self.*\\\\\\):.*$/{print NR\": \"$0}' llampaca/gui/server.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
+      "Bash(python -m pytest tests/test_embedding.py -q)"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",
