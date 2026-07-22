@@ -5,6 +5,14 @@ This project adheres to Semantic Versioning and complies with development loggin
 
 ## [2026-07-22]
 
+### Added — "Remember" (🧠) Toggle in the Chat Input
+
+- **`llampaca/gui/controllers/chat_controller.js`**: refactored `sendMessage` into a shared `startTurn(backendText, displayText)` core so a turn can be sent with a backend payload that differs from what the user's bubble shows. Added a `rememberMode` toggle flag and `toggleRemember()`: `sendMessage` now checks the flag and, when armed with text present, routes the turn through the existing `/remember <fact>` path (the model writes it to the right wiki page via `update_wiki_page`, with the usual confirmation prompt), shows a clean "🧠 <fact>" bubble, and disarms the flag. Exposed `rememberMode`/`toggleRemember`.
+- **`llampaca/gui/components/ChatView.js`**:
+  - Added a small 🧠 button next to the 📎 attachment button. Following user feedback, it is a TOGGLE (arms/disarms the remember flag) rather than an immediate send: it lights amber (`.active`) while armed, updates its tooltip, and the input placeholder switches to a "Memoria attiva…" hint. The remembered message is only stored when the user actually sends.
+  - Added a `collapseRemember()` display transform in `parseMarkdown` that strips the backend's "[The user asked to remember the fact above permanently. …]" instruction block from a persisted message and renders just "🧠 <fact>". Reason: the user did not want that instruction text showing under their message after sending / on reload; the model still receives the full instruction (display-only change).
+- **`llampaca/gui/index.html`**: added an `.attachment-btn.active` rule (amber) so a toggled-on flag button reads as armed.
+
 ### Added — GUI Setting for the Embedder's GPU/CPU Offload
 
 - **`llampaca/gui/server.py`**: `handle_post_settings()` now reads an optional `embedding_gpu_layers` from the payload. Changing it persists the value and resets any already-built `agent_manager.embedding_service` (so the next RAG/attach rebuilds the embedding server with the new value) but deliberately does NOT set `need_restart`: the embedder is a separate, lazily-started llama-server, so restarting the chat server for this setting would needlessly interrupt the conversation. (`handle_get_settings()` already returned the whole config, so the value was exposed for reads with no change.)

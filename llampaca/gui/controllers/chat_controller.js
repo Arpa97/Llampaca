@@ -89,17 +89,14 @@ export function useChatController() {
         });
     };
 
-    const sendMessage = async () => {
-        // Ignore a send while a response is still streaming (the button is a
-        // Stop button then anyway).
-        if (isStreaming.value) return;
-        // Allow sending with only attachments (e.g. "riassumi" typed later),
-        // but never a completely empty turn.
-        if (!userInput.value.trim() && !attachments.value.length) return;
-
+    // Core of a chat turn, shared by the normal send and the "remember"
+    // button. `backendText` is what the server actually receives (e.g. a
+    // "/remember <fact>" command); `displayText` is what the user's bubble
+    // shows. They are identical for a normal message and differ only for the
+    // remember shortcut. Callers own the guard checks and clearing the input.
+    const startTurn = async (backendText, displayText) => {
         let convId = activeConversationId.value;
-        const promptText = userInput.value;
-        userInput.value = '';
+        const promptText = backendText;
 
         const now = new Date();
         const timeStr = now.toTimeString().split(' ')[0];
@@ -130,7 +127,7 @@ export function useChatController() {
         // matches how a reloaded conversation renders: the backend persists
         // the full document blocks, which parseMarkdown collapses to the same
         // "📎 name" chips.
-        let displayContent = promptText;
+        let displayContent = displayText;
         if (attachedNames.length) {
             const chips = attachedNames.map(n => `📎 *${n}*`).join('\n');
             displayContent = promptText ? `${chips}\n\n${promptText}` : chips;
@@ -256,6 +253,41 @@ export function useChatController() {
         } finally {
             isStreaming.value = false;
             abortController = null;
+        }
+    };
+
+    // The 🧠 "remember" flag. When armed (toggled on), the NEXT message the
+    // user sends is stored as a durable memory instead of being a normal turn.
+    // It is a toggle, not an immediate action: clicking only arms/disarms it.
+    const rememberMode = ref(false);
+    const toggleRemember = () => {
+        rememberMode.value = !rememberMode.value;
+    };
+
+    // Public: send whatever is in the input box (plus any staged files) as a
+    // chat turn. If the remember flag is armed and there is text, the turn is
+    // routed through the existing "/remember <fact>" path (the model stores it
+    // on the right wiki page via update_wiki_page, with the usual confirmation
+    // prompt) and the user's bubble shows a clean "🧠 <fact>" line instead of
+    // the raw command. The flag is consumed (disarmed) after the send.
+    const sendMessage = async () => {
+        // Ignore a send while a response is still streaming (the button is a
+        // Stop button then anyway).
+        if (isStreaming.value) return;
+        // Allow sending with only attachments (e.g. "riassumi" typed later),
+        // but never a completely empty turn.
+        if (!userInput.value.trim() && !attachments.value.length) return;
+        const text = userInput.value;
+        userInput.value = '';
+
+        if (rememberMode.value && text.trim()) {
+            rememberMode.value = false;
+            await startTurn(`/remember ${text.trim()}`, `🧠 ${text.trim()}`);
+        } else {
+            // Flag armed but nothing to remember (only attachments): disarm it
+            // and fall back to a normal turn rather than silently swallowing it.
+            if (rememberMode.value) rememberMode.value = false;
+            await startTurn(text, text);
         }
     };
 
@@ -412,6 +444,8 @@ export function useChatController() {
         isStreaming,
         getActiveMessages: activeMessages,
         sendMessage,
+        rememberMode,
+        toggleRemember,
         stopGeneration,
         startNewConversation,
         deleteConversation,

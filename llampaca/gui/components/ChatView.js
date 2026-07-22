@@ -82,7 +82,13 @@ export default {
                             <button class="attachment-btn" title="Allega un file" @click="openFilePicker">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                             </button>
-                            <input class="chat-input-field" v-model="userInput" @keyup.enter="sendMessage" :disabled="isStreaming" placeholder="Digita una domanda o chiedi un'azione mail/tool..." />
+                            <!-- 🧠 Remember flag: a TOGGLE, not an immediate send. When
+                                 armed (lit amber) the next message the user sends is stored
+                                 as a durable memory in the wiki (same effect as /remember). -->
+                            <button class="attachment-btn" :class="{ active: rememberMode }" :title="rememberMode ? 'Memoria ATTIVA: il prossimo messaggio verrà salvato nella memoria permanente. Clicca per disattivare.' : 'Attiva memoria: il prossimo messaggio inviato verrà salvato nella memoria permanente del modello'" @click="toggleRemember">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2z"/></svg>
+                            </button>
+                            <input class="chat-input-field" v-model="userInput" @keyup.enter="sendMessage" :disabled="isStreaming" :placeholder="rememberMode ? '🧠 Memoria attiva: scrivi cosa ricordare e invia...' : 'Digita una domanda o un comando mail/tool...'" />
                             <button v-if="!isStreaming" class="send-btn" @click="sendMessage" title="Invia">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
                             </button>
@@ -128,9 +134,23 @@ export default {
                 );
         };
 
+        // Collapse a "/remember" turn down to a clean "🧠 <fact>" line. The
+        // backend rewrites a remembered message into "<fact>\n\n[The user asked
+        // to remember the fact above permanently. …]" before persisting it, so
+        // a reloaded conversation would otherwise show that whole instruction
+        // block. Here we strip it and keep just the fact with the brain emoji,
+        // matching what the live bubble shows. Display-only: the model still
+        // received the full instruction.
+        const collapseRemember = (text) => {
+            if (!text) return text;
+            const m = text.match(/^([\s\S]*?)\s*\[The user asked to remember the fact above permanently\.[\s\S]*\]\s*$/);
+            if (m) return `🧠 ${m[1].trim()}`;
+            return text;
+        };
+
         const parseMarkdown = (text) => {
             if (!text) return '';
-            const clean = collapseAttachments(text);
+            const clean = collapseRemember(collapseAttachments(text));
             // Use marked if available, fallback to plain text replacing newlines
             if (window.marked) {
                 return window.marked.parse(clean, { breaks: true });
