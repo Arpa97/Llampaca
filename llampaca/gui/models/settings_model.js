@@ -9,7 +9,10 @@ export class SettingsModel {
             threads: data.n_threads,
             gpuLayers: data.gpu_layers,
             // Embedder's own GPU offload, independent from the chat model's.
-            embeddingGpuLayers: data.embedding_gpu_layers
+            embeddingGpuLayers: data.embedding_gpu_layers,
+            // Skip the reasoning phase of models like Qwen3. Applied per
+            // request, so it takes effect on the next message with no restart.
+            noThink: !!data.no_think
         };
     }
 
@@ -20,6 +23,10 @@ export class SettingsModel {
             n_threads: parseInt(newSettings.threads),
             gpu_layers: parseInt(newSettings.gpuLayers),
             embedding_gpu_layers: parseInt(newSettings.embeddingGpuLayers)
+            // no_think NON viaggia da qui: lo possiede il pulsante ⚡ in chat.
+            // Inviarlo da questo form lo riporterebbe al valore letto
+            // all'apertura della scheda, annullando in silenzio una scelta
+            // fatta nel frattempo dal composer.
         };
         const r = await fetch('/api/settings', {
             method: 'POST',
@@ -33,7 +40,8 @@ export class SettingsModel {
             contextSize: data.config.context_size,
             threads: data.config.n_threads,
             gpuLayers: data.config.gpu_layers,
-            embeddingGpuLayers: data.config.embedding_gpu_layers
+            embeddingGpuLayers: data.config.embedding_gpu_layers,
+            noThink: !!data.config.no_think
         };
     }
 }

@@ -72,6 +72,14 @@ class AgentManager:
         self.current_task = None
         self._mcp_reload_lock = None
         self.mcp_config_mtime = 0
+        # Serialises the startup cache warm-up against real user turns.
+        # Both drive the same single llama-server: letting them overlap made
+        # them fight for the GPU — measured, a message sent while the warm-up
+        # was still running took 28.5 s (worse than the 19.3 s before any of
+        # this existed) and stretched the warm-up itself from 8 s to 16 s.
+        # Held for the whole turn, so a message arriving mid-warm-up simply
+        # waits for it and then inherits the cache it just built.
+        self._inference_lock = None
 
         # --- File attachments (GUI equivalent of the CLI's /attach) -------
         # Attachments uploaded but not yet sent, keyed by conversation id.
@@ -149,6 +157,16 @@ class AgentManager:
                             await self._reload_mcp_manager_internal()
                     except Exception as e:
                         print(f"[AgentManager] Error checking/reloading MCP config on message: {e}", flush=True)
+
+                # If the startup cache warm-up is still in flight, wait for it
+                # instead of racing it: both talk to the same llama-server, and
+                # overlapping them made each slower than either alone. Waiting
+                # costs at most the tail of the warm-up and the turn then
+                # inherits the cache it just built. Turns themselves are
+                # already serialised by this loop, so nothing else contends.
+                if self._inference_lock is not None:
+                    async with self._inference_lock:
+                        pass
 
                 self.current_task = asyncio.create_task(self._process_message_coro(*req))
                 try:
@@ -231,7 +249,12 @@ class AgentManager:
                     from llampaca.engine.mcp_client import McpClientManager
                     self.mcp_manager = McpClientManager(mcp_servers_config)
                     await self.mcp_manager.start(self.registry)
-                    
+
+                # A restart means a brand-new llama-server process, so its KV
+                # cache is empty again: without this the first message after
+                # switching model or context size would pay the full prefill.
+                asyncio.create_task(self._warm_prompt_cache())
+
             return success
 
     async def reload_mcp_manager(self):
@@ -308,6 +331,7 @@ class AgentManager:
         
     async def _init_async(self, config):
         self._mcp_reload_lock = asyncio.Lock()
+        self._inference_lock = asyncio.Lock()
         from llampaca.tools import build_default_registry
         from llampaca.engine.client import LlamaClient
         from llampaca.engine.mcp_client import McpClientManager
@@ -328,7 +352,106 @@ class AgentManager:
         if mcp_servers_config:
             self.mcp_manager = McpClientManager(mcp_servers_config)
             await self.mcp_manager.start(self.registry)
-            
+
+        # Warm the shared prompt prefix in the background. Deliberately AFTER
+        # the MCP servers have registered their tools: their schemas are part
+        # of the prefix, so warming any earlier would cache a prompt that no
+        # real request ever sends.
+        asyncio.create_task(self._warm_prompt_cache())
+
+    async def _warm_prompt_cache(self):
+        """
+        Pre-compute the KV cache for the shared prompt prefix, at startup.
+
+        Every conversation sends the same opening block: system prompt, wiki
+        index, skills index and the JSON schemas of all registered tools —
+        measured at ~2270 tokens. llama-server caches the state it derives
+        from those tokens and reuses it for every later request, so the cost
+        is paid exactly once per server process: ~7.7 s on a 4B Q4 model for
+        the first message, then ~0.15 s for each one after it.
+
+        Without this, that 7.7 s lands on the user's first question. Firing
+        the same prefix here moves it into the window's startup, where nobody
+        is waiting on it. It does not reduce the work, only relocates it.
+
+        Runs as a background task: startup must not block on it, and the
+        HTTP API is already serving while it happens. If a message arrives
+        mid-warm-up nothing breaks — llama-server serialises the two requests
+        and the user's one still ends up hitting a warm cache.
+
+        Best-effort by design: any failure is logged and ignored, because a
+        missed optimisation must never prevent the app from starting.
+        """
+        if self.registry is None or self.client is None:
+            return
+        try:
+            import time
+            from llampaca.agent.loop import Agent, DEFAULT_SYSTEM_PROMPT
+            from llampaca import wiki, skills
+
+            # Built with the same calls as _process_message_coro. The cache is
+            # keyed on the exact token sequence, so a hand-written copy of the
+            # prompt would silently drift and waste the whole warm-up.
+            system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+            skills_idx = skills.render_skills_index()
+            if skills_idx:
+                system_prompt += "\n\n" + skills_idx
+
+            config = self.config or {}
+            model_name = config.get("default_model", "local-model")
+
+            # Agent.__init__ appends today's date to the prompt and, in
+            # prompt-based tool mode, the tool instructions too. Reproducing
+            # that by hand would drift the moment either changes, so we build a
+            # throwaway Agent and read its real messages[0]. Its constructor
+            # calls get_chat_template() with blocking `requests`, hence the
+            # thread: this coroutine shares the loop with the request queue.
+            agent = await asyncio.to_thread(
+                lambda: Agent(
+                    client=self.client,
+                    registry=self.registry,
+                    system_prompt=system_prompt,
+                    model=model_name,
+                    context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
+                )
+            )
+
+            # Same condition the agent uses per request: tools travel as a
+            # request parameter only in native mode. In prompt-based mode they
+            # are already inside messages[0].
+            tools = (
+                self.registry.definitions()
+                if agent.tools_enabled and agent.native_tools
+                else None
+            )
+            # A minimal user turn so the template closes the system block
+            # exactly as it will for a real first message.
+            messages = agent.messages + [{"role": "user", "content": "."}]
+
+            # Thinking on/off changes how the template renders, so the warm-up
+            # has to use the same setting as the real turns or it would cache a
+            # prefix nothing matches.
+            no_think = config.get("no_think", False)
+
+            t0 = time.time()
+            async with self._inference_lock:
+                timings = await self.client.prime_prompt_cache(
+                    messages, model=model_name, tools=tools, no_think=no_think
+                )
+            elapsed = time.time() - t0
+
+            if "error" in timings:
+                print(f"[AgentManager] Prompt cache warm-up skipped: {timings['error']}", flush=True)
+            else:
+                print(
+                    f"[AgentManager] Prompt cache warmed: "
+                    f"{timings.get('prompt_n', '?')} tokens in {elapsed:.1f}s "
+                    f"— the first message no longer pays for them.",
+                    flush=True,
+                )
+        except Exception as e:
+            print(f"[AgentManager] Prompt cache warm-up failed (harmless): {e}", flush=True)
+
     def stop(self):
         # Stop active llama-server if any
         try:
@@ -586,7 +709,8 @@ class AgentManager:
                 system_prompt=system_prompt,
                 model=conv_data.get("model_name", "local-model"),
                 context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
-                summary=conv_data.get("summary")
+                summary=conv_data.get("summary"),
+                no_think=config.get("no_think", False)
             )
             
             last_summarized_id = conv_data.get("last_summarized_message_id")
@@ -671,7 +795,20 @@ class AgentManager:
                         title_source = _strip_attachment_blocks(content)
                         title_prompt = f"Scrivi un titolo molto breve (massimo 4-5 parole) che riassuma questo messaggio. Restituisci SOLO il titolo senza virgolette o preamboli: {title_source}"
                         title_res = ""
-                        async for chunk in self.client.chat_stream([{"role": "user", "content": title_prompt}]):
+                        # Thinking off and a hard cap: naming a conversation is
+                        # a throwaway generation, but on a reasoning model it
+                        # was the single most expensive part of the first turn —
+                        # measured at 195 tokens and 6.7 s (worst case seen:
+                        # 834 tokens, 29.5 s) to produce four words, with the
+                        # user waiting for the stream to close the whole time.
+                        # Without thinking the same title costs 8 tokens and
+                        # 0.3 s. max_tokens is the safety net for a model whose
+                        # template ignores the toggle and reasons anyway.
+                        async for chunk in self.client.chat_stream(
+                            [{"role": "user", "content": title_prompt}],
+                            max_tokens=25,
+                            no_think=True,
+                        ):
                             title_res += chunk
                         new_title = title_res.strip().strip('"').strip("'")
                         if new_title:
@@ -1402,8 +1539,27 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 config["embedding_gpu_layers"] = int(payload["embedding_gpu_layers"])
                 embedding_gpu_changed = True
 
+            # Thinking on/off is applied per request (the Agent reads it from
+            # the config on every turn), so it needs no restart: the very next
+            # message uses the new value. Driven from the chat composer, where
+            # it is a per-turn decision rather than a configuration.
+            if "no_think" in payload:
+                config["no_think"] = bool(payload["no_think"])
+
             from llampaca.config import save_config
             save_config(config)
+
+            # The manager caches the config it was started with; without this
+            # the Agent would keep reading the old value until the next launch.
+            if agent_manager.config is not None:
+                agent_manager.config = config
+
+            # No cache re-priming when no_think changes: measured against
+            # llama-server, the toggle only alters the tail of the rendered
+            # prompt (the assistant's generation prefix), not the system block,
+            # so the warmed prefix stays valid — 13 tokens to compute after a
+            # switch versus 2271 from cold. Re-priming would have stalled the
+            # next message by ~8 s for nothing.
 
             if embedding_gpu_changed:
                 try:

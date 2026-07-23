@@ -10,7 +10,9 @@ export function useSettingsController() {
         threads: 4,
         gpuLayers: -1,
         // Embedder GPU offload: 0 = CPU-only (default), -1 = auto, N = N layers.
-        embeddingGpuLayers: 0
+        embeddingGpuLayers: 0,
+        // Salta la fase di ragionamento dei modelli come Qwen3.
+        noThink: false
     });
 
     const loadSettings = async () => {

@@ -141,7 +141,9 @@ class TestAgentForwardsStreamEvents(unittest.IsolatedAsyncioTestCase):
         mock_client = MagicMock(spec=LlamaClient)
         mock_client.get_chat_template.return_value = ""
 
-        async def fake_events(messages, model="local-model", tools=None):
+        # Mirrors LlamaClient.chat_stream_events, no_think included: the agent
+        # forwards it on every call, so a double without it raises TypeError.
+        async def fake_events(messages, model="local-model", tools=None, no_think=False):
             yield ("reasoning", "let me think")
             yield ("tool_name", "read_file")
             yield ("text", "done")

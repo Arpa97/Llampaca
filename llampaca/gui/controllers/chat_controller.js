@@ -256,6 +256,47 @@ export function useChatController() {
         }
     };
 
+    // --- "Risposte dirette" (⚡) --------------------------------------
+    // Salta la fase di ragionamento del modello. Sta qui e non nelle
+    // impostazioni perché è una scelta PER TURNO, non una configurazione:
+    // ragionare serve per un compito in più passaggi, non per un saluto.
+    // Misurato su Qwen3-4B per un "ciao": 1906 token in 75,7s con il
+    // ragionamento, 12 token in 0,8s senza.
+    //
+    // Il valore vive in config.json (stessa chiave che usa la CLI), così la
+    // scelta sopravvive alla chiusura dell'app. Il backend lo applica per
+    // singola richiesta: vale dal messaggio successivo, senza riavvii.
+    const directMode = ref(false);
+
+    const loadDirectMode = async () => {
+        try {
+            const r = await fetch(`/api/settings?_t=${Date.now()}`);
+            if (!r.ok) return;
+            directMode.value = !!(await r.json()).no_think;
+        } catch (e) {
+            console.error("Errore nel caricamento di 'risposte dirette':", e);
+        }
+    };
+
+    const toggleDirect = async () => {
+        const next = !directMode.value;
+        // Ottimistico: il pulsante risponde subito, e se il salvataggio
+        // fallisce torna indietro invece di mentire sullo stato reale.
+        directMode.value = next;
+        try {
+            const r = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ no_think: next })
+            });
+            if (!r.ok) throw new Error(await r.text());
+        } catch (e) {
+            directMode.value = !next;
+            console.error("Impossibile cambiare 'risposte dirette':", e);
+            if (window.showToast) window.showToast("Impostazione non salvata", "error");
+        }
+    };
+
     // The 🧠 "remember" flag. When armed (toggled on), the NEXT message the
     // user sends is stored as a durable memory instead of being a normal turn.
     // It is a toggle, not an immediate action: clicking only arms/disarms it.
@@ -437,6 +478,7 @@ export function useChatController() {
 
     // Load list at mount
     loadConversations();
+    loadDirectMode();
 
     return {
         conversations,
@@ -453,6 +495,8 @@ export function useChatController() {
         sendMessage,
         rememberMode,
         toggleRemember,
+        directMode,
+        toggleDirect,
         stopGeneration,
         startNewConversation,
         deleteConversation,
