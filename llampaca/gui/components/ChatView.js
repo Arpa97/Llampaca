@@ -45,14 +45,14 @@ export default {
                     </div>
 
                     <div class="messages-list" ref="messagesContainer">
-                        <div v-if="!getActiveMessages.length" class="chat-empty">
+                        <div v-if="!visibleMessages.length" class="chat-empty">
                             <img src="logo.png" alt="">
                             <h3>Come posso aiutarti?</h3>
                             <p>Chiedi qualcosa, allega un documento, oppure fai eseguire uno strumento. Ogni operazione che modifica file o esegue comandi ti chiede prima conferma.</p>
                         </div>
 
                         <div class="messages-inner" v-else>
-                            <div v-for="(m, index) in getActiveMessages" :key="index" class="message-row" :class="m.role">
+                            <div v-for="(m, index) in visibleMessages" :key="index" class="message-row" :class="m.role">
                                 <!-- Non "=== 'agent'": una conversazione ricaricata da
                                      SQLite marca il turno come 'assistant'. Con il
                                      confronto stretto l'etichetta compariva solo sui
@@ -191,6 +191,17 @@ export default {
             });
         };
 
+        // Il prompt di sistema non è una battuta della conversazione: è
+        // configurazione. Una sessione avviata dalla CLI lo salva come
+        // messaggio con role 'system', e il trascritto lo mostrava in cima
+        // come se l'assistente avesse detto "You are Llampaca, a helpful
+        // local AI personal assistant." Il backend lo salta già quando
+        // ricostruisce il contesto per il modello (server.py); qui facciamo
+        // lo stesso per la visualizzazione.
+        const visibleMessages = Vue.computed(() =>
+            chatCtrl.getActiveMessages.value.filter(m => m.role !== 'system')
+        );
+
         // --- Misuratore di contesto ---------------------------------------
         // Soglie: sotto il 75% l'ambra racconta solo l'occupazione; oltre il
         // 90% il colore diventa un avviso, perché da lì in poi la conversazione
@@ -265,6 +276,7 @@ export default {
             inputField,
             autoGrow,
             submit,
+            visibleMessages,
             ctxLevel,
             kTokens,
             parseMarkdown,

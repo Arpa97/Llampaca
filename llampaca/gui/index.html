@@ -14,10 +14,9 @@
         È il mono a dare carattere: Llampaca è un prodotto da terminale e i suoi
         dati devono sembrare dati, non prosa.
     -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
-        rel="stylesheet">
+    <!-- Serviti da qui, non da fonts.gstatic.com: Llampaca gira in locale e
+         deve funzionare senza rete. Licenze e provenienza in vendor/LICENSES.md. -->
+    <link rel="stylesheet" href="vendor/fonts.css">
 
     <style>
         /* ==================================================================
@@ -1544,6 +1543,9 @@
             width: 116px;
             margin-bottom: 6px;
             opacity: 0.9;
+            /* Come .brand-logo: il PNG ha il fondo bianco opaco, che sulla
+               superficie tenue del trascritto si vedeva come un riquadro. */
+            mix-blend-mode: multiply;
         }
 
         .chat-empty h3 {
@@ -2330,10 +2332,11 @@
         </main>
     </div>
 
-    <!-- Marked.js for Markdown parsing -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <!-- Vue 3 CDN link -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <!-- Librerie servite in locale (vedi vendor/LICENSES.md). Prima arrivavano
+         da jsdelivr e unpkg: senza connessione Vue non si caricava e
+         l'interfaccia restava un template grezzo non montato. -->
+    <script src="vendor/marked.min.js"></script>
+    <script src="vendor/vue.global.prod.js"></script>
     <!-- Frontend logic app.js (loaded as ES6 module) -->
     <script type="module" src="app.js"></script>
 </body>

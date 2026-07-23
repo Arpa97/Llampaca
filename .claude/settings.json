@@ -168,7 +168,16 @@
       "Bash(pkill -f \"http.server 8777\")",
       "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca serve *)",
       "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=7000 --window-size=1440,900 --screenshot=/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/4d35c238-5326-4d29-bd24-b5d1434e84fb/scratchpad/real/chat2.png http://localhost:8090/index.html)",
-      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=9000 --dump-dom http://localhost:8777/index.html?deltest=1)"
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=9000 --dump-dom http://localhost:8777/index.html?deltest=1)",
+      "Bash(curl -sS -L \"https://unpkg.com/vue@3/dist/vue.global.prod.js\" -o vendor/vue.global.prod.js)",
+      "Bash(curl -sS -L \"https://cdn.jsdelivr.net/npm/marked/marked.min.js\" -o vendor/marked.min.js)",
+      "Bash(awk '{print $9, $5}')",
+      "Read(//Users/umbertodilaudo/miniconda3/envs/**)",
+      "Bash(xargs '-I{}' '{}' -c ' *)",
+      "Bash(git check-ignore *)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=8000 '--host-resolver-rules=MAP * 127.0.0.1:9, EXCLUDE localhost' --window-size=1280,760 --screenshot=/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/4d35c238-5326-4d29-bd24-b5d1434e84fb/scratchpad/real/offline_backend.png http://localhost:8090/index.html)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=8000 '--host-resolver-rules=MAP * 127.0.0.1:9, EXCLUDE localhost' --window-size=1280,600 --screenshot=/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/4d35c238-5326-4d29-bd24-b5d1434e84fb/scratchpad/real/offline_final.png http://localhost:8090/index.html)",
+      "Bash(awk '{printf \"  %.0f MB\\\\n\", $5/1048576}')"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

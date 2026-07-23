@@ -703,6 +703,17 @@ agent_manager = AgentManager()
 class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    # I font in llampaca/gui/vendor/fonts/ vanno serviti con il MIME giusto.
+    # La tabella di `mimetypes` conosce .woff2 solo da Python 3.11 in poi, ma
+    # pyproject.toml dichiara requires-python = ">=3.10": su 3.10 il font
+    # uscirebbe come application/octet-stream. Lo registriamo esplicitamente
+    # invece di dipendere dalla versione dell'interprete.
+    extensions_map = {
+        **http.server.SimpleHTTPRequestHandler.extensions_map,
+        '.woff2': 'font/woff2',
+        '.woff': 'font/woff',
+    }
+
     def log_message(self, format, *args):
         # Log only API requests to the console, ignore static asset prints
         if self.path.startswith('/api/'):
