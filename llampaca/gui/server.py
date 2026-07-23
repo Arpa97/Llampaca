@@ -2305,6 +2305,74 @@ def start_gui_window():
         sys.exit(1)
 
     gui_dir = Path(__file__).parent.resolve()
+
+    def _set_app_icon():
+        """Set OS-specific icon simple and fast without impacting startup time."""
+        if sys.platform == 'darwin':
+            # macOS: use padded HIG-compliant icon asset (fallback to logo.png)
+            mac_icon = gui_dir / "app_icon_mac.png"
+            target_path = mac_icon if mac_icon.exists() else (gui_dir / "logo.png")
+            if target_path.exists():
+                try:
+                    from AppKit import NSApplication, NSImage, NSAlert
+                    app = NSApplication.sharedApplication()
+                    icon_image = NSImage.alloc().initWithContentsOfFile_(str(target_path))
+                    if icon_image and icon_image.isValid():
+                        app.setApplicationIconImage_(icon_image)
+
+                        # Auto-set icon on all macOS alert / confirmation dialogs (NSAlert)
+                        try:
+                            import ctypes
+                            import objc
+                            objc_lib = ctypes.cdll.LoadLibrary('/usr/lib/libobjc.dylib')
+                            objc_lib.objc_getClass.restype = ctypes.c_void_p
+                            objc_lib.objc_getClass.argtypes = [ctypes.c_char_p]
+                            objc_lib.class_getInstanceMethod.restype = ctypes.c_void_p
+                            objc_lib.class_getInstanceMethod.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                            objc_lib.method_getImplementation.restype = ctypes.c_void_p
+                            objc_lib.method_getImplementation.argtypes = [ctypes.c_void_p]
+                            objc_lib.sel_registerName.restype = ctypes.c_void_p
+                            objc_lib.sel_registerName.argtypes = [ctypes.c_char_p]
+
+                            nsalert_cls_ptr = objc_lib.objc_getClass(b'NSAlert')
+                            init_sel = objc_lib.sel_registerName(b'init')
+                            m_init = objc_lib.class_getInstanceMethod(nsalert_cls_ptr, init_sel)
+                            orig_init_imp_ptr = objc_lib.method_getImplementation(m_init)
+
+                            IMP_TYPE = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+                            orig_init_fn = IMP_TYPE(orig_init_imp_ptr)
+
+                            def _swizzled_nsalert_init(self):
+                                self_ptr = objc.pyobjc_id(self)
+                                res_ptr = orig_init_fn(self_ptr, init_sel)
+                                alert = objc.objc_object(c_void_p=res_ptr)
+                                if alert:
+                                    try:
+                                        alert.setIcon_(icon_image)
+                                    except Exception:
+                                        pass
+                                return alert
+
+                            _set_app_icon._imp_holder = _swizzled_nsalert_init
+                            NSAlert.init = _swizzled_nsalert_init
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        elif sys.platform == 'win32':
+            # Windows: set explicit AppUserModelID for taskbar process icon
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Llampaca.Dashboard.App.1")
+            except Exception:
+                pass
+        elif sys.platform.startswith('linux'):
+            # Linux: icon handling relies on window manager / pywebview favicon
+            pass
+
+    # Set icon before starting window
+    _set_app_icon()
+
     port = find_free_port()
     server = start_http_server(gui_dir, port)
 
@@ -2332,7 +2400,7 @@ def start_gui_window():
         # (right-click -> Inspect Element) so the Console/Network tabs can be
         # used to diagnose frontend issues live.
         debug = os.environ.get("LLAMPACA_DEBUG", "").strip() in ("1", "true", "yes")
-        webview.start(debug=debug)
+        webview.start(func=_set_app_icon, debug=debug)
     finally:
         print("Window closed. Stopping HTTP server...", flush=True)
         server.shutdown()
