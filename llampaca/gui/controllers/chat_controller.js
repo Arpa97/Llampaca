@@ -328,6 +328,13 @@ export function useChatController() {
     };
 
     const deleteConversation = async (id) => {
+        // Eliminare una conversazione cancella anche i suoi messaggi (ON DELETE
+        // CASCADE) e l'indice degli allegati: è irreversibile. Era l'unica
+        // azione distruttiva della GUI senza conferma — le altre (pagine wiki,
+        // skill, strumenti, modelli, integrazioni) la chiedono già così.
+        const conv = conversations.value.find(c => c.id === id);
+        const title = conv ? conv.title : id;
+        if (!window.confirm(`Eliminare la conversazione "${title}"? L'azione è irreversibile.`)) return;
         try {
             await model.deleteConversation(id);
             conversations.value = await model.getConversations();

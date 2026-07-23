@@ -165,7 +165,10 @@
       "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=5000 --enable-logging=stderr --v=1 --dump-dom http://localhost:8777/index.html?tab=mcp)",
       "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=5000 --dump-dom http://localhost:8777/index.html?tab=mcp)",
       "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=6000 --dump-dom http://localhost:8777/index.html?tab=mcp)",
-      "Bash(pkill -f \"http.server 8777\")"
+      "Bash(pkill -f \"http.server 8777\")",
+      "Bash(/Users/umbertodilaudo/miniconda3/envs/llampaca/bin/llampaca serve *)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=7000 --window-size=1440,900 --screenshot=/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/4d35c238-5326-4d29-bd24-b5d1434e84fb/scratchpad/real/chat2.png http://localhost:8090/index.html)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=9000 --dump-dom http://localhost:8777/index.html?deltest=1)"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

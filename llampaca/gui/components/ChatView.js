@@ -53,7 +53,11 @@ export default {
 
                         <div class="messages-inner" v-else>
                             <div v-for="(m, index) in getActiveMessages" :key="index" class="message-row" :class="m.role">
-                                <div v-if="m.role === 'agent'" class="message-role">Llampaca</div>
+                                <!-- Non "=== 'agent'": una conversazione ricaricata da
+                                     SQLite marca il turno come 'assistant'. Con il
+                                     confronto stretto l'etichetta compariva solo sui
+                                     messaggi appena generati e spariva al ricaricamento. -->
+                                <div v-if="m.role !== 'user'" class="message-role">Llampaca</div>
                                 <div class="message-bubble markdown-body" v-html="parseMarkdown(m.content)" v-if="m.content"></div>
                                 <div class="message-thought" v-if="m.thought">
                                     <span class="thought-dot"></span>

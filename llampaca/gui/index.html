@@ -1317,8 +1317,14 @@
 
         /* La risposta dell'assistente non è più un fumetto: è prosa a piena
            misura. Un fumetto stretto è giusto per una battuta, non per una
-           risposta markdown lunga con codice, elenchi e tabelle. */
-        .message-row.agent {
+           risposta markdown lunga con codice, elenchi e tabelle.
+
+           Due classi, non una: lo streaming dal vivo marca il turno come
+           "agent", mentre una conversazione ricaricata da SQLite lo marca
+           "assistant" (è il ruolo salvato nel database). Coprendone una sola,
+           i messaggi storici perdevano lo stile. */
+        .message-row.agent,
+        .message-row.assistant {
             align-self: stretch;
             max-width: 100%;
         }
@@ -1348,7 +1354,8 @@
             box-shadow: var(--shadow-1);
         }
 
-        .message-row.agent .message-bubble {
+        .message-row.agent .message-bubble,
+        .message-row.assistant .message-bubble {
             background-color: transparent;
             border: none;
             padding: 0;
