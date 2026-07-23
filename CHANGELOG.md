@@ -3,6 +3,37 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-23]
+
+### Changed — GUI Visual Redesign (palette preserved, structure unchanged)
+
+Full restyle of the desktop dashboard. The five brand colours (`--amber-glow`, `--tea-green`, `--pacific-blue`, `--dusk-blue`, `--crimson-violet`) are untouched, as requested. No MVC boundary was moved: models and controllers keep their contracts, and every change is in `index.html` (the stylesheet) plus the component templates.
+
+- **`llampaca/gui/index.html`** — stylesheet rewritten around a token system.
+  - **Fixed: undefined CSS variables.** The components referenced `--bg-card`, `--bg-hover`, `--text-color`, `--danger` and `--btn-pacific`, none of which were ever declared. Those declarations resolved to nothing, so the affected panels (Strumenti, Skills, parts of Impostazioni and the confirmation banner) rendered with transparent backgrounds and inherited text colours. All are now defined. Reason: this was the single largest source of the "broken" look in those tabs.
+  - **Fixed: `.btn-danger` was declared twice** (lines ~222 and ~463 of the old file); the second silently overrode the first, so the palette's crimson variant never applied. Now one declaration per variant.
+  - **Neutrals re-derived from `--dusk-blue`.** The greys were GitHub's (`#f6f8fa` / `#e1e4e8` / `#24292e`), foreign to the palette. They are now cooled toward the brand blue (`#eef2f6` / `#dde5ed` / `#1c2b3a`) so the brand colours sit inside a coherent family. Brand hues themselves unchanged.
+  - **Contrast.** White text on `#ffa630` measured ~2.1:1 (unreadable). Every amber surface — primary buttons, user message bubbles, the active nav item — now uses a dark amber ink (`--amber-ink: #4a2a00`, ~8:1). `--danger` is a lightened `--crimson-violet` (`#8f2140`) rather than a generic red, keeping destructive actions in palette.
+  - **Amber rationing.** The active nav item was a filled amber pill competing with the amber primary buttons; it is now an amber tint plus a 3px rail. Amber is reserved for actions and for the context meter.
+  - **Typography: three roles instead of one.** Added Space Grotesk (titles/headings) and JetBrains Mono (all machine data: ports, GGUF filenames, quantizations, tok/s, tool names, log paths, badges, section eyebrows) alongside the existing Inter (body/UI). Full local fallback stacks; ligatures disabled in mono so source code displays the characters actually written (`->` was rendering as `→`).
+  - Added: focus-visible ring on every control, styled scrollbars, markdown styles for headings/code blocks/tables/blockquotes/links, an `.empty-panel` state, `prefers-reduced-motion` support, and a responsive rail (sidebar collapses to icons under 940px, single-column grids under 720px).
+  - Removed the brittle `height: calc(100vh - 65px)` on `.chat-container` in favour of flex sizing, and the fixed 65px `.view-header` height in favour of `min-height` (headers with a subtitle were being clipped).
+  - `.brand-logo` gets `mix-blend-mode: multiply`: the PNG has an opaque white background that showed as a white box on the tinted sidebar.
+- **`llampaca/gui/index.html` (markup)** — the sidebar's flat list of seven links is now grouped under three mono eyebrows (Assistente / Capacità / Sistema) and labels are shortened. Nav items gained `role="tab"`, `aria-selected`, `tabindex` and Enter/Space activation — previously they were `<a>` elements with no `href`, unreachable by keyboard. The footer's fixed "Server locale attivo" string is replaced by a live status block.
+- **`llampaca/gui/app.js`** — added a `loadStatus()` fetch of `/api/settings` feeding that block (active model, port, context window), exposed as `window.refreshServerStatus` so Impostazioni can re-sync after saving. Reason: the most useful fact in the app — what is running right now — was not shown anywhere.
+- **`llampaca/gui/components/ChatView.js`**
+  - **Signature element: the context meter.** The turn footer was an 11px grey sentence; it is now a gauge above the composer that fills amber as the conversation consumes the context window and turns crimson past 90%, with the token/speed figures in mono beside it.
+  - Assistant replies are no longer chat bubbles: they render as full-measure prose under a mono `LLAMPACA` label, with the transcript capped at a 760px reading measure. A narrow bubble is right for a one-liner, wrong for a markdown answer with tables and code.
+  - **Composer is now a `<textarea>`** with auto-grow: Enter sends, Shift+Enter inserts a newline (hint revealed on focus). It was a single-line `<input>`, so a multi-sentence prompt scrolled out of view.
+  - Confirmation banner rebuilt as classes instead of ~25 inline styles, aligned to the same 760px measure as the transcript, with "Rifiuta" given a solid border so refusing does not read as the disabled option.
+  - The streaming "thinking" line uses a pulsing dot instead of a spinning spinner mid-paragraph.
+- **`llampaca/gui/components/{ModelsView,McpView,ToolsView,SkillsView,WikiView,SettingsView}.js`** — all six now use the same `.view` / `.view-header` (title + subtitle + actions) / `.view-body` shell and the shared two-pane pattern, replacing six hand-rolled variants. Strumenti and Skills previously did not use `.view-body` at all, so their content sat outside the scroll container. Hundreds of inline styles were replaced by classes (`.section-head`, `.info-block`, `.code-block`, `.param-table`, `.empty-panel`, `.form-error`, badge variants). Italian copy tightened throughout: labels say what happens ("Salva e riavvia", "Nuova skill"), empty states explain the next action, and paths/identifiers are set in mono.
+- **`llampaca/gui/components/McpView.js`** — the registry "Installa" buttons are pacific rather than amber, matching "Scarica" in Modelli: fetching something from the internet has one colour, and a grid of filled amber blocks drowned out the real primary actions.
+
+### Fixed — Blank "Integrazioni" Tab When the Registry Returns an Unexpected Body
+
+- **`llampaca/gui/controllers/mcp_controller.js`**: `performSearch()` assigned `data.servers` straight into `searchResults`. If the registry answered `200` without that key, `searchResults` became `undefined`, the template's `searchResults.length` threw inside the render function, and Vue unmounted the whole view — the entire tab went blank with no error shown to the user. Now guarded with `Array.isArray(data.servers) ? data.servers : []`. Found while screenshotting the redesign against a stubbed API.
+
 ## [2026-07-22]
 
 ### Added — "Remember" (🧠) Toggle in the Chat Input

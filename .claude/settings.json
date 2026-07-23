@@ -153,7 +153,19 @@
       "Bash(~/miniconda3/envs/dropgnn/bin/python3 -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
       "Bash(awk '/def emit_sse/,/def [a-z_]+\\\\\\(self.*\\\\\\):.*$/{print NR\": \"$0}' llampaca/gui/server.py)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('llampaca/gui/server.py'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
-      "Bash(python -m pytest tests/test_embedding.py -q)"
+      "Bash(python -m pytest tests/test_embedding.py -q)",
+      "Bash(claude plugin *)",
+      "Read(//Applications/Google Chrome.app/Contents/MacOS/**)",
+      "Bash(python3 -c \"import webview; print\\('pywebview ok'\\)\")",
+      "Bash(grep -n \"^\\\\s*\\\\\\(chatModels\\\\|embeddingModels\\\\|isRestarting\\\\|searchQuery\\\\|downloadUrl\\\\|hasNextPage\\\\|isSearching\\\\|searchResults\\\\|setDefaultModel\\\\|deleteModel\\\\|downloadPreset\\\\|startDownload\\\\|performSearch\\\\|loadMore\\\\|downloadSearchModel\\\\\\),\\\\?$\" models_controller.js)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=6000 --window-size=1440,900 --screenshot=/private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/4d35c238-5326-4d29-bd24-b5d1434e84fb/scratchpad/shots/chat.png http://localhost:8777/index.html)",
+      "Bash(bash /private/tmp/claude-501/-Users-umbertodilaudo-Desktop-Umberto-repo-Llampaca/4d35c238-5326-4d29-bd24-b5d1434e84fb/scratchpad/build_preview.sh)",
+      "Bash(curl -s -o /dev/null -w \"gfonts:%{http_code}\\\\n\" --max-time 8 \"https://fonts.googleapis.com/css2?family=Inter:wght@400&display=swap\")",
+      "Bash(curl -s -o /dev/null -w \"unpkg:%{http_code}\\\\n\" --max-time 8 \"https://unpkg.com/vue@3/dist/vue.global.prod.js\")",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=5000 --enable-logging=stderr --v=1 --dump-dom http://localhost:8777/index.html?tab=mcp)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=5000 --dump-dom http://localhost:8777/index.html?tab=mcp)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --virtual-time-budget=6000 --dump-dom http://localhost:8777/index.html?tab=mcp)",
+      "Bash(pkill -f \"http.server 8777\")"
     ],
     "additionalDirectories": [
       "/Users/umbertodilaudo/.llampaca/logs",

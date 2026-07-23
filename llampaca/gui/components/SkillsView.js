@@ -2,142 +2,131 @@ import { useSkillsController } from '../controllers/skills_controller.js';
 
 export default {
     template: `
-        <div style="display: flex; flex-direction: column; height: 100%;">
-            <div class="view-header" style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); margin-bottom: 20px;">
-                <div>
-                    <h1 class="view-title" style="margin: 0; font-size: 24px; font-weight: 600;">Libreria Skills Markdown (.md)</h1>
-                    <p style="margin: 4px 0 0 0; font-size: 13px; color: var(--text-muted);">Crea, modifica o importa istruzioni di dominio e prompt strutturati scaricati da internet.</p>
+        <div class="view">
+            <div class="view-header">
+                <div class="view-header-text">
+                    <h1 class="view-title">Skills</h1>
+                    <div class="view-subtitle">Istruzioni di dominio in markdown, in <span class="mono">~/.llampaca/skills/</span></div>
                 </div>
-                <button class="btn btn-pacific" @click="startNewSkill" style="display: inline-flex; align-items: center; gap: 8px;">
-                    <svg viewBox="0 0 24 24" style="width: 16px; height: 16px; fill: currentColor;">
-                        <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-                    </svg>
-                    Crea / Importa Skill
-                </button>
+                <div class="view-header-actions">
+                    <button class="btn btn-primary" @click="startNewSkill">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                        Nuova skill
+                    </button>
+                </div>
             </div>
 
-            <div class="wiki-container" style="display: flex; flex: 1; overflow: hidden; gap: 20px;">
+            <div class="wiki-container">
                 <!-- Skills Sidebar -->
-                <div class="wiki-sidebar" style="width: 320px; border-right: 1px solid var(--border-color); display: flex; flex-direction: column; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
-                    <div class="chat-sidebar-header" style="padding: 16px; border-bottom: 1px solid var(--border-color); font-weight: 600; font-size: 14px;">
-                        Skills Installate ({{ skills.length }})
-                    </div>
-                    <div class="conversations-list" style="flex: 1; overflow-y: auto; padding: 8px;">
-                        <div v-if="isLoading" style="padding: 20px; text-align: center; color: var(--text-muted);">
-                            <span class="spinner" style="width: 20px; height: 20px; display: inline-block;"></span>
+                <div class="wiki-sidebar">
+                    <div class="chat-sidebar-header">Installate ({{ skills.length }})</div>
+                    <div class="conversations-list">
+                        <div v-if="isLoading" style="padding: 20px; text-align: center;">
+                            <span class="spinner spinner-sm" style="display: inline-block;"></span>
                         </div>
-                        <div v-else-if="!skills.length" style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px;">
-                            Nessuna skill installata in <code>~/.llampaca/skills/</code>.
+                        <div v-else-if="!skills.length" style="padding: 14px; text-align: center; color: var(--text-faint); font-size: 12px; line-height: 1.55;">
+                            Nessuna skill installata.
                         </div>
                         <div v-else v-for="s in skills" :key="s.slug"
                              class="conversation-item" :class="{ active: selectedSkill && selectedSkill.slug === s.slug }"
-                             @click="selectSkill(s)"
-                             style="padding: 12px; margin-bottom: 6px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: background 0.2s;">
+                             tabindex="0" role="button"
+                             @click="selectSkill(s)" @keyup.enter="selectSkill(s)">
                             <div style="flex: 1; min-width: 0;">
-                                <div style="display: flex; align-items: center; gap: 8px;">
-                                    <span class="conversation-title" style="font-weight: 500; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                                        {{ s.name }}
-                                    </span>
-                                    <span style="background: var(--btn-pacific); color: white; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 10px;">.md</span>
+                                <div style="display: flex; align-items: center; gap: 7px; min-width: 0;">
+                                    <span class="conversation-title">{{ s.name }}</span>
+                                    <span class="model-badge badge-mcp">md</span>
                                 </div>
-                                <div style="font-size: 11.5px; color: var(--text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; margin-top: 4px;">
-                                    {{ s.description || 'Nessuna descrizione.' }}
-                                </div>
+                                <div class="conversation-sub">{{ s.description || 'Nessuna descrizione.' }}</div>
                             </div>
-                            <div class="conversation-delete" @click.stop="deleteSkill(s.slug)" style="color: var(--danger); font-size: 18px; margin-left: 8px;">&times;</div>
+                            <div class="conversation-delete" role="button" tabindex="0" title="Elimina skill"
+                                 @click.stop="deleteSkill(s.slug)" @keyup.enter.stop="deleteSkill(s.slug)">&times;</div>
                         </div>
                     </div>
                 </div>
 
                 <!-- Editor / Viewer Panel -->
-                <div class="wiki-main" style="flex: 1; display: flex; flex-direction: column; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color); overflow: hidden;">
+                <div class="wiki-main">
                     <!-- Case 1: Creator/Editor Mode -->
-                    <div v-if="showEditor" class="wiki-editor" style="display: flex; flex-direction: column; height: 100%; padding: 20px; overflow-y: auto;">
-                        <h3 style="margin-top: 0; margin-bottom: 20px; font-size: 18px; font-weight: 600; color: var(--text-color);">
-                            {{ editingSlug ? 'Modifica Skill: ' + editingSlug : 'Crea o Importa Skill Markdown (.md)' }}
-                        </h3>
-
-                        <div v-if="formError" style="background: rgba(220, 38, 38, 0.1); border: 1px solid var(--danger); color: var(--danger); padding: 12px; border-radius: 6px; font-size: 13px; margin-bottom: 20px; white-space: pre-wrap;">
-                            {{ formError }}
+                    <div v-if="showEditor" class="wiki-editor">
+                        <div class="section-head" style="margin-bottom: 0;">
+                            <h3 class="section-title">{{ editingSlug ? 'Modifica ' + editingSlug : 'Nuova skill markdown' }}</h3>
+                            <p class="section-desc">Scrivi le istruzioni oppure importale da un URL. L'indice delle skill viaggia nel prompt di sistema, così l'agente sa quali ha a disposizione.</p>
                         </div>
 
-                        <div style="display: flex; gap: 20px; margin-bottom: 16px;">
-                            <div class="form-group" style="flex: 1; margin-bottom: 0;">
-                                <label class="form-label" style="font-size: 12.5px; margin-bottom: 6px; display: block; font-weight: 500;">Nome della Skill (slug)</label>
+                        <div v-if="formError" class="form-error">{{ formError }}</div>
+
+                        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                            <div class="form-group" style="flex: 1; min-width: 220px;">
+                                <label class="form-label">Nome (slug)</label>
                                 <input class="form-input" v-model="skillName" :disabled="!!editingSlug"
-                                       placeholder="es. python_expert" style="width: 100%;" />
-                                <div class="form-help" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Usa solo lettere, numeri e underscore.</div>
+                                       style="font-family: var(--font-mono); font-size: 12.5px;"
+                                       placeholder="es. python_expert" />
+                                <div class="form-help">Solo lettere, numeri e underscore.</div>
                             </div>
-                            <div class="form-group" style="flex: 1.5; margin-bottom: 0;">
-                                <label class="form-label" style="font-size: 12.5px; margin-bottom: 6px; display: block; font-weight: 500;">Importa da URL Raw (.md)</label>
+                            <div class="form-group" style="flex: 1.5; min-width: 260px;">
+                                <label class="form-label">Importa da URL</label>
                                 <input class="form-input" v-model="importUrl"
-                                       placeholder="https://raw.githubusercontent.com/.../SKILL.md" style="width: 100%;" />
-                                <div class="form-help" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Se specificato, scaricherà direttamente il Markdown dal web.</div>
+                                       style="font-family: var(--font-mono); font-size: 12px;"
+                                       placeholder="https://raw.githubusercontent.com/…/SKILL.md" />
+                                <div class="form-help">Se compilato, il markdown viene scaricato da qui invece che dal campo sotto.</div>
                             </div>
                         </div>
 
-                        <div class="form-group" style="flex-grow: 1; display: flex; flex-direction: column; margin-bottom: 20px; min-height: 250px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                                <label class="form-label" style="font-size: 12.5px; margin-bottom: 0; font-weight: 500;">Contenuto Markdown (.md)</label>
-                                <button v-if="!editingSlug" class="btn btn-secondary" @click="loadSampleSkill" style="padding: 4px 10px; font-size: 11px;">Carica Esempio</button>
+                        <div class="form-group" style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <label class="form-label">Contenuto markdown</label>
+                                <button v-if="!editingSlug" class="btn btn-secondary btn-sm" @click="loadSampleSkill">Carica esempio</button>
                             </div>
-                            <textarea class="form-input" v-model="skillContent"
-                                      placeholder="Incolla o scrivi qui le istruzioni Markdown della tua skill..."
-                                      style="flex-grow: 1; font-family: 'Courier New', Courier, monospace; font-size: 13px; line-height: 1.5; padding: 12px; background: var(--bg-color); color: var(--text-color); border: 1px solid var(--border-color); border-radius: 6px; resize: none;"></textarea>
+                            <textarea class="form-input code-textarea" v-model="skillContent"
+                                      placeholder="Incolla o scrivi qui le istruzioni della tua skill…"></textarea>
                         </div>
 
-                        <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--border-color);">
+                        <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border-color);">
                             <button class="btn btn-secondary" @click="closeEditor" :disabled="isSaving">Annulla</button>
-                            <button class="btn btn-pacific" @click="saveSkill" :disabled="isSaving" style="display: inline-flex; align-items: center; gap: 8px;">
-                                <span v-if="isSaving" class="spinner" style="width: 14px; height: 14px;"></span>
-                                Salva Skill
+                            <button class="btn btn-primary" @click="saveSkill" :disabled="isSaving">
+                                <span v-if="isSaving" class="spinner spinner-sm"></span>
+                                Salva skill
                             </button>
                         </div>
                     </div>
 
                     <!-- Case 2: Viewer Mode (Selected Skill Details) -->
-                    <div v-else-if="selectedSkill" class="wiki-editor" style="display: flex; flex-direction: column; height: 100%; padding: 24px; overflow-y: auto;">
-                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
-                            <div>
-                                <h3 style="margin: 0; font-size: 20px; font-weight: 600; color: var(--text-color);">
-                                    {{ selectedSkill.name }}
-                                </h3>
-                                <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px; font-family: monospace;">
+                    <div v-else-if="selectedSkill" class="wiki-editor">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
+                            <div style="min-width: 0;">
+                                <h3 class="section-title" style="font-size: 18px;">{{ selectedSkill.name }}</h3>
+                                <div class="mono" style="font-size: 11px; color: var(--text-faint); margin-top: 5px; word-break: break-all;">
                                     ~/.llampaca/skills/{{ selectedSkill.file_name }}
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 8px;">
-                                <button class="btn btn-secondary" @click="editSkill(selectedSkill)" style="font-size: 12.5px;">Modifica</button>
-                                <button class="btn btn-secondary" @click="deleteSkill(selectedSkill.slug)" style="color: var(--danger); font-size: 12.5px;">Elimina</button>
+                            <div style="display: flex; gap: 8px; flex-shrink: 0;">
+                                <button class="btn btn-secondary" @click="editSkill(selectedSkill)">Modifica</button>
+                                <button class="btn btn-danger" @click="deleteSkill(selectedSkill.slug)">Elimina</button>
                             </div>
                         </div>
 
                         <!-- Skill Description -->
-                        <div style="background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 24px;">
-                            <h4 style="margin-top: 0; margin-bottom: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-muted);">Descrizione / Sommario</h4>
-                            <p style="margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-color);">
-                                {{ selectedSkill.description || 'Nessuna descrizione.' }}
-                            </p>
+                        <div class="info-block">
+                            <h4>Descrizione</h4>
+                            <p>{{ selectedSkill.description || 'Nessuna descrizione.' }}</p>
                         </div>
 
                         <!-- Source code -->
-                        <div style="display: flex; flex-direction: column; flex-grow: 1; min-height: 200px;">
-                            <h4 style="margin-top: 0; margin-bottom: 8px; font-size: 13.5px; font-weight: 600; color: var(--text-muted);">Istruzioni Markdown (.md)</h4>
-                            <div style="flex-grow: 1; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; background: var(--bg-color);">
-                                <pre style="margin: 0; padding: 16px; font-family: 'Courier New', Courier, monospace; font-size: 12.5px; line-height: 1.5; color: var(--text-color); overflow: auto; height: 100%; max-height: 400px; white-space: pre-wrap;">{{ selectedSkill.content }}</pre>
+                        <div style="display: flex; flex-direction: column; min-height: 0;">
+                            <h4 class="eyebrow" style="margin-bottom: 8px;">Istruzioni</h4>
+                            <div class="code-block">
+                                <pre>{{ selectedSkill.content }}</pre>
                             </div>
                         </div>
                     </div>
 
                     <!-- Case 3: Empty State (Default) -->
-                    <div v-else class="wiki-empty" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; flex: 1; padding: 40px; color: var(--text-muted);">
-                        <svg viewBox="0 0 24 24" style="width: 48px; height: 48px; fill: var(--border-color); margin-bottom: 16px;">
+                    <div v-else class="wiki-empty">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
                             <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
                         </svg>
-                        <h3 style="margin-top: 0; margin-bottom: 8px; font-size: 16px; font-weight: 600; color: var(--text-color);">Seleziona una Skill</h3>
-                        <p style="margin: 0; font-size: 13px; max-width: 380px; line-height: 1.5;">
-                            Seleziona una skill installata dalla barra laterale per vederne il contenuto, oppure fai clic su <strong>Crea / Importa Skill</strong> per aggiungerne una in formato Markdown.
-                        </p>
+                        <h3>Scegli una skill</h3>
+                        <p>Selezionane una a sinistra per leggerne le istruzioni, oppure aggiungine una con <strong>Nuova skill</strong>.</p>
                     </div>
                 </div>
             </div>

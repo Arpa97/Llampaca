@@ -37,10 +37,14 @@ export function useMcpController() {
                 searchResults.value = [];
             }
             const data = await model.searchRegistry(currentQuery.value, currentPage.value);
+            // Se il registro risponde 200 ma senza la lista attesa, senza questo
+            // fallback searchResults diventa undefined: il template legge
+            // .length su undefined e l'intera scheda resta bianca.
+            const servers = Array.isArray(data.servers) ? data.servers : [];
             if (isLoadMore) {
-                searchResults.value = [...searchResults.value, ...data.servers];
+                searchResults.value = [...searchResults.value, ...servers];
             } else {
-                searchResults.value = data.servers;
+                searchResults.value = servers;
             }
 
             if (data.pagination) {

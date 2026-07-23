@@ -10,7 +10,7 @@ const ModelCard = {
     // they are choosing the chat model or the embedding model.
     computed: {
         defaultLabel() {
-            return this.m.kind === 'embedding' ? 'Imposta come embedding' : 'Imposta default';
+            return this.m.kind === 'embedding' ? 'Usa per embedding' : 'Usa come default';
         }
     },
     template: `
@@ -19,27 +19,25 @@ const ModelCard = {
                 <div class="model-card-title">{{ m.preset_id || m.name }}</div>
                 <div v-if="m.active" class="model-badge success">Attivo</div>
                 <div v-else-if="m.installed" class="model-badge secondary">Installato</div>
-                <div v-else-if="m.downloading" class="model-badge warning">Scaricamento...</div>
+                <div v-else-if="m.downloading" class="model-badge warning">Download</div>
                 <div v-else class="model-badge info">Disponibile</div>
             </div>
 
-            <!-- Technical filename -->
-            <div v-if="m.preset_id" style="font-size: 11px; color: var(--text-muted); font-family: monospace; margin-top: -6px; word-break: break-all;">
-                {{ m.name }}
-            </div>
+            <!-- Il nome file GGUF è un dato macchina: monospazio, non titolo. -->
+            <div v-if="m.preset_id" class="model-card-file">{{ m.name }}</div>
 
             <div class="model-card-desc">{{ m.description }}</div>
 
             <div class="model-card-meta">
-                <span>Dimensioni: {{ m.size }}</span>
-                <span>Quantizzazione: {{ m.quant }}</span>
+                <span>Dimensione <strong>{{ m.size }}</strong></span>
+                <span>Quant. <strong>{{ m.quant }}</strong></span>
             </div>
 
             <!-- Progress Bar for active downloads -->
-            <div v-if="m.downloading" style="margin-top: 8px;">
-                <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; color: var(--text-muted);">
-                    <span>Avanzamento download</span>
-                    <strong>{{ m.progress }}%</strong>
+            <div v-if="m.downloading">
+                <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 6px; color: var(--text-muted);">
+                    <span>Scaricamento</span>
+                    <strong style="font-family: var(--font-mono); color: var(--amber-deep);">{{ m.progress }}%</strong>
                 </div>
                 <div class="progress-bar-container">
                     <div class="progress-bar-fill" :style="{ width: m.progress + '%' }"></div>
@@ -47,7 +45,7 @@ const ModelCard = {
             </div>
 
             <!-- Action Buttons -->
-            <div class="model-card-actions" style="margin-top: auto; padding-top: 15px;">
+            <div class="model-card-actions">
                 <!-- Case 1: Installed -->
                 <template v-if="m.installed">
                     <button v-if="!m.active" class="btn btn-secondary" @click="$emit('set-default', m)">{{ defaultLabel }}</button>
@@ -55,11 +53,11 @@ const ModelCard = {
                 </template>
                 <!-- Case 2: Downloading -->
                 <template v-else-if="m.downloading">
-                    <button class="btn btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed; width: 100%;">Scaricamento in corso...</button>
+                    <button class="btn btn-secondary btn-block" disabled>Scaricamento in corso…</button>
                 </template>
                 <!-- Case 3: Available to download -->
                 <template v-else>
-                    <button class="btn btn-pacific" @click="$emit('download', m)" style="width: 100%;">Scarica Modello</button>
+                    <button class="btn btn-pacific btn-block" @click="$emit('download', m)">Scarica</button>
                 </template>
             </div>
         </div>
@@ -69,113 +67,122 @@ const ModelCard = {
 export default {
     components: { ModelCard },
     template: `
-        <div style="display: flex; flex-direction: column; height: 100%; position: relative;">
+        <div class="view">
             <!-- Loading Overlay -->
             <div v-if="isRestarting" class="loading-overlay">
                 <div class="spinner"></div>
-                <div>Riavvio del server dei modelli in corso...</div>
+                <div>Riavvio del server dei modelli…</div>
             </div>
+
             <div class="view-header">
-                <h1 class="view-title">Gestione Modelli GGUF</h1>
+                <div class="view-header-text">
+                    <h1 class="view-title">Modelli</h1>
+                    <div class="view-subtitle">I file GGUF scaricati su questa macchina, in <span class="mono">~/.llampaca/models/</span></div>
+                </div>
             </div>
-            <div class="view-body" style="padding: 30px;">
-                <!-- LLM (chat) models: the model that answers in chat. -->
-                <h3 class="mcp-section-header">Modelli LLM (Chat)</h3>
-                <p style="font-size: 12.5px; color: var(--text-muted); margin: -4px 0 16px;">
-                    Modelli linguistici che generano le risposte in chat. Il modello impostato come default è quello usato per conversare.
-                </p>
-                <div class="models-grid">
-                    <model-card
-                        v-for="m in chatModels"
-                        :key="m.id"
-                        :m="m"
-                        @set-default="onSetDefault"
-                        @delete="deleteModel"
-                        @download="onDownload"
-                    />
-                </div>
 
-                <!-- Embedding models: used ONLY for document search / RAG, never
-                     to chat. Selecting one here sets the embedding default, not
-                     the chat default. -->
-                <h3 class="mcp-section-header" style="margin-top: 40px;">Modelli di Embedding</h3>
-                <p style="font-size: 12.5px; color: var(--text-muted); margin: -4px 0 16px;">
-                    Modelli usati per la ricerca semantica nei documenti (RAG). Non generano risposte: servono solo a indicizzare e cercare. Il default qui è indipendente dal modello di chat.
-                </p>
-                <div v-if="embeddingModels.length === 0" style="padding: 24px; text-align: center; color: var(--text-muted); background: var(--bg-hover); border-radius: 8px; border: 1px dashed var(--border-color); margin-bottom: 10px;">
-                    Nessun modello di embedding nel catalogo.
-                </div>
-                <div v-else class="models-grid">
-                    <model-card
-                        v-for="m in embeddingModels"
-                        :key="m.id"
-                        :m="m"
-                        @set-default="onSetDefault"
-                        @delete="deleteModel"
-                        @download="onDownload"
-                    />
-                </div>
-                <div style="height: 20px;"></div>
+            <div class="view-body view-body-pad">
+                <div class="view-stack">
+                    <!-- LLM (chat) models: the model that answers in chat. -->
+                    <div class="section-head">
+                        <h3 class="section-title">Modelli di chat</h3>
+                        <p class="section-desc">Generano le risposte in conversazione. Quello impostato come default è il modello con cui parli.</p>
+                    </div>
+                    <div class="models-grid">
+                        <model-card
+                            v-for="m in chatModels"
+                            :key="m.id"
+                            :m="m"
+                            @set-default="onSetDefault"
+                            @delete="deleteModel"
+                            @download="onDownload"
+                        />
+                    </div>
 
-                <!-- Hugging Face Search Browser Results -->
-                <h3 class="mcp-section-header" style="margin-top: 40px; display: flex; align-items: center; gap: 12px;">
-                    Esplora Modelli su Hugging Face
-                    <span v-if="isSearching" class="spinner" style="width: 16px; height: 16px; border-width: 2.5px; border-top-color: var(--amber-glow); display: inline-block;"></span>
-                </h3>
-                <!-- Download & Search Panel -->
-                <div class="download-panel" style="display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 30px;">
-                    <div style="flex: 1.2; min-width: 320px;">
-                        <h3 class="download-panel-title">Cerca Modelli su Hugging Face</h3>
-                        <div class="download-input-group">
-                            <input class="download-input" v-model="searchQuery" placeholder="Cerca repository (es. llama, deepseek, gemma)..." @keyup.enter="performSearch(searchQuery)" />
-                            <button class="btn btn-pacific" @click="performSearch(searchQuery)">Cerca</button>
+                    <!-- Embedding models: used ONLY for document search / RAG, never
+                         to chat. Selecting one here sets the embedding default, not
+                         the chat default. -->
+                    <div class="section-head">
+                        <h3 class="section-title">Modelli di embedding</h3>
+                        <p class="section-desc">Servono alla ricerca nei documenti allegati (RAG): indicizzano e cercano, non rispondono. Il default qui è indipendente dal modello di chat.</p>
+                    </div>
+                    <div v-if="embeddingModels.length === 0" class="empty-panel">
+                        Nessun modello di embedding nel catalogo.
+                    </div>
+                    <div v-else class="models-grid">
+                        <model-card
+                            v-for="m in embeddingModels"
+                            :key="m.id"
+                            :m="m"
+                            @set-default="onSetDefault"
+                            @delete="deleteModel"
+                            @download="onDownload"
+                        />
+                    </div>
+
+                    <!-- Hugging Face Search Browser Results -->
+                    <div class="section-head">
+                        <h3 class="section-title">
+                            Esplora Hugging Face
+                            <span v-if="isSearching" class="spinner spinner-sm"></span>
+                        </h3>
+                        <p class="section-desc">Cerca altri modelli GGUF da scaricare, oppure incolla direttamente un percorso o un URL.</p>
+                    </div>
+
+                    <!-- Download & Search Panel -->
+                    <div class="download-panel" style="display: flex; gap: 22px; flex-wrap: wrap;">
+                        <div style="flex: 1.2; min-width: 300px;">
+                            <h3 class="download-panel-title">Cerca un repository</h3>
+                            <div class="download-input-group">
+                                <input class="download-input" v-model="searchQuery" placeholder="es. llama, deepseek, gemma…" @keyup.enter="performSearch(searchQuery)" />
+                                <button class="btn btn-pacific" @click="performSearch(searchQuery)">Cerca</button>
+                            </div>
+                        </div>
+                        <div style="flex: 0.8; min-width: 280px;">
+                            <h3 class="download-panel-title">Download diretto</h3>
+                            <div class="download-input-group">
+                                <input class="download-input" v-model="downloadUrl" placeholder="utente/repo/file.gguf oppure URL" @keyup.enter="startDownload" />
+                                <button class="btn btn-secondary" @click="startDownload">Scarica</button>
+                            </div>
                         </div>
                     </div>
-                    <div style="flex: 0.8; min-width: 280px;">
-                        <h3 class="download-panel-title">Download Personalizzato (URL/Path)</h3>
-                        <div class="download-input-group">
-                            <input class="download-input" v-model="downloadUrl" placeholder="utente/repo/nomefile.gguf o URL resolve" @keyup.enter="startDownload" />
-                            <button class="btn btn-secondary" @click="startDownload">Scarica</button>
+
+                    <div v-if="searchResults.length === 0 && !isSearching" class="empty-panel">
+                        Nessun risultato. Cerca qui sopra per trovare altri modelli.
+                    </div>
+
+                    <div v-else class="models-grid">
+                        <div v-for="r in searchResults" :key="r.repo_id" class="model-card">
+                            <div class="model-card-header">
+                                <div class="model-card-title" style="font-size: 13.5px;">{{ r.repo_id }}</div>
+                                <div class="model-badge info">{{ r.downloads.toLocaleString() }} dl</div>
+                            </div>
+                            <div class="model-card-desc">{{ r.description }}</div>
+
+                            <!-- File Selection Dropdown -->
+                            <div class="form-group">
+                                <label class="form-label" style="font-size: 11.5px;">File GGUF da scaricare</label>
+                                <select v-model="r.selected_file" class="download-input" style="font-family: var(--font-mono); font-size: 11.5px;">
+                                    <option v-for="f in r.files" :key="f.filename" :value="f.filename">
+                                        {{ f.filename }} ({{ f.size_gb ? f.size_gb + ' GB' : 'dimensione ignota' }})
+                                    </option>
+                                </select>
+                            </div>
+
+                            <div class="model-card-actions">
+                                <button class="btn btn-pacific btn-block" @click="downloadSearchModel(r.repo_id, r.selected_file)">
+                                    Scarica il file selezionato
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-                <div v-if="searchResults.length === 0 && !isSearching" style="padding: 30px; text-align: center; color: var(--text-muted); background: var(--bg-hover); border-radius: 8px; border: 1px dashed var(--border-color);">
-                    Nessun risultato caricato. Inserisci una ricerca sopra per trovare altri modelli.
-                </div>
-                
-                <div v-else class="models-grid">
-                    <div v-for="r in searchResults" :key="r.repo_id" class="model-card">
-                        <div class="model-card-header">
-                            <div class="model-card-title" style="word-break: break-all; font-size: 14px;">{{ r.repo_id }}</div>
-                            <div class="model-badge info" style="font-size: 11px;">{{ r.downloads.toLocaleString() }} download</div>
-                        </div>
-                        <div class="model-card-desc" style="font-size: 12px; margin-top: 8px;">{{ r.description }}</div>
-                        
-                        <!-- File Selection Dropdown -->
-                        <div style="margin-top: 15px; margin-bottom: 10px;">
-                            <label style="font-size: 11.5px; color: var(--text-muted); display: block; margin-bottom: 6px; font-weight: 500;">
-                                Seleziona file GGUF da scaricare:
-                            </label>
-                            <select v-model="r.selected_file" class="download-input" style="width: 100%; padding: 8px; font-size: 12.5px; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-color);">
-                                <option v-for="f in r.files" :key="f.filename" :value="f.filename">
-                                    {{ f.filename }} ({{ f.size_gb ? f.size_gb + ' GB' : 'Dimensioni sconosciute' }})
-                                </option>
-                            </select>
-                        </div>
-                        
-                        <div class="model-card-actions" style="margin-top: auto; padding-top: 15px;">
-                            <button class="btn btn-pacific" @click="downloadSearchModel(r.repo_id, r.selected_file)" style="width: 100%;">
-                                Scarica file selezionato
-                            </button>
-                        </div>
+
+                    <div v-if="searchResults.length > 0 && hasNextPage" style="text-align: center; margin-top: 24px;">
+                        <button class="btn btn-secondary" @click="loadMore" :disabled="isSearching">
+                            <span v-if="isSearching" class="spinner spinner-sm"></span>
+                            Carica altri risultati
+                        </button>
                     </div>
-                </div>
-                
-                <div v-if="searchResults.length > 0 && hasNextPage" style="text-align: center; margin-top: 30px;">
-                    <button class="btn btn-pacific" @click="loadMore" :disabled="isSearching" style="display: inline-flex; align-items: center; gap: 8px;">
-                        <span v-if="isSearching" class="spinner" style="width: 14px; height: 14px; border-width: 2px; border-top-color: var(--amber-glow); display: inline-block; vertical-align: middle;"></span>
-                        Carica Altri Risultati
-                    </button>
                 </div>
             </div>
         </div>

@@ -2,99 +2,150 @@ import { useChatController } from '../controllers/chat_controller.js';
 
 export default {
     template: `
-        <div style="display: flex; flex-direction: column; height: 100%;">
+        <div class="view">
             <div class="view-header">
-                <h1 class="view-title">Chat & Assistente</h1>
-                <button class="btn btn-primary" @click="startNewConversation">Nuova Chat</button>
+                <div class="view-header-text">
+                    <h1 class="view-title">Chat</h1>
+                    <div class="view-subtitle">Il tuo agente gira in locale: nessun dato lascia questa macchina.</div>
+                </div>
+                <div class="view-header-actions">
+                    <button class="btn btn-primary" @click="startNewConversation">
+                        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                        Nuova chat
+                    </button>
+                </div>
             </div>
-            
+
             <div class="chat-container">
-                <!-- Chat Sidebar (Scrolls independently) -->
+                <!-- Elenco conversazioni (scorre in modo indipendente) -->
                 <div class="chat-sidebar">
-                    <div class="chat-sidebar-header">Conversazioni</div>
+                    <div class="chat-sidebar-header">Conversazioni ({{ conversations.length }})</div>
                     <div class="conversations-list">
-                        <div v-for="c in conversations" :key="c.id" 
+                        <div v-if="!conversations.length" style="padding: 14px; color: var(--text-faint); font-size: 12px; line-height: 1.5;">
+                            Nessuna conversazione. Scrivi un messaggio: viene creata da sola.
+                        </div>
+                        <div v-for="c in conversations" :key="c.id"
                              class="conversation-item" :class="{ active: activeConversationId === c.id }"
-                             @click="activeConversationId = c.id">
+                             tabindex="0" role="button"
+                             @click="activeConversationId = c.id"
+                             @keyup.enter="activeConversationId = c.id">
                             <div class="conversation-title">{{ c.title }}</div>
-                            <div class="conversation-delete" @click.stop="deleteConversation(c.id)">&times;</div>
+                            <div class="conversation-delete" role="button" tabindex="0" title="Elimina conversazione"
+                                 @click.stop="deleteConversation(c.id)"
+                                 @keyup.enter.stop="deleteConversation(c.id)">&times;</div>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Messages Panel (Scrolls independently, input pinned at the bottom) -->
-                <div class="chat-main" style="position: relative;"
+
+                <!-- Trascritto + composer -->
+                <div class="chat-main"
                      @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
                     <div v-if="isDragging" class="drop-overlay">
-                        <div class="drop-overlay-inner">📎 Rilascia i file per allegarli</div>
+                        <div class="drop-overlay-inner">Rilascia i file per allegarli</div>
                     </div>
+
                     <div class="messages-list" ref="messagesContainer">
-                        <div v-if="!getActiveMessages.length" style="margin: auto; text-align: center; color: var(--text-muted); max-width: 320px;">
-                            <img src="logo.png" alt="Llampaca" style="width: 140px; border-radius: 12px; margin-bottom: 20px; opacity: 0.15;">
-                            <h3>Come posso aiutarti oggi?</h3>
-                            <p style="margin-top: 8px; font-size: 13px; line-height: 1.4;">Digita un messaggio per iniziare ad interagire con i tuoi tool MCP.</p>
-                        </div>
-                        <div v-for="(m, index) in getActiveMessages" :key="index" class="message-row" :class="m.role">
-                            <div class="message-bubble markdown-body" v-html="parseMarkdown(m.content)" v-if="m.content"></div>
-                            <div class="message-meta" v-if="m.thought" style="color: var(--amber-glow); font-style: italic; display: inline-flex; align-items: center; gap: 6px;">
-                                <span class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></span>
-                                <span>{{ m.thought }}</span>
-                            </div>
-                            <div class="message-meta" v-else-if="m.timestamp">{{ m.timestamp }}</div>
+                        <div v-if="!getActiveMessages.length" class="chat-empty">
+                            <img src="logo.png" alt="">
+                            <h3>Come posso aiutarti?</h3>
+                            <p>Chiedi qualcosa, allega un documento, oppure fai eseguire uno strumento. Ogni operazione che modifica file o esegue comandi ti chiede prima conferma.</p>
                         </div>
 
-                    </div>
-                    
-                    <!-- Sticky Prompt Confirmation Banner (FIFO Queue, Always visible above input bar) -->
-                    <div v-if="currentConfirmation" class="confirmation-box-sticky" style="margin: 10px 20px; padding: 16px; background: var(--bg-card); border: 2px solid var(--amber-glow); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 100;">
-                        <div class="confirmation-title" style="font-size: 14px; font-weight: 600; color: var(--amber-glow); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                                Autorizzazione Richiesta: <strong>{{ currentConfirmation.name }}</strong>
+                        <div class="messages-inner" v-else>
+                            <div v-for="(m, index) in getActiveMessages" :key="index" class="message-row" :class="m.role">
+                                <div v-if="m.role === 'agent'" class="message-role">Llampaca</div>
+                                <div class="message-bubble markdown-body" v-html="parseMarkdown(m.content)" v-if="m.content"></div>
+                                <div class="message-thought" v-if="m.thought">
+                                    <span class="thought-dot"></span>
+                                    <span>{{ m.thought }}</span>
+                                </div>
+                                <div class="message-meta" v-else-if="m.timestamp">{{ m.timestamp }}</div>
                             </div>
-                            <span v-if="pendingConfirmations.length > 1" style="font-size: 11px; background: var(--amber-glow); color: #000; padding: 2px 8px; border-radius: 10px; font-weight: bold;">
-                                1 di {{ pendingConfirmations.length }} in coda
+                        </div>
+                    </div>
+
+                    <!-- Autorizzazione richiesta (coda FIFO). Sta sopra il composer
+                         perché è bloccante: finché non rispondi, l'agente è fermo. -->
+                    <div v-if="currentConfirmation" class="confirm-banner">
+                        <div class="confirm-head">
+                            <div class="confirm-title">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                                    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                                </svg>
+                                <span>Autorizzazione richiesta: <span class="tool-name">{{ currentConfirmation.name }}</span></span>
+                            </div>
+                            <span v-if="pendingConfirmations.length > 1" class="confirm-queue">
+                                1 di {{ pendingConfirmations.length }}
                             </span>
                         </div>
-                        <div class="confirmation-args" style="margin-bottom: 12px; max-height: 200px; overflow-y: auto; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px;">
-                            <pre style="margin: 0; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all;">{{ formatArguments(currentConfirmation.arguments) }}</pre>
+                        <div class="confirmation-args">
+                            <pre>{{ formatArguments(currentConfirmation.arguments) }}</pre>
                         </div>
-                        <div class="confirmation-actions" style="display: flex; justify-content: flex-end; gap: 10px;">
-                            <button class="btn btn-danger" @click="resolveConfirmation(false)" style="padding: 6px 14px; font-size: 12.5px;">Rifiuta Operazione</button>
-                            <button class="btn btn-primary" @click="resolveConfirmation(true)" style="padding: 6px 16px; font-size: 12.5px; font-weight: 600;">Consenti ed Esegui</button>
+                        <div class="confirmation-actions">
+                            <button class="btn btn-danger" @click="resolveConfirmation(false)">Rifiuta</button>
+                            <button class="btn btn-primary" @click="resolveConfirmation(true)">Consenti ed esegui</button>
                         </div>
                     </div>
 
                     <div class="chat-input-area">
-                        <div v-if="contextBudget" style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-align: right; padding-right: 10px;">
-                            Contesto: ~{{ contextBudget.used_percent }}% usato ({{ Math.round(contextBudget.used_tokens/1000 * 10)/10 }}k / {{ Math.round(contextBudget.total_tokens/1000 * 10)/10 }}k token)<template v-if="contextBudget.turn_seconds != null"> · {{ contextBudget.turn_seconds }}s</template><template v-if="contextBudget.tok_s != null"> · {{ contextBudget.gen_tokens }} tok @ {{ contextBudget.tok_s }} tok/s</template>
-                        </div>
-                        <div v-if="attachments.length" class="attachment-chips">
-                            <div v-for="(a, i) in attachments" :key="i" class="attachment-chip" :class="a.status">
-                                <span class="chip-icon">{{ a.status === 'uploading' ? '⏳' : (a.status === 'error' ? '⚠️' : (a.kind === 'rag' ? '🔍' : '📄')) }}</span>
-                                <span class="chip-name" :title="a.name">{{ a.name }}</span>
-                                <span v-if="a.detail" class="chip-detail">{{ a.detail }}</span>
-                                <span class="chip-remove" @click="removeAttachment(i)" title="Rimuovi">&times;</span>
+                        <div class="chat-input-inner">
+                            <!-- FIRMA: il misuratore di contesto. Si riempie d'ambra
+                                 mentre la conversazione consuma la finestra di contesto
+                                 e vira al crimson quando sta per esaurirsi. -->
+                            <div v-if="contextBudget" class="ctx-meter" :class="ctxLevel">
+                                <span class="ctx-label">Contesto</span>
+                                <div class="ctx-track" role="progressbar" :aria-valuenow="contextBudget.used_percent"
+                                     aria-valuemin="0" aria-valuemax="100"
+                                     :aria-label="'Contesto usato: ' + contextBudget.used_percent + '%'">
+                                    <div class="ctx-fill" :style="{ width: Math.min(100, contextBudget.used_percent) + '%' }"></div>
+                                </div>
+                                <span class="ctx-pct">{{ contextBudget.used_percent }}%</span>
+                                <span class="ctx-stats">
+                                    <span>{{ kTokens(contextBudget.used_tokens) }}/{{ kTokens(contextBudget.total_tokens) }} tok</span>
+                                    <span v-if="contextBudget.turn_seconds != null">{{ contextBudget.turn_seconds }}s</span>
+                                    <span v-if="contextBudget.tok_s != null">{{ contextBudget.tok_s }} tok/s</span>
+                                </span>
                             </div>
-                        </div>
-                        <div class="chat-input-box">
-                            <input type="file" ref="fileInput" multiple @change="onFileChange" style="display: none;" />
-                            <button class="attachment-btn" title="Allega un file" @click="openFilePicker">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-                            </button>
-                            <!-- 🧠 Remember flag: a TOGGLE, not an immediate send. When
-                                 armed (lit amber) the next message the user sends is stored
-                                 as a durable memory in the wiki (same effect as /remember). -->
-                            <button class="attachment-btn" :class="{ active: rememberMode }" :title="rememberMode ? 'Memoria ATTIVA: il prossimo messaggio verrà salvato nella memoria permanente. Clicca per disattivare.' : 'Attiva memoria: il prossimo messaggio inviato verrà salvato nella memoria permanente del modello'" @click="toggleRemember">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2z"/></svg>
-                            </button>
-                            <input class="chat-input-field" v-model="userInput" @keyup.enter="sendMessage" :disabled="isStreaming" :placeholder="rememberMode ? '🧠 Memoria attiva: scrivi cosa ricordare e invia...' : 'Digita una domanda o un comando mail/tool...'" />
-                            <button v-if="!isStreaming" class="send-btn" @click="sendMessage" title="Invia">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                            </button>
-                            <button v-else class="send-btn stop-btn" @click="stopGeneration" title="Interrompi la generazione">
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-                            </button>
+
+                            <div v-if="attachments.length" class="attachment-chips">
+                                <div v-for="(a, i) in attachments" :key="i" class="attachment-chip" :class="a.status">
+                                    <span class="chip-icon">{{ a.status === 'uploading' ? '⏳' : (a.status === 'error' ? '⚠️' : (a.kind === 'rag' ? '🔍' : '📄')) }}</span>
+                                    <span class="chip-name" :title="a.name">{{ a.name }}</span>
+                                    <span v-if="a.detail" class="chip-detail">{{ a.detail }}</span>
+                                    <span class="chip-remove" role="button" tabindex="0" @click="removeAttachment(i)"
+                                          @keyup.enter="removeAttachment(i)" title="Rimuovi">&times;</span>
+                                </div>
+                            </div>
+
+                            <div class="chat-input-box">
+                                <input type="file" ref="fileInput" multiple @change="onFileChange" style="display: none;" />
+                                <button class="icon-btn" title="Allega un file" @click="openFilePicker">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                                </button>
+                                <!-- Flag "ricorda": è un INTERRUTTORE, non un invio immediato.
+                                     Quando è armato (acceso in ambra) il prossimo messaggio
+                                     viene salvato come memoria permanente nel Profilo. -->
+                                <button class="icon-btn" :class="{ active: rememberMode }"
+                                        :title="rememberMode ? 'Memoria attiva: il prossimo messaggio viene salvato nel Profilo. Clicca per disattivare.' : 'Salva il prossimo messaggio nella memoria permanente'"
+                                        @click="toggleRemember">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2z"/></svg>
+                                </button>
+                                <textarea class="chat-input-field" ref="inputField" rows="1"
+                                          v-model="userInput" :disabled="isStreaming"
+                                          @input="autoGrow" @keydown.enter.exact.prevent="submit"
+                                          :placeholder="rememberMode ? 'Memoria attiva: scrivi cosa ricordare e invia…' : 'Scrivi un messaggio…'"></textarea>
+                                <button v-if="!isStreaming" class="icon-btn send-btn" @click="submit" title="Invia">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                </button>
+                                <button v-else class="icon-btn stop-btn" @click="stopGeneration" title="Interrompi la generazione">
+                                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                                </button>
+                            </div>
+
+                            <div class="composer-hint">
+                                <kbd>Invio</kbd> invia · <kbd>Maiusc</kbd>+<kbd>Invio</kbd> va a capo
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -115,6 +166,43 @@ export default {
             chatCtrl.attachFiles(e.target.files);
             // Reset so selecting the same file again re-fires @change.
             e.target.value = '';
+        };
+
+        // --- Composer multiriga ------------------------------------------
+        // Il campo era un <input> a riga singola: un prompt di tre frasi
+        // scorreva via orizzontalmente. Ora è un <textarea> che cresce con il
+        // testo fino a un tetto (max-height nel CSS, poi scorre).
+        const inputField = Vue.ref(null);
+        const autoGrow = () => {
+            const el = inputField.value;
+            if (!el) return;
+            el.style.height = 'auto';
+            el.style.height = `${el.scrollHeight}px`;
+        };
+        // Invia e riporta il campo a una riga sola.
+        const submit = async () => {
+            await chatCtrl.sendMessage();
+            Vue.nextTick(() => {
+                if (inputField.value) inputField.value.style.height = 'auto';
+            });
+        };
+
+        // --- Misuratore di contesto ---------------------------------------
+        // Soglie: sotto il 75% l'ambra racconta solo l'occupazione; oltre il
+        // 90% il colore diventa un avviso, perché da lì in poi la conversazione
+        // inizia a perdere i messaggi più vecchi.
+        const ctxLevel = Vue.computed(() => {
+            const b = chatCtrl.contextBudget.value;
+            if (!b) return '';
+            if (b.used_percent >= 90) return 'crit';
+            if (b.used_percent >= 75) return 'warn';
+            return '';
+        });
+
+        // 2340 → "2.3k". Tiene la riga del misuratore di larghezza stabile.
+        const kTokens = (n) => {
+            if (n == null) return '—';
+            return n >= 1000 ? `${Math.round(n / 100) / 10}k` : String(n);
         };
 
         // Collapse the attachment blocks that the backend merges into a user
@@ -170,6 +258,11 @@ export default {
             fileInput,
             openFilePicker,
             onFileChange,
+            inputField,
+            autoGrow,
+            submit,
+            ctxLevel,
+            kTokens,
             parseMarkdown,
             formatArguments
         };
