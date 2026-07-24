@@ -116,6 +116,7 @@ export function useModelsController() {
             if (isChat) isRestarting.value = true;
             await model.setDefaultModel(name, kind);
             await loadModels();
+            window.dispatchEvent(new CustomEvent('llampaca:status-changed'));
             if (window.showToast) {
                 const label = isChat ? 'Modello di chat predefinito' : 'Modello di embedding predefinito';
                 window.showToast(`${label} impostato su ${name}!`, 'success');

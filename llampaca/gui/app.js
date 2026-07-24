@@ -82,9 +82,17 @@ createApp({
             }
         };
 
-        onMounted(loadStatus);
-        // La tab Impostazioni salva e riavvia il server: si riallinea da lì.
-        window.refreshServerStatus = loadStatus;
+        onMounted(() => {
+            loadStatus();
+            // Listener per l'evento personalizzato 'llampaca:status-changed': reattivo e 0 polling inutili
+            window.addEventListener('llampaca:status-changed', loadStatus);
+        });
+
+        // La tab Impostazioni e Modelli salvano e riavviano il server: si riallineano da lì.
+        window.refreshServerStatus = () => {
+            loadStatus();
+            window.dispatchEvent(new CustomEvent('llampaca:status-changed'));
+        };
 
         return {
             currentTab,
