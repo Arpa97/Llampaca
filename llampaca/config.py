@@ -179,7 +179,7 @@ def get_preset_for_file(filename: str):
     or None. Used to recover per-model metadata (pooling, prefixes, kind) when
     the config stores a plain filename instead of a preset name.
     """
-    for preset in ALL_PRESETS.values():
+    for preset in MODEL_PRESETS.values():
         if preset["file"] == filename:
             return preset
     return None
