@@ -1708,6 +1708,9 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             for filename in installed_filenames:
                 if filename in preset_filenames:
                     continue
+                with downloads_lock:
+                    if filename in active_downloads and active_downloads[filename]["status"] == "downloading":
+                        continue
                 
                 file = installed_paths[filename]
                 size_bytes = file.stat().st_size

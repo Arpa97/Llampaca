@@ -376,9 +376,10 @@ def download_hf_model_async(repo_id: str, filename: str):
     thread.start()
 
 def _download_hf_model_thread(repo_id: str, filename: str):
+    dest_path = MODELS_DIR / filename
+    temp_path = MODELS_DIR / f"{filename}.tmp"
     try:
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        dest_path = MODELS_DIR / filename
         url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
         
         with downloads_lock:
@@ -400,7 +401,7 @@ def _download_hf_model_thread(repo_id: str, filename: str):
             active_downloads[filename]["total_bytes"] = total_size
             
         downloaded = 0
-        with open(dest_path, "wb") as f:
+        with open(temp_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=1024 * 1024): # 1MB chunks
                 if chunk:
                     f.write(chunk)
@@ -412,6 +413,10 @@ def _download_hf_model_thread(repo_id: str, filename: str):
                             active_downloads[filename]["downloaded_bytes"] = downloaded
                             active_downloads[filename]["progress"] = progress
                             
+        # Rename temporary file to target destination upon successful download
+        if temp_path.exists():
+            temp_path.rename(dest_path)
+
         with downloads_lock:
             if filename in active_downloads:
                 active_downloads[filename]["status"] = "completed"
@@ -421,11 +426,12 @@ def _download_hf_model_thread(repo_id: str, filename: str):
         
     except Exception as e:
         print(f"[Downloader] Error in background download of {filename}: {e}")
-        # Clean up partial file on failure if exists
+        # Clean up partial files on failure if exist
         try:
-            partial_file = MODELS_DIR / filename
-            if partial_file.exists():
-                partial_file.unlink()
+            if temp_path.exists():
+                temp_path.unlink()
+            if dest_path.exists():
+                dest_path.unlink()
         except Exception:
             pass
             
