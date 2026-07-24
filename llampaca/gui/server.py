@@ -760,6 +760,10 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_wiki()
         elif self.path.startswith('/api/skills'):
             self.handle_get_skills()
+        elif self.path.startswith('/api/clients/status'):
+            self.handle_get_clients_status()
+        elif self.path.startswith('/api/clients/snippets'):
+            self.handle_get_clients_snippets()
         else:
             super().do_GET()
 
@@ -785,6 +789,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_post_wiki()
         elif self.path.startswith('/api/skills'):
             self.handle_post_skills()
+        elif self.path.startswith('/api/clients/mcp/setup'):
+            self.handle_post_clients_mcp_setup()
         else:
             self.send_error(404, "Not Found")
 
@@ -2161,6 +2167,269 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             self.send_error(500, str(e))
+
+    def handle_get_clients_status(self):
+        try:
+            paths = _get_client_config_paths()
+            cmd = _resolve_llampaca_command()
+            
+            # Check Claude Desktop
+            claude_cfg = paths["claude_desktop"]
+            claude_installed = claude_cfg.parent.exists() if claude_cfg else False
+            claude_mcp = False
+            if claude_cfg and claude_cfg.exists():
+                try:
+                    with open(claude_cfg, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    claude_mcp = "llampaca" in data.get("mcpServers", {})
+                except Exception:
+                    pass
+
+            # Check VS Code
+            vscode_installed = any(p.parent.exists() for p in paths["vscode"])
+            vscode_mcp = False
+            vscode_active_path = None
+            for p in paths["vscode"]:
+                if p.exists():
+                    vscode_active_path = str(p)
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        if "llampaca" in data.get("mcpServers", {}) or "llampaca" in data.get("servers", {}):
+                            vscode_mcp = True
+                            break
+                    except Exception:
+                        pass
+
+            # Check Continue.dev
+            cont_cfg = paths["continue"]
+            cont_installed = cont_cfg.parent.exists()
+            cont_connected = False
+            if cont_cfg.exists():
+                try:
+                    with open(cont_cfg, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    if "127.0.0.1" in content or "localhost" in content or "Llampaca" in content:
+                        cont_connected = True
+                except Exception:
+                    pass
+
+            res = {
+                "llampaca_command": cmd,
+                "vscode": {
+                    "installed": vscode_installed,
+                    "mcp_connected": vscode_mcp,
+                    "target_path": vscode_active_path or str(paths["vscode"][0])
+                },
+                "claude_desktop": {
+                    "installed": claude_installed,
+                    "mcp_connected": claude_mcp,
+                    "target_path": str(claude_cfg) if claude_cfg else ""
+                },
+                "continue": {
+                    "installed": cont_installed,
+                    "connected": cont_connected,
+                    "target_path": str(cont_cfg)
+                }
+            }
+            body = json.dumps(res).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_post_clients_mcp_setup(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
+
+            target = payload.get("target")  # "vscode" or "claude_desktop"
+            action = payload.get("action", "install")  # "install" or "remove"
+
+            paths = _get_client_config_paths()
+            cmd = _resolve_llampaca_command()
+
+            target_files = []
+            if target == "vscode":
+                target_files = paths["vscode"]
+            elif target == "claude_desktop":
+                if paths["claude_desktop"]:
+                    target_files = [paths["claude_desktop"]]
+
+            if not target_files:
+                raise Exception(f"Target '{target}' non valido o non supportato su questo OS.")
+
+            updated_any = False
+            for file_path in target_files:
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                data = {}
+                if file_path.exists():
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except Exception:
+                        data = {}
+                
+                mcp_key = "mcpServers"
+                if mcp_key not in data or not isinstance(data[mcp_key], dict):
+                    data[mcp_key] = {}
+
+                if action == "install":
+                    data[mcp_key]["llampaca"] = {
+                        "command": cmd,
+                        "args": ["mcp"]
+                    }
+                else:
+                    data[mcp_key].pop("llampaca", None)
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                updated_any = True
+
+            body = json.dumps({"success": True, "updated": updated_any}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(400, str(e))
+
+    def handle_get_clients_snippets(self):
+        try:
+            config = load_config()
+            port = config.get("server_port", 8080)
+            active_model = config.get("default_model", "qwen3.5-4b-instruct")
+            cmd = _resolve_llampaca_command()
+            base_url = f"http://127.0.0.1:{port}/v1"
+
+            snippets = {
+                "endpoint_url": base_url,
+                "active_model": active_model,
+                "llampaca_cmd": cmd,
+                "continue": f"""name: Llampaca Config
+version: 1.0.0
+schema: v1
+
+models:
+  - name: Llampaca Local
+    provider: openai
+    model: {active_model}
+    apiBase: {base_url}
+    roles:
+      - chat
+      - edit
+      - apply
+      - autocomplete""",
+                "cline_roo": json.dumps({
+                    "apiProvider": "openai-compatible",
+                    "openAiBaseUrl": base_url,
+                    "openAiModelId": active_model,
+                    "openAiApiKey": "not-needed"
+                }, indent=2),
+                "mcp": json.dumps({
+                    "mcpServers": {
+                        "llampaca": {
+                            "command": cmd,
+                            "args": ["mcp"]
+                        }
+                    }
+                }, indent=2),
+                "python": f"""from openai import OpenAI
+
+client = OpenAI(
+    base_url="{base_url}",
+    api_key="not-needed"
+)
+
+response = client.chat.completions.create(
+    model="{active_model}",
+    messages=[{{"role": "user", "content": "Ciao!"}}]
+)
+print(response.choices[0].message.content)"""
+            }
+
+            body = json.dumps(snippets).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+
+def _get_client_config_paths():
+    home = Path.home()
+    system = sys.platform
+
+    claude_path = None
+    if system == 'darwin':
+        claude_path = home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    elif system == 'win32':
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            claude_path = Path(appdata) / "Claude" / "claude_desktop_config.json"
+    else:
+        claude_path = home / ".config" / "Claude" / "claude_desktop_config.json"
+
+    vscode_paths = [
+        home / ".vscode" / "mcp.json",
+    ]
+    if system == 'darwin':
+        code_user = home / "Library" / "Application Support" / "Code" / "User"
+        vscode_paths.extend([
+            code_user / "settings.json",
+            code_user / "mcp.json",
+            code_user / "globalStorage" / "mcp.json"
+        ])
+    elif system == 'win32':
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            code_user = Path(appdata) / "Code" / "User"
+            vscode_paths.extend([
+                code_user / "settings.json",
+                code_user / "mcp.json",
+                code_user / "globalStorage" / "mcp.json"
+            ])
+    else:
+        code_user = home / ".config" / "Code" / "User"
+        vscode_paths.extend([
+            code_user / "settings.json",
+            code_user / "mcp.json",
+            code_user / "globalStorage" / "mcp.json"
+        ])
+
+    continue_path = home / ".continue" / "config.json"
+
+    cursor_paths = [
+        home / ".cursor" / "mcp.json"
+    ]
+    if system == 'darwin':
+        cursor_paths.append(home / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "mcp.json")
+
+    return {
+        "claude_desktop": claude_path,
+        "vscode": vscode_paths,
+        "continue": continue_path,
+        "cursor": cursor_paths
+    }
+
+def _resolve_llampaca_command():
+    venv_bin = Path(sys.executable).parent / "llampaca"
+    if venv_bin.exists():
+        return str(venv_bin)
+    import shutil
+    which_cmd = shutil.which("llampaca")
+    if which_cmd:
+        return which_cmd
+    return "llampaca"
 
 def parse_hf_input(input_str: str):
     """
