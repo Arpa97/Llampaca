@@ -3,7 +3,534 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-23]
+
+### Changed — GUI Visual Redesign (palette preserved, structure unchanged)
+
+Full restyle of the desktop dashboard. The five brand colours (`--amber-glow`, `--tea-green`, `--pacific-blue`, `--dusk-blue`, `--crimson-violet`) are untouched, as requested. No MVC boundary was moved: models and controllers keep their contracts, and every change is in `index.html` (the stylesheet) plus the component templates.
+
+- **`llampaca/gui/index.html`** — stylesheet rewritten around a token system.
+  - **Fixed: undefined CSS variables.** The components referenced `--bg-card`, `--bg-hover`, `--text-color`, `--danger` and `--btn-pacific`, none of which were ever declared. Those declarations resolved to nothing, so the affected panels (Strumenti, Skills, parts of Impostazioni and the confirmation banner) rendered with transparent backgrounds and inherited text colours. All are now defined. Reason: this was the single largest source of the "broken" look in those tabs.
+  - **Fixed: `.btn-danger` was declared twice** (lines ~222 and ~463 of the old file); the second silently overrode the first, so the palette's crimson variant never applied. Now one declaration per variant.
+  - **Neutrals re-derived from `--dusk-blue`.** The greys were GitHub's (`#f6f8fa` / `#e1e4e8` / `#24292e`), foreign to the palette. They are now cooled toward the brand blue (`#eef2f6` / `#dde5ed` / `#1c2b3a`) so the brand colours sit inside a coherent family. Brand hues themselves unchanged.
+  - **Contrast.** White text on `#ffa630` measured ~2.1:1 (unreadable). Every amber surface — primary buttons, user message bubbles, the active nav item — now uses a dark amber ink (`--amber-ink: #4a2a00`, ~8:1). `--danger` is a lightened `--crimson-violet` (`#8f2140`) rather than a generic red, keeping destructive actions in palette.
+  - **Amber rationing.** The active nav item was a filled amber pill competing with the amber primary buttons; it is now an amber tint plus a 3px rail. Amber is reserved for actions and for the context meter.
+  - **Typography: three roles instead of one.** Added Space Grotesk (titles/headings) and JetBrains Mono (all machine data: ports, GGUF filenames, quantizations, tok/s, tool names, log paths, badges, section eyebrows) alongside the existing Inter (body/UI). Full local fallback stacks; ligatures disabled in mono so source code displays the characters actually written (`->` was rendering as `→`).
+  - Added: focus-visible ring on every control, styled scrollbars, markdown styles for headings/code blocks/tables/blockquotes/links, an `.empty-panel` state, `prefers-reduced-motion` support, and a responsive rail (sidebar collapses to icons under 940px, single-column grids under 720px).
+  - Removed the brittle `height: calc(100vh - 65px)` on `.chat-container` in favour of flex sizing, and the fixed 65px `.view-header` height in favour of `min-height` (headers with a subtitle were being clipped).
+  - `.brand-logo` gets `mix-blend-mode: multiply`: the PNG has an opaque white background that showed as a white box on the tinted sidebar.
+- **`llampaca/gui/index.html` (markup)** — the sidebar's flat list of seven links is now grouped under three mono eyebrows (Assistente / Capacità / Sistema) and labels are shortened. Nav items gained `role="tab"`, `aria-selected`, `tabindex` and Enter/Space activation — previously they were `<a>` elements with no `href`, unreachable by keyboard. The footer's fixed "Server locale attivo" string is replaced by a live status block.
+- **`llampaca/gui/app.js`** — added a `loadStatus()` fetch of `/api/settings` feeding that block (active model, port, context window), exposed as `window.refreshServerStatus` so Impostazioni can re-sync after saving. Reason: the most useful fact in the app — what is running right now — was not shown anywhere.
+- **`llampaca/gui/components/ChatView.js`**
+  - **Signature element: the context meter.** The turn footer was an 11px grey sentence; it is now a gauge above the composer that fills amber as the conversation consumes the context window and turns crimson past 90%, with the token/speed figures in mono beside it.
+  - Assistant replies are no longer chat bubbles: they render as full-measure prose under a mono `LLAMPACA` label, with the transcript capped at a 760px reading measure. A narrow bubble is right for a one-liner, wrong for a markdown answer with tables and code.
+  - **Composer is now a `<textarea>`** with auto-grow: Enter sends, Shift+Enter inserts a newline (hint revealed on focus). It was a single-line `<input>`, so a multi-sentence prompt scrolled out of view.
+  - Confirmation banner rebuilt as classes instead of ~25 inline styles, aligned to the same 760px measure as the transcript, with "Rifiuta" given a solid border so refusing does not read as the disabled option.
+  - The streaming "thinking" line uses a pulsing dot instead of a spinning spinner mid-paragraph.
+- **`llampaca/gui/components/{ModelsView,McpView,ToolsView,SkillsView,WikiView,SettingsView}.js`** — all six now use the same `.view` / `.view-header` (title + subtitle + actions) / `.view-body` shell and the shared two-pane pattern, replacing six hand-rolled variants. Strumenti and Skills previously did not use `.view-body` at all, so their content sat outside the scroll container. Hundreds of inline styles were replaced by classes (`.section-head`, `.info-block`, `.code-block`, `.param-table`, `.empty-panel`, `.form-error`, badge variants). Italian copy tightened throughout: labels say what happens ("Salva e riavvia", "Nuova skill"), empty states explain the next action, and paths/identifiers are set in mono.
+- **`llampaca/gui/components/McpView.js`** — the registry "Installa" buttons are pacific rather than amber, matching "Scarica" in Modelli: fetching something from the internet has one colour, and a grid of filled amber blocks drowned out the real primary actions.
+
+### Added — "Risposte dirette": Skip the Reasoning Phase from the GUI
+
+`llampaca run` has `--no-think` to disable a reasoning model's thinking phase. `llampaca gui` had no equivalent, so every GUI answer paid for reasoning whether it helped or not — and on a small model that cost dwarfs everything else. Measured end to end through the GUI's own API, same prompt ("ciao"), same warm cache:
+
+| | tokens generated | turn |
+|---|---|---|
+| reasoning on | 1906 | **75.7 s** |
+| reasoning off | 12 | **0.8 s** |
+
+The variance is the point: the same one-word greeting produced 351, 425 and 1906 reasoning tokens across runs. That is what made "ciao" take 20+ seconds and made it feel random.
+
+Implemented per request rather than as a server launch flag, so it applies to the next message with no restart and can be toggled between turns:
+
+- **`llampaca/engine/client.py`**: `chat_stream_events()` and `prime_prompt_cache()` gained `no_think`, which adds `chat_template_kwargs: {enable_thinking: false}` to the request body (llama-server passes it into the Jinja chat template; Qwen3 reads it).
+- **`llampaca/agent/loop.py`**: `Agent` gained a `no_think` argument, stored on the instance and forwarded on every request of the session.
+- **`llampaca/gui/server.py`**: the agent is built with `no_think` from the config; the settings handler persists it, refreshes the manager's cached config (otherwise the Agent would keep reading the old value until the next launch) and re-primes the prompt cache, because the toggle changes how the template renders and the previously warmed prefix would no longer match. No server restart: it is not in the `need_restart` set.
+- **`llampaca/config.py`**: new `no_think` key, defaulting to `False` — existing behaviour is preserved rather than silently trading answer quality for speed. Reasoning earns its cost on multi-step tool use and wastes it elsewhere, so this is a judgement the user makes, not one made for them.
+- **`llampaca/gui/components/ChatView.js`** and **`controllers/chat_controller.js`**: exposed as a ⚡ toggle in the chat composer, next to the 🧠 remember flag, lit amber while active. It belongs there rather than in Settings because it is a per-turn decision, not a configuration: you want reasoning for "analyse this file and fix the bug" and not for "ciao", and a control you have to visit a settings page for is a control you never change. Optimistic update with rollback if the save fails, so the button never shows a state the backend does not have. The value still lives in `config.json` (same key the CLI uses), so the choice survives a restart.
+- **`llampaca/gui/models/settings_model.js`**: the Settings form deliberately does NOT send `no_think`. It would otherwise re-post whatever value was read when the tab was opened, silently undoing a change made from the composer in the meantime.
+- **`llampaca/gui/components/SettingsView.js`**: the save button now reads "Salva impostazioni" instead of "Salva e riavvia" — only some settings restart the server.
+- **`tests/test_stream_events.py`**, **`tests/test_declined.py`**: the `chat_stream_events` test doubles now mirror the new signature. Worth noting how the mismatch surfaced — the agent swallowed the resulting `TypeError` into a user-facing "❌ ATTENZIONE" message rather than failing loudly.
+
+The toggle deliberately does **not** re-prime the prompt cache. Measured against llama-server, switching it only changes the tail of the rendered prompt (the assistant's generation prefix), not the system block, so the warmed prefix stays valid: 13 tokens to compute after a switch versus 2271 from cold. An earlier version of this change re-primed on every toggle, which would have stalled the next message by ~8 s for nothing.
+
+### Fixed — The Cache Warm-Up Raced User Messages and Made Them Slower
+
+The warm-up below was fired as a background task with nothing stopping a user message from starting while it ran. Both drive the same llama-server, so they fought for the GPU. Measured by sending a message the instant the API came up: **28.5 s** for the turn — worse than the 19.3 s before any of this work — and the warm-up itself stretched from 8 s to 16 s. A user who launches the app and types immediately is the normal case, not an edge case, so this was a regression introduced by the optimisation.
+
+- **`llampaca/gui/server.py`**: added `AgentManager._inference_lock`, held by `_warm_prompt_cache()` for the priming request and awaited by the request-queue loop before it starts a turn. A message arriving mid-warm-up now waits for it instead of competing with it, then inherits the cache it just built. Turns are already serialised by that loop, so the lock adds no other contention.
+
+Measured after the fix, message sent immediately at startup: 21.9 s, and llama-server's log confirms the cache is doing its job — the turn computed **7 prompt tokens instead of 2286**. The remaining time is 8 s waiting for the warm-up (unavoidable: whoever pays the prefill, it costs ~8 s) plus 13.5 s of generation, because the model produced 351 tokens of reasoning to answer "ciao".
+
+That last figure is now the dominant cost of a turn in the GUI, and it is not addressed here: `llampaca run` exposes `--no-think` to disable the reasoning phase, but `llampaca gui` has no equivalent, so every GUI answer pays for reasoning whether it needs it or not.
+
+### Fixed — Auto-Titling Made the First Message of Every Chat ~7 s Slower
+
+The first message of a conversation triggers a second, complete inference just to name the chat. On a reasoning model that call *thinks* before writing four words, and the SSE stream stays open until it finishes — so the user waits for it after their answer has already been written. Measured on Qwen3-4B, producing the two-word title "Solo ok": **834 tokens and 29.5 s** in the worst case seen, 195 tokens and 6.7 s typically.
+
+- **`llampaca/engine/client.py`**: `chat_stream()` gained two optional arguments, both defaulting to the previous behaviour so the other call site (`agent/loop.py`, the self-aware error explanation) is unaffected:
+  - `no_think` — renders the chat template with thinking disabled for that single request, via llama-server's `chat_template_kwargs` passthrough (`enable_thinking: false`, which Qwen3's template reads). The CLI's `--no-think` does the same thing with the `--reasoning off` launch flag, which applies to the whole server; this is the per-call equivalent, so the model keeps reasoning for the user's actual questions and skips it only for throwaway generations.
+  - `max_tokens` — hard cap on the generated length.
+- **`llampaca/gui/server.py`**: the auto-titling call now passes `no_think=True, max_tokens=25`. The cap is a safety net for a GGUF whose template ignores the toggle and reasons anyway.
+
+Verified against llama-server before wiring it in, since a template that ignores the variable would have made this a silent no-op:
+
+| | tokens | time | title produced |
+|---|---|---|---|
+| as before | 195 | 6.7 s | `Read PDF with Python` |
+| `enable_thinking: false` | 8 | 0.3 s | `Come leggere PDF in Python?` |
+| + `max_tokens: 25` | 7 | 0.2 s | `Come leggere PDF in Python` |
+
+The titles also came out better: in the user's own language rather than drifting to English. Spot-checked across several conversations ("Come faccio a leggere un PDF con python?" → "Come leggere PDF in Python").
+
+Combined with the prompt-cache warm-up below, measured end to end on the first message of the first conversation after launch:
+
+| | time to first token | total turn |
+|---|---|---|
+| before both fixes | 12.17 s | 19.29 s |
+| warm-up only | 4.99 s | 16.38 s |
+| both | **4.57 s** | **4.93 s** |
+
+The first message is now no slower than the ones after it (4.93 s vs 5.85 s and 6.50 s for turns 2 and 3).
+
+### Added — Prompt Cache Warm-Up at Startup (first message ~7 s faster)
+
+Every conversation opens with the same block of tokens: system prompt, wiki index, skills index and the JSON schemas of all registered tools — measured at ~2286 tokens, of which ~1861 are tool schemas. llama-server caches the state it derives from a prompt prefix (`cache_prompt`, already enabled in `client.py`) and reuses it for any later request starting with the same tokens, so that cost is paid once per server process. Measured directly against llama-server:
+
+| request | tokens to compute | time |
+|---|---|---|
+| first | 2271 | 7690 ms |
+| next turn | 24 | 138 ms |
+| next turn | 30 | 156 ms |
+
+Until now that ~7.7 s landed on the user's first question. It is now paid at startup instead.
+
+- **`llampaca/engine/client.py`**: added `LlamaClient.prime_prompt_cache(messages, model, tools)` — a non-streaming `max_tokens=1` request that computes a prefix and discards the answer, returning llama-server's `timings`. Never raises: priming is an optimisation and must not be able to stop startup.
+- **`llampaca/gui/server.py`**: added `AgentManager._warm_prompt_cache()`, fired as a background task at the end of `_init_async` (after the MCP servers have registered their tools, since their schemas are part of the prefix) and again after `_restart_server_internal` succeeds (a restart means a new process with an empty cache). It builds the prefix by constructing a throwaway `Agent` with the same arguments `_process_message_coro` uses, then sends `agent.messages`. Building it that way rather than copying the strings is deliberate: `Agent.__init__` appends today's date and, in prompt-based tool mode, the tool instructions, and the cache is keyed on the exact token sequence — a hand-written copy would drift and silently waste the whole warm-up. `Agent.__init__` calls `get_chat_template()` with blocking `requests`, so it runs via `asyncio.to_thread` to keep the manager's event loop free.
+
+Measured end to end, first message of the first conversation after launch:
+
+| | before | after |
+|---|---|---|
+| time to first visible token | 12.17 s | **4.99 s** |
+
+The 7.2 s saved matches the measured prefill cost, confirming the cache is actually hit. Total turn time is still dominated by the auto-title generation, which is a separate issue (a second full inference that burns 198–834 reasoning tokens to produce a 4-word title) and is not addressed here.
+
+Two limits worth knowing: the work is relocated, not removed — it still costs ~8 s, just while the window is opening; and the system prompt is rebuilt from disk on every message, so editing a wiki page or adding a skill changes the prefix and the next message re-pays the prefill once before settling again.
+
+### Fixed — The GUI Did Not Work Without an Internet Connection
+
+Llampaca's premise is "no cloud", but the desktop GUI could not start offline. Verified empirically by loading it in a browser with every external host blackholed: Vue never arrived, nothing mounted, and the window showed the raw unrendered template (`{{ toastMessage }}`, `{{ activeModelShort }}`, a stuck toast, no content area). Every third-party asset is now served from disk.
+
+- **`llampaca/gui/vendor/`** (new): Vue 3.5.40 (`vue.global.prod.js`, MIT) and marked 15.0.12 (`marked.min.js`, MIT), both unmodified and retaining their inline copyright headers; plus `fonts/` with the latin and latin-ext subsets of the **variable** builds of Inter, Space Grotesk and JetBrains Mono (SIL OFL 1.1) — one file per family covers every weight the UI uses, ~213 KB total, ~440 KB for the whole directory.
+- **`llampaca/gui/vendor/fonts.css`** (new): local `@font-face` declarations replacing the Google Fonts stylesheet.
+- **`llampaca/gui/vendor/LICENSES.md`** and **`OFL-1.1.txt`** (new): provenance, versions, licences and copyright notices for everything vendored. MIT requires the copyright notice to travel with the code; the OFL requires its text to accompany the fonts.
+- **`llampaca/gui/index.html`**: the `fonts.googleapis.com` stylesheet, the `unpkg.com` Vue tag and the `cdn.jsdelivr.net` marked tag now point at `vendor/`. No external asset request remains (the only leftover `http://` strings are the SVG XML namespace inside a data-URI and a placeholder in the Skills import field).
+- **`llampaca/gui/server.py`**: registered `.woff2`/`.woff` explicitly in `QuietSimpleHTTPRequestHandler.extensions_map`. Python's `mimetypes` only learned `font/woff2` in 3.11, and `pyproject.toml` declares `requires-python = ">=3.10"`, where the fonts would otherwise be served as `application/octet-stream`.
+- **`.gitignore`**: added `!llampaca/gui/vendor/*.txt`. A blanket `*.txt` rule on line 224 was excluding `OFL-1.1.txt` from git and therefore from the built wheel — meaning the fonts would have shipped without the licence the OFL requires them to carry. Confirmed fixed by building the wheel and listing its contents.
+
+Beyond offline support this removes a privacy dependency: every GUI launch previously sent the user's IP address to Google to fetch fonts, which sits badly with a product whose first line is "No cloud."
+
+### Fixed — The System Prompt Was Rendered as a Chat Message
+
+- **`llampaca/gui/components/ChatView.js`**: added a `visibleMessages` computed that filters out `role: 'system'` turns. A conversation started from the CLI persists its system prompt as a message, and the transcript rendered it at the top as if the assistant had opened by saying "You are Llampaca, a helpful local AI personal assistant." The backend already skips system messages when rebuilding the model context; the view now does the same. Pre-existing, but the new mono role label made it read as an actual assistant turn, so it is fixed rather than left.
+
+### Added — Confirmation Before Deleting a Conversation
+
+- **`llampaca/gui/controllers/chat_controller.js`**: `deleteConversation()` now asks `window.confirm()` before calling the API, naming the conversation by its title rather than its UUID. Reason: deleting a conversation cascades to all its messages (`ON DELETE CASCADE`) and drops its attachment index, and the `×` sits one row away from the item you click to open a conversation — a misclick was silently unrecoverable. Every other destructive action in the GUI (wiki pages, skills, custom tools, GGUF files, MCP integrations) already guarded with `confirm()`; the conversation delete was the only one that did not, so this aligns it with the existing pattern rather than introducing a new one.
+
+### Fixed — Assistant Styling and Role Label Lost on Reloaded Conversations
+
+- **`llampaca/gui/index.html`** and **`llampaca/gui/components/ChatView.js`**: live streaming marks an assistant turn with `role: 'agent'`, while a conversation reloaded from SQLite carries the persisted `role: 'assistant'`. The CSS matched only `.message-row.agent`, and the new mono "Llampaca" role label was gated on `m.role === 'agent'`, so a reloaded transcript rendered unstyled and unlabelled while a freshly generated one did not. Both now cover the two values (`.message-row.agent, .message-row.assistant` in CSS; `m.role !== 'user'` in the template). Found by screenshotting the real backend rather than the stubbed fixtures — the stub had used `'agent'` for history, hiding the mismatch.
+
+### Fixed — Blank "Integrazioni" Tab When the Registry Returns an Unexpected Body
+
+- **`llampaca/gui/controllers/mcp_controller.js`**: `performSearch()` assigned `data.servers` straight into `searchResults`. If the registry answered `200` without that key, `searchResults` became `undefined`, the template's `searchResults.length` threw inside the render function, and Vue unmounted the whole view — the entire tab went blank with no error shown to the user. Now guarded with `Array.isArray(data.servers) ? data.servers : []`. Found while screenshotting the redesign against a stubbed API.
+
+## [2026-07-22]
+
+### Added — "Remember" (🧠) Toggle in the Chat Input
+
+- **`llampaca/gui/controllers/chat_controller.js`**: refactored `sendMessage` into a shared `startTurn(backendText, displayText)` core so a turn can be sent with a backend payload that differs from what the user's bubble shows. Added a `rememberMode` toggle flag and `toggleRemember()`: `sendMessage` now checks the flag and, when armed with text present, routes the turn through the existing `/remember <fact>` path (the model writes it to the right wiki page via `update_wiki_page`, with the usual confirmation prompt), shows a clean "🧠 <fact>" bubble, and disarms the flag. Exposed `rememberMode`/`toggleRemember`.
+- **`llampaca/gui/components/ChatView.js`**:
+  - Added a small 🧠 button next to the 📎 attachment button. Following user feedback, it is a TOGGLE (arms/disarms the remember flag) rather than an immediate send: it lights amber (`.active`) while armed, updates its tooltip, and the input placeholder switches to a "Memoria attiva…" hint. The remembered message is only stored when the user actually sends.
+  - Added a `collapseRemember()` display transform in `parseMarkdown` that strips the backend's "[The user asked to remember the fact above permanently. …]" instruction block from a persisted message and renders just "🧠 <fact>". Reason: the user did not want that instruction text showing under their message after sending / on reload; the model still receives the full instruction (display-only change).
+- **`llampaca/gui/index.html`**: added an `.attachment-btn.active` rule (amber) so a toggled-on flag button reads as armed.
+
+### Added — GUI Setting for the Embedder's GPU/CPU Offload
+
+- **`llampaca/gui/server.py`**: `handle_post_settings()` now reads an optional `embedding_gpu_layers` from the payload. Changing it persists the value and resets any already-built `agent_manager.embedding_service` (so the next RAG/attach rebuilds the embedding server with the new value) but deliberately does NOT set `need_restart`: the embedder is a separate, lazily-started llama-server, so restarting the chat server for this setting would needlessly interrupt the conversation. (`handle_get_settings()` already returned the whole config, so the value was exposed for reads with no change.)
+- **`llampaca/gui/models/settings_model.js`**: `getSettings()`/`saveSettings()` now map `embedding_gpu_layers` <-> `embeddingGpuLayers`.
+- **`llampaca/gui/controllers/settings_controller.js`**: added `embeddingGpuLayers` (default `0`) to the settings ref.
+- **`llampaca/gui/components/SettingsView.js`**: added an "Offload GPU Layers (Modello Embedding)" numeric field mirroring the existing chat-model GPU field, in its own separated row, and clarified the chat field's label/help. Reason: the embedder ran CPU-only (`embedding_gpu_layers: 0`) with no way to change where it runs from the GUI; now the user can move it to GPU (`-1` auto, or a layer count) the same way as for the LLM.
+
+### Added — Separate LLM and Embedding Models in the GUI, With Independent Defaults
+
+- **`llampaca/gui/server.py`**:
+  - `handle_get_models()` now emits a `"kind"` field (`"chat"` or `"embedding"`) for every catalog entry, taken from the preset table (`preset.get("kind", "chat")`); custom local GGUF files default to `"chat"`. The `active` flag for embedding presets is now compared against `config["embedding_model"]` instead of `config["default_model"]`. Reason: the Models view listed chat and embedding models together and only ever marked/changed the chat default, so selecting an embedding model there silently overwrote the chat model (breaking chat), and the embedding default could not be set from the GUI at all.
+  - `handle_post_models_default()` now accepts an optional `"kind"` field. With `"embedding"` it persists `config["embedding_model"]` and does NOT restart the chat llama-server (the embedding server is started lazily per session), also dropping any already-constructed `agent_manager.embedding_service` so the next RAG/attach rebuilds against the new model; with `"chat"` (default, backward compatible) it keeps the previous behaviour of setting `default_model` and restarting the server.
+  - `handle_delete_model()` now also refuses to delete the active embedding model (previously only the active chat model was protected), and reports which of the two is blocking the deletion.
+- **`llampaca/gui/models/gguf_model.js`**: `setDefaultModel(name, kind = 'chat')` now sends the `kind` in the request body.
+- **`llampaca/gui/controllers/models_controller.js`**: added `chatModels`/`embeddingModels` computed splits of the flat catalog; `setDefaultModel(name, kind)` only shows the blocking "restart" overlay for chat swaps (embedding is a config-only change) and uses a kind-aware success toast.
+- **`llampaca/gui/components/ModelsView.js`**: extracted the catalog card into a reusable `ModelCard` presentational component and split the catalog into two labelled sections — "Modelli LLM (Chat)" and "Modelli di Embedding" — each with its own "Imposta default"/"Imposta come embedding" action. The Hugging Face search/browse area below stays a single combined list, as requested.
+
+## [2026-07-21]
+
+### Fixed — WebKit SSE Buffering Deadlocked the 2nd Consecutive Tool Confirmation
+
+- **`llampaca/gui/server.py`**:
+  - `emit_sse()` now pads every Server-Sent Event up to 2048 bytes with an inert SSE comment line. Reason (root cause of the reported bug): WebKit (Safari and the pywebview WKWebView native window) buffers a streamed `fetch()` response body and withholds small chunks from the JS `ReadableStream` reader until ~1 KB has accumulated, whereas Chrome/Blink delivers each chunk immediately. An isolated `tool_confirm_request` event (typical of a second back-to-back tool call, with little model text preceding it) stayed trapped in WebKit's buffer, so the confirmation banner never appeared and the backend blocked forever waiting on a confirmation the user could not give — the tool "did not work" only in Safari and the native GUI window, never in Chrome. Padding each event past the threshold forces immediate delivery. The frontend parser only reads `data:` lines, so the padding comment is inert. This is the actual fix; the cache changes below remain as defense-in-depth.
+
+### Fixed — Stale Frontend Cache Causing Ghost Bugs (e.g. Multi-Tool Confirmations)
+
+- **`llampaca/gui/server.py`**:
+  - Added a `Cache-Control: no-cache, must-revalidate` header to all static frontend responses (JS/CSS/HTML) via an `end_headers()` override on `QuietSimpleHTTPRequestHandler`; API responses are excluded. Reason: without an explicit cache directive, both browsers and the pywebview WebKit backend applied heuristic caching and kept executing an old cached copy of the frontend without revalidating. This made already-fixed bugs (notably the queued multi-tool confirmation fix in commit `8f1fe5e`) reappear for users whose cache still held the pre-fix JavaScript, while users with a fresh cache never saw them. Paired with the existing Last-Modified/304 handling, unchanged files stay fast and changed files are always re-fetched.
+  - Appended a per-launch cache-buster query string (`?v=<timestamp>`) to the pywebview window URL in `start_gui_window()`. Reason: the WebKit backend keeps a persistent HTTP cache that wiping `~/Library/WebKit/<app>/WebsiteData` does not fully clear, so it could keep loading a stale `index.html`/JS bundle across launches; a fresh query string each launch forces the main document to be re-fetched.
+  - Added an optional `LLAMPACA_DEBUG=1` environment variable that enables the WebKit Web Inspector (`webview.start(debug=True)`) for live Console/Network diagnosis of frontend issues.
+
+### Fixed — Skills Discovery in CLI + Skill Slug/Name Alignment
+
+- **`llampaca/cli.py`**:
+  - Injected the Markdown skills index (`skills.render_skills_index()`) into the CLI system prompt, next to the wiki index. Reason: the `read_skill_page` tool was registered for terminal sessions but the model had no way to discover which skills existed — the index was only built in the GUI server. Now skills are discoverable from the terminal too.
+- **`llampaca/skills.py`**:
+  - `write_skill()` now derives the on-disk slug from the name declared *inside* the file (YAML frontmatter `name:`/`title:` or first Markdown header) when present, falling back to the `name` argument otherwise. Reason: previously the filename slug came from the `name` argument while the declared name could differ, so the slug advertised in the prompt index did not match the skill's declared identity.
+- **`tests/test_skills.py`**:
+  - Updated `test_write_and_read_skill` / `test_delete_skill` to use content without a conflicting declared name, and added `test_slug_derived_from_declared_name` to lock in the new slug-alignment behavior. Reason: the two old tests encoded the previous inconsistency.
+
+### Added — Smithery.ai MCP Search, GGUF/MCP Pagination, Self-Aware AI Error Explanations
+
+- **`llampaca/gui/server.py`**:
+  - Migrated `/api/mcp/search` to fetch integrations from Smithery.ai registry APIs.
+  - Implemented `/api/mcp/config-schema` to retrieve dynamic server setup schemas.
+  - Paginated MCP search results using a `page` parameter.
+  - Paginated Hugging Face model search results using a page parameter and lazy-iterator slicing via `itertools.islice`.
+  - Added URL-decoding (`urllib.parse.unquote`) when deleting MCP servers to resolve uninstall issues.
+- **`llampaca/engine/mcp_client.py`**:
+  - Increased connection startup timeout from 30.0s to 300.0s to support OAuth browser authorizations.
+- **`llampaca/agent/loop.py`**:
+  - Intercepted inference exceptions to display an interactive explanation.
+  - Streamed dynamic error descriptions from the local LLM using a customized, self-aware system prompt guiding users to Llampaca's Settings and MCP tabs.
+- **`llampaca/gui/controllers/mcp_controller.js`, `mcp_model.js`, `McpView.js`**:
+  - Wired Dynamic Installation Modal with config schema parameters and `@smithery/cli` runner.
+  - Added a "Carica Altri Risultati" pagination button for MCP searches.
+  - Added a manual "Aggiorna" button to reload MCP servers in real-time.
+- **`llampaca/gui/controllers/models_controller.js`, `gguf_model.js`, `ModelsView.js`**:
+  - Exposed GGUF pagination states (`currentPage`, `hasNextPage`, `loadMore`).
+  - Added a "Carica Altri Risultati" pagination button for GGUF model searches.
+
+### Changed — Documentation: bring README.md up to date with the branch
+
+- **`README.md`**: documented features present in the code but missing from
+  the docs.
+  - Added `llampaca serve` (headless backend: `llama-server` + HTTP API) and
+    `llampaca mcp` (run Llampaca itself as an MCP stdio server) to the CLI
+    Reference table — both existed in `cli.py` but were undocumented.
+  - Added a new GUI "Personal Wiki (Profilo)" module section (backed by
+    `WikiView.js`, wired in `app.js`) and expanded the GUI Chat section to
+    cover the features added on this branch: in-chat file attachments + RAG,
+    the Stop button, and the context/speed/time indicator.
+  - Fixed a garbled sentence in the GPU-acceleration feature bullet
+    ("...NVIDIA out or HIP on AMD out zof the box" → "...NVIDIA or HIP on AMD
+    out of the box").
+  - *Reason*: the README had drifted behind the GUI/CLI work merged into
+    `gui-umb`; keeping it accurate is part of the project's documentation
+    convention (CLAUDE.md).
+
+## [2026-07-20]
+
+### Changed — Unify the context indicator across CLI and GUI + add speed/time
+
+- **`llampaca/gui/server.py`**: the turn footer emitted as the `context_status`
+  SSE event now derives context occupancy from `agent.context_usage()` — the
+  *same* heuristic the CLI footer uses (chars/4 plus per-message overhead and,
+  in native mode, the tool-definition tokens). Previously the GUI computed a
+  separate raw `used_chars` vs `context_size * CHARS_PER_TOKEN`, which ignored
+  the per-message overhead and tool definitions and so under-reported usage
+  relative to the CLI. The event now carries `used_tokens`, `total_tokens` and
+  `used_percent`, plus `turn_seconds`, `gen_tokens` and `tok_s` (generation
+  speed from the summed server `stats` timings, elapsed time via
+  `time.monotonic()`), mirroring the CLI footer.
+  - *Reason*: the two surfaces were calculating and phrasing the context
+    differently; the CLI already showed tokens/second and time while the GUI
+    did not.
+- **`llampaca/cli.py`**: the footer now reports context **used** rather than
+  free — `[context: ~X% used | took Ys | N tok @ Z tok/s]` — so both surfaces
+  express the same quantity (occupancy, not remaining).
+  - *Reason*: consistency, and "used" is the more intuitive reading of the
+    indicator.
+- **`llampaca/gui/components/ChatView.js`**: the indicator now reads
+  "Contesto: ~X% usato (Yk / Zk token) · Ns · N tok @ Z tok/s" using the new
+  event fields.
+- **`llampaca/gui/controllers/chat_controller.js`**: documented the enriched
+  `context_status` payload in the SSE handler (no behavioural change — it still
+  assigns the whole payload to `contextBudget`).
+- *Note*: generated-token counts and tok/s are exact (from llama-server's
+  `predicted_n`); only the context-occupancy figure is estimated (chars/4),
+  because it is computed locally before each request to drive history trimming.
+
+### Added — GUI: stop an in-progress answer without crashing
+
+- **`llampaca/gui/server.py`**:
+  - `AgentManager.cancel_current()` cancels the in-flight `_process_message_coro`
+    task thread-safely (`loop.call_soon_threadsafe(task.cancel)`).
+  - `_process_message_coro` now handles `asyncio.CancelledError` explicitly:
+    it emits a `cancelled` event and re-raises; the existing `finally` still
+    puts `("close", None)` on the SSE queue, so the streaming HTTP handler
+    unblocks and ends cleanly instead of hanging. `emit_sse`/`end_sse` already
+    swallow write errors, so a client that has closed the connection can't
+    crash the handler. Partial output is not persisted (an aborted turn keeps
+    the user message but saves no answer).
+  - New `POST /api/cancel` endpoint (`handle_post_cancel`) — served on a
+    separate thread from the blocked streaming request, so it can interrupt
+    it mid-stream — plus the `cancelled` SSE relay.
+- **`llampaca/gui/models/chat_model.js`** — `addMessage` accepts an
+  `AbortSignal`; new `cancel()` posts to `/api/cancel`.
+- **`llampaca/gui/controllers/chat_controller.js`** — `isStreaming` state, an
+  `AbortController` per send, `stopGeneration()` (cancel backend + abort fetch
+  + clear any pending tool prompt), a guard against concurrent sends, and
+  graceful handling of `AbortError`/`cancelled` (keep partial text, mark the
+  bubble stopped, never show a connection error).
+- **`llampaca/gui/components/ChatView.js`**, **`index.html`** — the send button
+  turns into a red Stop button while a response streams (input disabled).
+  - *Why:* requested — a way to abort a running question without crashing the
+    server or the session.
+
+### Fixed — GUI: a sent message with attachments now shows which files it carried
+
+- **`llampaca/gui/controllers/chat_controller.js`** — `sendMessage` captures the
+  attached (non-errored) filenames before clearing the chips and prepends a
+  "📎 name" line per file to the optimistic user bubble. Before, the sent turn
+  showed only the typed text, so nothing in the transcript indicated the model
+  was answering on the basis of an attached document. This mirrors how a
+  reloaded conversation already renders (the backend persists the full
+  document blocks, which `parseMarkdown` collapses to the same "📎 name" chips).
+
+### Added — GUI: "Profilo" tab (view/edit wiki pages) and `/remember` in the chat
+
+- **`llampaca/gui/server.py`** — wiki REST endpoints over the same
+  `~/.llampaca/wiki/` pages the model and the CLI use:
+  - `GET /api/wiki` (list of name+description), `GET /api/wiki/<name>` (full
+    content), `POST /api/wiki` (create/overwrite, enforcing `write_page`'s
+    non-empty + size-cap rules → 400 on violation), `DELETE /api/wiki/<name>`
+    (deleting is a user action, which this is).
+  - `/remember <fact>` now works in the GUI chat: `handle_post_message`
+    applies the same transform as the CLI (the fact is forwarded to the model
+    with the "store faithfully via update_wiki_page" instruction), so the
+    write still goes through the GUI's Allow/Decline confirmation.
+- **`llampaca/gui/models/wiki_model.js`**, **`controllers/wiki_controller.js`**,
+  **`components/WikiView.js`** — new "Profilo" tab: a two-pane page list +
+  markdown editor to read, create, edit, and delete memories, with a live
+  character count against the page cap. Edits are the same files the assistant
+  reads, so they take effect in the next message (the wiki index is rebuilt
+  per turn).
+- **`llampaca/gui/app.js`**, **`index.html`** — registered the tab (nav item +
+  view) and added its styles.
+  - *Why:* the wiki was terminal-only; the GUI now exposes it as an editable
+    personal profile, and the `/remember` shortcut has GUI parity.
+
+### Changed — single source of truth for the default context window (CLI, GUI, Agent all aligned to 8192)
+
+- **`llampaca/config.py`** — new `DEFAULT_CONTEXT_SIZE = 8192` constant, used
+  to seed `DEFAULT_CONFIG["context_size"]`. Added `EMBEDDING_CONTEXT_SIZE = 4096`
+  for the (deliberately independent, chunk-sized) embedding server.
+- Replaced every hard-coded chat-context fallback with the constant, so the
+  default can no longer drift between entry points (they had diverged to
+  `32768`, `8192` and `4096`):
+  - **`llampaca/agent/loop.py`** — `Agent(context_size=...)` default.
+  - **`llampaca/cli.py`** — `run`/`serve`/`gui` `--ctx` fallbacks (were 32768).
+  - **`llampaca/engine/server.py`** — chat-mode fallback and
+    `restart_active_server` (were 8192 / 32768); the embedding-mode fallback
+    now uses `EMBEDDING_CONTEXT_SIZE`.
+  - **`llampaca/gui/server.py`** — all four GUI fallbacks (were 4096/32768),
+    including the per-message agent and the attachment budget — this is the
+    part that aligns the GUI to 8192 as requested.
+  - *Why:* the GUI was running at 4096 while the CLI used 8192; the user asked
+    for one place that sets the default for everyone. Change
+    `DEFAULT_CONTEXT_SIZE` in `config.py` and every path picks it up. (An
+    existing `~/.llampaca/config.json` still wins for that user, since
+    `load_config` only fills MISSING keys — the constant governs new configs
+    and every in-code fallback.)
+
+### Added — GUI: file attachments (📎 button + drag-and-drop), the GUI equivalent of the CLI's `/attach`
+
+- **`llampaca/gui/server.py`** — New upload endpoint and staging pipeline,
+  reusing the CLI's attachment logic end to end:
+  - `POST /api/conversations/<id>/attach` (`handle_post_attach`): receives the
+    raw file bytes (filename in the `X-Attachment-Filename` header), writes a
+    temp file preserving the suffix, and calls `attachments.extract_text`.
+  - `AgentManager.stage_attachment` applies the CLI's budget rule: within
+    `attachment_token_budget` the extracted text is staged for direct
+    injection; beyond it the document is indexed via a (lazy) `EmbeddingService`
+    and only a search pointer is staged. Staged items are kept per conversation
+    under a lock (`pending_attachments` / `pending_index_notes`).
+  - `handle_post_message` merges the staged items into the user turn *before*
+    persisting (via `build_attachment_block`), so the document travels with the
+    message in the DB and survives resume — the same "document + question as one
+    user turn" shape the CLI uses (Gemma-style templates reject two consecutive
+    user messages).
+  - `AgentManager.activate_document_search` (re)binds the `search_documents`
+    tool to the CURRENT conversation each message, since the GUI rebuilds the
+    agent per turn from one shared registry; the embedding server is stopped on
+    shutdown.
+  - Auto-titling now strips attachment blocks (`_strip_attachment_blocks`) so a
+    first message with a file is not titled after the document's first line.
+  - *Why:* the GUI registered the attachment machinery's dependencies but had
+    no way to actually attach a file; the terminal `/attach` was the only path.
+- **`llampaca/gui/models/chat_model.js`** — `uploadAttachment(convId, file)`.
+- **`llampaca/gui/controllers/chat_controller.js`** — attachment state (chips
+  with uploading/done/error status), `attachFiles` (button + drop share it),
+  drag-and-drop handlers, on-demand conversation creation extracted to
+  `ensureConversation`, and a per-conversation guard so creating a conversation
+  on drop does not wipe the chips just added.
+- **`llampaca/gui/components/ChatView.js`** — wired the (previously inert) 📎
+  button to a hidden file input, drag-and-drop over the messages panel with an
+  overlay, staged-file chips above the input, and collapsing of persisted
+  attachment blocks to a compact "📎 filename" line on reload.
+- **`llampaca/gui/index.html`** — styles for the chips and the drop overlay.
+- Note: verified by import/compile and the offline test suite (102 passing);
+  the upload + RAG path needs a live GUI + running servers to exercise
+  end-to-end.
+
+### Fixed — GUI: wiki index missing from the system prompt (model invented page names)
+
+- **`llampaca/gui/server.py`** — `_process_message_coro` now builds the
+  agent's `system_prompt` as `DEFAULT_SYSTEM_PROMPT + render_index()`, the
+  same way the CLI does at session start. The GUI already registered the
+  wiki tools (via `build_default_registry`) but never injected the wiki
+  index, so the model had no idea which pages actually exist and
+  hallucinated names like "user-identity"/"user-preferences" — while the
+  terminal (which injects the index) worked correctly against the same
+  `~/.llampaca/wiki`.
+  - *Why:* the wiki is only useful if the model knows its contents without
+    a blind tool call; the index is that awareness. `render_index()` reads
+    the real wiki dir, so GUI and terminal now share one memory view.
+
+### Merged — `dev-umb` (RAG/embeddings + personal wiki) into `GUI_DEV` (GUI + MCP)
+
+- Merged branch `dev-umb` into the new `gui-umb` branch (base `GUI_DEV`),
+  reconciling eight conflicting files. Notable resolution decisions:
+  - **`llampaca/config.py`** — `context_size` kept at **8192** (dev-umb's
+    value, dated 07-18) over GUI_DEV's 32768 (07-17): it is both the more
+    recent change and the one with an explicit rationale for ~4B models.
+    Combined `mcp_servers` (GUI_DEV) with the embedding/RAG settings
+    (dev-umb) in `DEFAULT_CONFIG`, and kept both the `qwen3-embedding-0.6b`
+    preset (dev-umb) and the `size_gb` field on the llama3.2 preset
+    (GUI_DEV).
+  - **`llampaca/engine/server.py`** — kept dev-umb's superset `__init__`
+    body that handles both chat and embedding modes.
+  - **`llampaca/cli.py`** — kept GUI_DEV's `mcp_manager.stop()` shutdown
+    alongside dev-umb's embedding-server shutdown comment.
+- **`tests/test_search_tool.py`**, **`tests/test_wiki.py`** — updated the
+  tool tests to `await registry.execute(...)`: GUI_DEV made
+  `ToolRegistry.execute` a coroutine (for async MCP tools) while dev-umb's
+  tests still called it synchronously. `TestWikiTools` now also mixes in
+  `IsolatedAsyncioTestCase`.
+  - *Why:* the merge combines dev-umb's sync-era tool tests with GUI_DEV's
+    async registry; without this the tests receive un-awaited coroutines.
+- **`tests/test_mcp_server.py`** — the registry-vs-server tool mapping check
+  now compares functions by `__qualname__` instead of object identity.
+  - *Why:* dev-umb's wiki tools are closures built per `build_default_registry()`
+    call, so two independently built registries yield distinct-but-equivalent
+    function objects; identity comparison broke, qualified-name comparison is
+    the correct invariant.
+- Full suite: 102 tests passing in the conda env.
+
+### Added — Settings persistence, local models management, and runtime LLM server restarts
+
+- **`llampaca/engine/server.py`** — Added global `_active_server` tracking and an async `restart_active_server` method.
+  - *Why:* Enables dynamically restarting the underlying `llama-server` process with new configurations (model file, context size, CPU threads, GPU layers) without requiring manual CLI intervention.
+
+- **`llampaca/gui/server.py`** — Implemented API endpoints for settings (`GET`/`POST` `/api/settings`) and local GGUF models (`GET` `/api/models`, `POST` `/api/models/default`, `DELETE` `/api/models/<name>`).
+  - *Why:* Acts as a bridge between the frontend GUI actions and the backend server configuration files / subprocess manager.
+
+- **`llampaca/gui/models/settings_model.js`** & **`llampaca/gui/controllers/settings_controller.js`** — Replaced settings mocks with async API requests.
+  - *Why:* Wires the Settings tab input elements to load and save real global configuration values.
+
+- **`llampaca/gui/models/gguf_model.js`** & **`llampaca/gui/controllers/models_controller.js`** — Replaced GGUF models mocks with async API requests.
+  - *Why:* Wires the Models tab layout to display actual downloaded GGUF files and dynamically trigger model switching at runtime.
+
+### Changed — system prompt: web_search anche quando il modello è incerto
+
+- **`llampaca/agent/loop.py`** — `DEFAULT_SYSTEM_PROMPT`: il trigger per
+  `web_search` ora include anche i casi in cui il modello non sa o non è
+  sicuro di un fatto ("or anything you are unsure of or do not know"),
+  non solo eventi correnti / fatti cambiati dopo il training.
+- **Motivo:** i modelli piccoli tendono ad allucinare fatti statici che non
+  conoscono invece di cercarli. La frase è stata riscritta (non aggiunta) per
+  non allungare il prompt — importante soprattutto in modalità prompt-based
+  (Gemma), dove le istruzioni tool vivono già dentro il system prompt.
+
 ## [2026-07-18]
+
+### Changed — default context window doubled: 4096 → 8192 tokens
+
+- **`llampaca/config.py`** — `DEFAULT_CONFIG["context_size"]` 4096 → 8192.
+- **`llampaca/engine/server.py`** — chat-mode fallback (used when
+  config.json lacks the key) aligned to 8192. The EMBEDDING server's
+  context stays 4096 on purpose: it is sized for one ~500-token chunk,
+  not for conversation.
+- **`llampaca/agent/loop.py`** — `Agent(context_size=...)` signature
+  default aligned to 8192 (the CLI always passes the resolved value; this
+  only affects programmatic users).
+- **`README.md`** — `--ctx` table default and config example updated.
+- Also updated the user's existing `~/.llampaca/config.json` (which
+  pinned the old 4096 — `load_config()` only fills MISSING keys, so the
+  code-side default alone would never have taken effect for them).
+- *Why:* requested by the user. More room for the agentic loop (system
+  prompt + wiki index + tool results + history) before trimming kicks in.
+  Cost: the KV cache doubles; with q8_0 cache quantization and ~4B models
+  this stays well within the machine's budget. Derived values scale
+  automatically: attachment budget (~35% of ctx) and the per-tool-result
+  cap (ctx-proportional) both grow with the window.
+
+### Added — personal wiki: persistent cross-session memory (`/remember`)
+
+- **`llampaca/config.py`** — new `WIKI_DIR` (`~/.llampaca/wiki/`), created by
+  `ensure_dirs()`. The wiki lives in app data, NOT in the launch workspace:
+  it is the user's memory, shared by every project.
+- **`llampaca/wiki.py`** (new) — pure file logic: `slugify()` (page names
+  normalized to `[a-z0-9-]`, so model-provided names can never traverse
+  paths), page CRUD with a size cap (~1500 est. tokens — a page must always
+  be whole-readable inside `--ctx 4096`), and `render_index()` (the wiki
+  section of the system prompt, capped at 30 listed pages, explicit "the
+  wiki is empty" message so the model knows it can create the first page).
+  Deliberately NO embeddings/RAG: a personal wiki is a few dozen titled
+  markdown pages, and a title index plus deterministic whole-page reads is
+  more reliable for small local models than fuzzy retrieval. Pages are
+  human-editable markdown on purpose (inspect/correct/delete with any
+  editor).
+- **`llampaca/tools/wiki.py`** (new) — `read_wiki_page` (no confirmation;
+  a missing page lists the existing names so the model self-corrects) and
+  `update_wiki_page` (**confirmation-gated** like every other write: a
+  trigger-happy model costs one keystroke, never a polluted wiki). The
+  "only durable facts, never secrets, overwrite means whole page" policy
+  lives in the tool docstring — next to the capability it governs. No
+  delete tool: removing memories is a user action on the files.
+- **`llampaca/tools/__init__.py`** — wiki tools added to
+  `build_default_registry()`: unlike `search_documents` (per-conversation,
+  registered on demand) the wiki is global and always available.
+- **`llampaca/cli.py`** — (1) the wiki index is appended to the system
+  prompt at session start (static for the session by design: rebuilding on
+  every write would invalidate llama-server's prefix cache; a page written
+  mid-session is confirmed by its tool result); skipped under `--no-tools`.
+  (2) New `/remember <fact>` chat command: the fact is forwarded to the
+  model as a normal turn so IT picks/creates the right page, and the write
+  still passes through the confirmation prompt. The instruction demands the
+  fact be copied FAITHFULLY: e2e verification showed Gemma-3-4B
+  (prompt-based tool mode) inventing page content / copying the stale index
+  description instead of the new fact — Qwen3.5-4B (native mode) stores it
+  verbatim; with weaker models the confirmation prompt (which shows the
+  exact content) is the safety net. (3) Session header advertises
+  `/remember`.
+- **`tests/test_wiki.py`** (new) — 20 offline tests: slugify/traversal,
+  page CRUD + size caps, index rendering (empty/full/truncated), tool
+  registration, confirmation flags, and error-as-string contract. All
+  tests run against a tmp wiki dir; full suite: 96 passed.
+- *Why:* the assistant had per-conversation memory (history.db) and
+  per-document knowledge (RAG attachments) but nothing that crossed
+  sessions; the wiki gives small local models durable personalization at
+  zero new dependencies (TODO: "llm wiki o rag, second brain per
+  personalizzazione utente").
 
 ### Added — generation speed (tokens/second) in the turn footer
 
@@ -456,6 +983,47 @@ This project adheres to Semantic Versioning and complies with development loggin
   ranks the lease-contract sentence far above two distractors (cosine 0.755
   vs 0.271/0.111). Chat session re-verified unaffected after the
   `_build_command()` refactor.
+
+## [2026-07-17]
+
+### Added — External Model Context Protocol (MCP) Client support
+
+- **`llampaca/config.py`** — Added `load_mcp_config()` and `save_mcp_config()` to support `mcp_config.json` configuration file, isolation, and default values.
+  - *Why:* Keeps user-modifiable MCP settings (configured servers and repository sources) isolated from the core settings in `config.json`, enabling easy factory resets.
+
+- **`llampaca/tools/registry.py`** — Made `ToolRegistry.execute` asynchronous and updated it to support both standard synchronous tools and asynchronous coroutines or awaitable tool wrappers.
+  - *Why:* Allows the registry to execute asynchronous tools, which is necessary when invoking external MCP server operations via async sessions.
+
+- **`llampaca/agent/loop.py`** — Updated the tool execution step inside the agentic loop to await the now-asynchronous `self.registry.execute`.
+  - *Why:* Adapts the agent core loop to handle async tool executions.
+
+- **`llampaca/engine/mcp_client.py`** — Created a new client manager class `McpClientManager` to start external MCP servers using standard stdio JSON-RPC transport, fetch their tools, format various server payload responses, and dynamically register tools under a prefixed namespace (e.g. `gmail__send_email`). Included dangerous keywords heuristics and config overrides for tool confirmation rules.
+  - *Why:* Encapsulates external MCP server lifetime management and dynamic tool routing safely.
+
+- **`llampaca/cli.py`** — Integrated `McpClientManager` startup and shutdown lifecycle hooks into the `async_run_chat` command. Added the new `llampaca integrations` Click command group (supporting list, browse via Glama API, add, remove, and repo management).
+  - *Why:* Connects the user's configured MCP servers when starting the CLI session and provides a user-friendly terminal interface to discover and manage MCP integrations.
+
+- **`tests/test_mcp_client.py`** — Added unit tests verifying `load_mcp_config`, `save_mcp_config`, integrations subcommands, repository changes, config overrides, default dangerous heuristics, result formatting, dynamic wrapping, and manager subprocess controls.
+  - *Why:* Guarantees the robustness of the external MCP integration, unified config loading, and CLI commands, preventing regressions.
+
+- **`README.md`** — Documented Model Context Protocol (MCP) server integration, CLI `llampaca integrations` command suite, configuration path (`~/.llampaca/mcp_config.json`), and checked off MCP in the roadmap section.
+  - *Why:* Provides clear instructions for users on how to search, add, remove, and manage external MCP server tools in Llampaca.
+
+## [2026-07-16]
+
+### Added — Model Context Protocol (MCP) Server support for VSCode integration
+
+- **`pyproject.toml`** — Added `mcp>=1.0.0` dependency.
+  - *Why:* Enables using the official Anthropic MCP SDK in python to implement a stdio-based MCP server.
+
+- **`llampaca/engine/mcp_server.py`** — Implemented MCP server initialization using `FastMCP` that dynamically maps all registered tools from Llampaca's registry.
+  - *Why:* Exposes the filesystem, web search, and shell tools of Llampaca to external AI clients.
+
+- **`llampaca/cli.py`** — Added `llampaca mcp` Click command to start the MCP server, and `llampaca serve` command to run the local LLM server in the foreground without opening a chat session.
+  - *Why:* Gives a clean and dedicated way to start either the tool server or the LLM server separately, which is ideal for external VSCode integration.
+
+- **`tests/test_mcp_server.py`** — Created new unit tests verifying the MCP server creation and correct mapping of all registry tools.
+  - *Why:* Ensures functionality and protects against mapping regressions.
 
 ### Added — Transparent context window summarization with SQLite persistence
 

@@ -54,6 +54,8 @@ from llampaca.tools.registry import ToolRegistry
 # message. Prevents a confused model from looping on tool calls forever.
 MAX_ITERATIONS = 10
 
+DECLINED_MARKER = "[DECLINED]"
+
 # Minimum number of recent messages (turns) that are guaranteed to remain
 # in the active context window and never get trimmed/summarized.
 MIN_ACTIVE_WINDOW = 6
@@ -81,7 +83,7 @@ CONTEXT_LOW_WATERMARK = 0.60   # ...and cut it down to this fraction
 # can share the same heuristic without importing this module — this
 # re-export keeps existing `from llampaca.agent.loop import CHARS_PER_TOKEN`
 # users working.
-from llampaca.config import CHARS_PER_TOKEN
+from llampaca.config import CHARS_PER_TOKEN, DEFAULT_CONTEXT_SIZE
 
 # Fixed per-message overhead, in tokens: every message costs a few extra
 # tokens for its role marker and the chat template's framing around it.
@@ -89,15 +91,14 @@ MESSAGE_OVERHEAD_TOKENS = 4
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Llampaca, a helpful local AI personal assistant running entirely "
-    "on the user's machine. You can use the available tools to read and write "
+    "on the user's machine. You can use the available tools to generate images, read and write "
     "files in the user's workspace, run shell commands, search the web, and "
-    "fetch web pages. When the user asks about current events or facts that may "
-    "have changed since your training, use web_search to find up-to-date "
-    "information rather than answering from memory, and cite what you found. "
-    # Language models tokenize text, so they cannot reliably see individual
-    # characters and are notoriously bad at counting them or at exact
-    # arithmetic. The shell can do both perfectly, so we steer the model to
-    # compute these answers instead of guessing them.
+    "fetch web pages. "
+    "CRITICAL RULE FOR IMAGE GENERATION: Whenever the user asks to generate, create, draw, or render an image, picture, visual, or illustration, you MUST IMMEDIATELY call the 'generate_image' tool on the FIRST turn. Never describe or pretend to generate an image in plain text without calling the 'generate_image' tool! "
+    "CRITICAL RULE FOR SKILLS: If the user's request matches any Available Markdown Skill listed below (such as creating/editing Word .docx files using the 'docx' skill, etc.), you MUST call read_skill_page('<skill_slug>') FIRST to read the complete workflow and instructions before calling file or shell tools! "
+    "When the user asks about current events or facts that may "
+    "have changed since your training, or anything you are unsure of or do "
+    "not know, use web_search rather than guessing, and cite what you found. "
     "You cannot see individual characters in text and you cannot do reliable "
     "arithmetic in your head. For anything that must be exact — counting "
     "characters, letters, words or lines, reversing or sorting text, and "
@@ -123,8 +124,9 @@ class Agent:
         confirm: Optional[Callable[[str], Any]] = None,
         model: str = "local-model",
         max_iterations: int = MAX_ITERATIONS,
-        context_size: int = 4096,
+        context_size: int = DEFAULT_CONTEXT_SIZE,
         summary: Optional[str] = None,
+        no_think: bool = False,
     ):
         """
         Args:
@@ -198,6 +200,13 @@ class Agent:
         # keeps those operations idempotent: no duplicated tool sections.
         self._base_system_prompt = f"{base_prompt} Today's date is {today}."
 
+        # Skip the reasoning phase on every request of this session. The CLI
+        # sets the equivalent on the server at launch (--no-think); this is the
+        # per-request form, so the GUI can flip it between turns without a
+        # restart. Only effective when the GGUF's chat template implements the
+        # toggle — official Qwen GGUFs do.
+        self.no_think = no_think
+
         # Full conversation history, in OpenAI messages format.
         # Kept on the instance so multiple send() calls form one conversation.
         self.messages: List[Dict[str, Any]] = [
@@ -243,6 +252,7 @@ class Agent:
         summarize_pending() (see that method for the rationale).
         """
         self.messages.append({"role": "user", "content": user_input, "id": message_id})
+        last_image_result = None
 
         for _ in range(self.max_iterations):
             # Keep the history inside the context budget before *every*
@@ -290,7 +300,8 @@ class Agent:
             buffering = prompt_mode
             try:
                 async for kind, data in self.client.chat_stream_events(
-                    messages_to_send, model=self.model, tools=tools
+                    messages_to_send, model=self.model, tools=tools,
+                    no_think=self.no_think
                 ):
                     if kind == "text":
                         produced_text = True
@@ -350,7 +361,36 @@ class Agent:
                         "Switching to prompt-based tools for this session.",
                     )
                     continue  # retry the same turn in prompt mode
-                yield ("error", self._describe_error(e))
+                error_desc = self._describe_error(e)
+                yield ("text", "\n\n❌ **ATTENZIONE:**\n\n")
+                
+                explanation_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Sei l'assistente AI integrato in Llampaca (un'applicazione desktop locale per modelli di linguaggio e integrazioni MCP).\n"
+                            "L'utente ha riscontrato un errore tecnico nell'agente. "
+                            "Analizza l'errore e spiegalo in italiano in modo semplice, cordiale e diretto.\n"
+                            "Fornisci istruzioni precise relative all'interfaccia grafica di Llampaca per risolverlo:\n"
+                            "- Di' all'utente che può aumentare la dimensione del contesto (Context Size / Max tokens per la sessione) cliccando sulla scheda 'Impostazioni' (Settings) dell'applicazione e inserendo un valore maggiore (es. 65536 o 98304).\n"
+                            "- Se l'errore riguarda i token di contesto esauriti a causa di troppi strumenti MCP (come accade se si attiva un server con decine/centinaia di tool), consiglia di andare nella scheda 'MCP' per disinstallare i server MCP superflui o disattivare quelli con troppi tool.\n"
+                            "Parla al plurale come Llampaca o come assistente di Llampaca, usa formattazione markdown chiara e sii molto specifico."
+                        )
+                    },
+                    {"role": "user", "content": f"spiegami questo errore: {error_desc}"}
+                ]
+                
+                full_explanation = "❌ **ATTENZIONE:**\n\n"
+                try:
+                    async for chunk in self.client.chat_stream(explanation_messages, model=self.model):
+                        yield ("text", chunk)
+                        full_explanation += chunk
+                except Exception as stream_err:
+                    fallback_err = f"Non è stato possibile caricare i dettagli dell'errore tramite il modello: {stream_err}.\n\nL'errore originale riscontrato è:\n`{error_desc}`"
+                    yield ("text", fallback_err)
+                    full_explanation += fallback_err
+                
+                self.messages.append({"role": "assistant", "content": full_explanation})
                 return
 
             if assistant_message is None:
@@ -386,6 +426,11 @@ class Agent:
                     "role": "user",
                     "content": f"[Result of tool '{name}']\n{result}",
                 })
+                if result.startswith(DECLINED_MARKER):
+                    cancel_msg = "\n\n⚠️ **Operazione annullata:** L'utente ha rifiutato l'autorizzazione per eseguire l'operazione."
+                    yield ("text", cancel_msg)
+                    self.messages.append({"role": "assistant", "content": cancel_msg.strip()})
+                    return
                 continue  # let the model see the result
 
             # --- 2b. Native mode: structured tool_calls from the server -
@@ -393,6 +438,11 @@ class Agent:
 
             tool_calls = assistant_message.get("tool_calls")
             if not tool_calls:
+                if last_image_result and last_image_result not in (assistant_message.get("content") or ""):
+                    extra_preview = f"\n\n{last_image_result}"
+                    current_c = assistant_message.get("content") or ""
+                    assistant_message["content"] = current_c + extra_preview
+                    yield ("text", extra_preview)
                 return  # no tools requested: final answer for this turn
 
             for tool_call in tool_calls:
@@ -403,12 +453,21 @@ class Agent:
                 result = await self._execute_with_confirmation(name, arguments_json)
                 yield ("tool_result", {"name": name, "result": result})
 
+                if name == "generate_image" and ("![" in result or "/api/media" in result or "file://" in result):
+                    last_image_result = result
+
                 # Feed the result back to the model, linked to its call id
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
                     "content": result,
                 })
+
+                if result.startswith(DECLINED_MARKER):
+                    cancel_msg = "\n\n⚠️ **Operazione annullata:** L'utente ha rifiutato l'autorizzazione per eseguire l'operazione."
+                    yield ("text", cancel_msg)
+                    self.messages.append({"role": "assistant", "content": cancel_msg.strip()})
+                    return
 
             # --- 3. Loop: let the model see the results and continue ----
 
@@ -744,15 +803,27 @@ class Agent:
                 )
             prompt = self._format_confirmation(name, arguments_json)
 
+            try:
+                sig = inspect.signature(self.confirm)
+                num_params = len(sig.parameters)
+            except Exception:
+                num_params = 1
+
             if inspect.iscoroutinefunction(self.confirm):
-                confirmed = await self.confirm(prompt)
+                if num_params >= 3:
+                    confirmed = await self.confirm(prompt, name, arguments_json)
+                else:
+                    confirmed = await self.confirm(prompt)
             else:
-                confirmed = self.confirm(prompt)
+                if num_params >= 3:
+                    confirmed = self.confirm(prompt, name, arguments_json)
+                else:
+                    confirmed = self.confirm(prompt)
 
             if not confirmed:
-                return "The user declined to execute this action."
+                return f"{DECLINED_MARKER} L'utente ha rifiutato l'autorizzazione per eseguire l'operazione '{name}'."
 
-        return self.registry.execute(name, arguments_json)
+        return await self.registry.execute(name, arguments_json)
 
     @staticmethod
     def _format_confirmation(name: str, arguments_json: str) -> str:

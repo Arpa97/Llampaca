@@ -1,0 +1,511 @@
+import { ChatModel } from '../models/chat_model.js';
+
+const { ref, watch, nextTick, computed } = Vue;
+
+export function useChatController() {
+    const model = new ChatModel();
+    const conversations = ref([]);
+    const activeConversationId = ref(null);
+    const activeMessages = ref([]);
+    const userInput = ref('');
+    const messagesContainer = ref(null);
+    const contextBudget = ref(null);
+    const pendingConfirmations = ref([]);
+    const currentConfirmation = computed(() => pendingConfirmations.value.length ? pendingConfirmations.value[0] : null);
+    // Files uploaded for the next message but not yet sent. Each entry:
+    // { name, status: 'uploading'|'done'|'error', kind: 'inject'|'rag'|null,
+    //   detail: string }. Cleared once the message that carries them is sent
+    // (the backend merges them into that turn) and on conversation switch.
+    const attachments = ref([]);
+    const isDragging = ref(false);
+    // True while a response is streaming: drives the Stop button and blocks a
+    // second concurrent send. `abortController` lets Stop abort the fetch so
+    // the UI frees immediately, in addition to telling the backend to cancel.
+    const isStreaming = ref(false);
+    let abortController = null;
+    // The conversation the staged files belong to. Used to clear the chips
+    // when the user navigates to a DIFFERENT conversation, without clobbering
+    // chips that were just added to a conversation created on the fly by the
+    // attach flow itself (which also changes activeConversationId).
+    const attachmentsConvId = ref(null);
+
+    // Load initial list of conversations from database
+    const loadConversations = async () => {
+        try {
+            conversations.value = await model.getConversations();
+            if (conversations.value.length && activeConversationId.value === null) {
+                activeConversationId.value = conversations.value[0].id;
+            }
+        } catch (err) {
+            console.error("Errore caricamento conversazioni:", err);
+        }
+    };
+
+    // Watch activeConversationId and load full history for the selected conversation
+    watch(activeConversationId, async (newVal) => {
+        pendingConfirmations.value = [];
+        // Staged files belong to a single conversation (the backend keys its
+        // pending list by conversation id); leaving for a DIFFERENT one
+        // abandons its chips so they can't be sent with the wrong message.
+        // The `!==` guard keeps chips that the attach flow just added to a
+        // conversation it created on the fly (which triggers this same watch).
+        if (attachmentsConvId.value !== newVal) {
+            attachments.value = [];
+        }
+        if (!newVal) {
+            activeMessages.value = [];
+            return;
+        }
+        // If a message is actively streaming, don't overwrite activeMessages with stale fetch
+        if (isStreaming.value) return;
+        try {
+            const detail = await model.getConversation(newVal);
+            if (!isStreaming.value) {
+                activeMessages.value = detail ? detail.messages : [];
+                scrollToBottom();
+            }
+        } catch (err) {
+            console.error("Errore caricamento dettaglio conversazione:", err);
+        }
+    }, { immediate: true });
+
+    // Create a conversation on demand if none is active, returning its id.
+    // Shared by sendMessage and the attach flow (you can drop a file before
+    // typing anything, which must land in a real conversation).
+    const ensureConversation = async () => {
+        if (activeConversationId.value !== null) return activeConversationId.value;
+        const nextNum = conversations.value.length + 1;
+        const newConv = await model.addConversation(`Conversazione ${nextNum}`);
+        conversations.value = await model.getConversations();
+        activeConversationId.value = newConv.id;
+        return newConv.id;
+    };
+
+    const scrollToBottom = () => {
+        nextTick(() => {
+            if (messagesContainer.value) {
+                messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+            }
+        });
+    };
+
+    // Core of a chat turn, shared by the normal send and the "remember"
+    // button. `backendText` is what the server actually receives (e.g. a
+    // "/remember <fact>" command); `displayText` is what the user's bubble
+    // shows. They are identical for a normal message and differ only for the
+    // remember shortcut. Callers own the guard checks and clearing the input.
+    const startTurn = async (backendText, displayText) => {
+        let convId = activeConversationId.value;
+        const promptText = backendText;
+
+        const now = new Date();
+        const timeStr = now.toTimeString().split(' ')[0];
+
+        // Automatic on-demand conversation creation if none is active
+        if (convId === null) {
+            try {
+                convId = await ensureConversation();
+            } catch (err) {
+                console.error("Errore creazione automatica conversazione:", err);
+                return;
+            }
+        }
+
+        // The staged files are consumed by the backend the moment this
+        // message is posted (it merges them into this user turn), so clear
+        // their chips now — but first capture their names so the sent bubble
+        // shows WHAT was attached. Errored uploads never reached the backend,
+        // so they are excluded.
+        const attachedNames = attachments.value
+            .filter(a => a.status !== 'error')
+            .map(a => a.name);
+        attachments.value = [];
+
+        // 1. Immediately append user message to UI. Prepend a "📎 name" line
+        // per attachment so it is visible in the transcript that this turn
+        // carried files (and the model is answering on their basis). This
+        // matches how a reloaded conversation renders: the backend persists
+        // the full document blocks, which parseMarkdown collapses to the same
+        // "📎 name" chips.
+        let displayContent = displayText;
+        if (attachedNames.length) {
+            const chips = attachedNames.map(n => `📎 *${n}*`).join('\n');
+            displayContent = promptText ? `${chips}\n\n${promptText}` : chips;
+        }
+        activeMessages.value.push({
+            role: 'user',
+            content: displayContent,
+            timestamp: timeStr
+        });
+        scrollToBottom();
+
+        // 2. Append a placeholder assistant message that will stream the content
+        const assistantIndex = activeMessages.value.push({
+            role: 'agent',
+            content: '',
+            thought: 'Penso...',
+            timestamp: ''
+        }) - 1;
+
+        // Mark streaming and arm the abort controller for the Stop button.
+        isStreaming.value = true;
+        abortController = new AbortController();
+
+        try {
+            // Initiate send to backend API
+            const stream = await model.addMessage(convId, 'user', promptText, abortController.signal);
+            const reader = stream.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let buffer = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop(); // Keep last incomplete line in buffer
+
+                for (const line of lines) {
+                    if (line.trim().startsWith("data: ")) {
+                        try {
+                            const payload = JSON.parse(line.trim().slice(6));
+                            const kind = payload.kind;
+                            const data = payload.data;
+
+                            const getMsg = () => activeMessages.value[assistantIndex];
+
+                            if (kind === "status_update") {
+                                const msg = getMsg();
+                                if (msg) msg.thought = data;
+                                scrollToBottom();
+                            } else if (kind === "text") {
+                                // Accumulate streaming text
+                                const msg = getMsg();
+                                if (msg) {
+                                    if (msg.thought) msg.thought = '';
+                                    msg.content += data;
+                                }
+                                scrollToBottom();
+                            } else if (kind === "tool_call") {
+                                const msg = getMsg();
+                                if (msg) msg.thought = `Uso lo strumento: ${data.name}...`;
+                                console.log(`[tool] ${data.name}(${JSON.stringify(data.arguments)})`);
+                                scrollToBottom();
+                            } else if (kind === "tool_result") {
+                                const msg = getMsg();
+                                if (msg) msg.thought = `Elaboro il risultato di: ${data.name}...`;
+                                let preview = data.result.replace(/\n/g, " ");
+                                if (preview.length > 100) preview = preview.slice(0, 100) + "...";
+                                console.log(`[risultato] ${preview}`);
+                                scrollToBottom();
+                            } else if (kind === "context_status") {
+                                // Turn footer: context occupancy (same estimate
+                                // the CLI uses), plus generation speed and the
+                                // elapsed time for the whole turn.
+                                contextBudget.value = data;
+                            } else if (kind === "title_updated") {
+                                const conv = conversations.value.find(c => c.id === convId);
+                                if (conv) conv.title = data.title;
+                            } else if (kind === "tool_confirm_request") {
+                                pendingConfirmations.value.push(data);
+                                const msg = getMsg();
+                                if (msg) msg.thought = `⚠️ Autorizzazione richiesta per l'operazione: ${data.name}...`;
+                                scrollToBottom();
+                            } else if (kind === "warning") {
+                                console.warn(`[avviso] ${data}`);
+                            } else if (kind === "error") {
+                                console.error(`[errore] ${data}`);
+                                const msg = getMsg();
+                                if (msg) {
+                                    msg.thought = '';
+                                    msg.content += `\n❌ **[Errore di sistema, vedi console]**`;
+                                }
+                                scrollToBottom();
+                            } else if (kind === "cancelled") {
+                                // Backend confirmed the stop: keep whatever was
+                                // streamed, drop the "thinking" line, mark it.
+                                markStopped(assistantIndex);
+                            } else if (kind === "done") {
+                                const msg = getMsg();
+                                if (msg) {
+                                    msg.thought = '';
+                                    msg.timestamp = new Date().toTimeString().split(' ')[0];
+                                }
+                                // Reload conversations list to update sidebar titles if needed
+                                conversations.value = await model.getConversations();
+                            }
+                        } catch (e) {
+                            console.error("Errore parsing SSE line:", e, line);
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            // AbortError = the user pressed Stop; not a real failure. Keep the
+            // partial answer and mark it stopped instead of showing an error.
+            if (err && err.name === 'AbortError') {
+                markStopped(assistantIndex);
+            } else {
+                activeMessages.value[assistantIndex].content = `Errore di connessione: ${err.message}`;
+                activeMessages.value[assistantIndex].timestamp = 'Errore';
+            }
+        } finally {
+            isStreaming.value = false;
+            abortController = null;
+        }
+    };
+
+    // --- "Risposte dirette" (⚡) --------------------------------------
+    // Salta la fase di ragionamento del modello. Sta qui e non nelle
+    // impostazioni perché è una scelta PER TURNO, non una configurazione:
+    // ragionare serve per un compito in più passaggi, non per un saluto.
+    // Misurato su Qwen3-4B per un "ciao": 1906 token in 75,7s con il
+    // ragionamento, 12 token in 0,8s senza.
+    //
+    // Il valore vive in config.json (stessa chiave che usa la CLI), così la
+    // scelta sopravvive alla chiusura dell'app. Il backend lo applica per
+    // singola richiesta: vale dal messaggio successivo, senza riavvii.
+    const directMode = ref(false);
+
+    const loadDirectMode = async () => {
+        try {
+            const r = await fetch(`/api/settings?_t=${Date.now()}`);
+            if (!r.ok) return;
+            directMode.value = !!(await r.json()).no_think;
+        } catch (e) {
+            console.error("Errore nel caricamento di 'risposte dirette':", e);
+        }
+    };
+
+    const toggleDirect = async () => {
+        const next = !directMode.value;
+        // Ottimistico: il pulsante risponde subito, e se il salvataggio
+        // fallisce torna indietro invece di mentire sullo stato reale.
+        directMode.value = next;
+        try {
+            const r = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ no_think: next })
+            });
+            if (!r.ok) throw new Error(await r.text());
+        } catch (e) {
+            directMode.value = !next;
+            console.error("Impossibile cambiare 'risposte dirette':", e);
+            if (window.showToast) window.showToast("Impostazione non salvata", "error");
+        }
+    };
+
+    // The 🧠 "remember" flag. When armed (toggled on), the NEXT message the
+    // user sends is stored as a durable memory instead of being a normal turn.
+    // It is a toggle, not an immediate action: clicking only arms/disarms it.
+    const rememberMode = ref(false);
+    const toggleRemember = () => {
+        rememberMode.value = !rememberMode.value;
+    };
+
+    // Public: send whatever is in the input box (plus any staged files) as a
+    // chat turn. If the remember flag is armed and there is text, the turn is
+    // routed through the existing "/remember <fact>" path (the model stores it
+    // on the right wiki page via update_wiki_page, with the usual confirmation
+    // prompt) and the user's bubble shows a clean "🧠 <fact>" line instead of
+    // the raw command. The flag is consumed (disarmed) after the send.
+    const sendMessage = async () => {
+        // Ignore a send while a response is still streaming (the button is a
+        // Stop button then anyway).
+        if (isStreaming.value) return;
+        // Allow sending with only attachments (e.g. "riassumi" typed later),
+        // but never a completely empty turn.
+        if (!userInput.value.trim() && !attachments.value.length) return;
+        const text = userInput.value;
+        userInput.value = '';
+
+        if (rememberMode.value && text.trim()) {
+            rememberMode.value = false;
+            await startTurn(`/remember ${text.trim()}`, `🧠 ${text.trim()}`);
+        } else {
+            // Flag armed but nothing to remember (only attachments): disarm it
+            // and fall back to a normal turn rather than silently swallowing it.
+            if (rememberMode.value) rememberMode.value = false;
+            await startTurn(text, text);
+        }
+    };
+
+    // Finalize a stopped assistant bubble: drop the "thinking" line, keep any
+    // partial text (or a marker if none), stamp the time. Idempotent, so it is
+    // safe whether the stop arrives via AbortError or the "cancelled" event.
+    const markStopped = (assistantIndex) => {
+        const msg = activeMessages.value[assistantIndex];
+        if (!msg) return;
+        msg.thought = '';
+        if (!msg.content) msg.content = '_(generazione interrotta)_';
+        if (!msg.timestamp) msg.timestamp = new Date().toTimeString().split(' ')[0];
+    };
+
+    // Stop button: tell the backend to cancel (stops the model), abort the
+    // fetch so the UI frees immediately, and clear any pending tool prompt.
+    const stopGeneration = async () => {
+        if (!isStreaming.value) return;
+        try {
+            await model.cancel();
+        } catch (e) {
+            console.error("Errore durante l'annullamento:", e);
+        }
+        if (abortController) abortController.abort();
+        pendingConfirmations.value = [];
+        isStreaming.value = false;
+    };
+
+    const startNewConversation = async () => {
+        try {
+            const nextNum = conversations.value.length + 1;
+            const newConv = await model.addConversation(`Conversazione ${nextNum}`);
+            conversations.value = await model.getConversations();
+            activeConversationId.value = newConv.id;
+        } catch (err) {
+            console.error("Errore creazione conversazione:", err);
+        }
+    };
+
+    const deleteConversation = async (id) => {
+        // Eliminare una conversazione cancella anche i suoi messaggi (ON DELETE
+        // CASCADE) e l'indice degli allegati: è irreversibile. Era l'unica
+        // azione distruttiva della GUI senza conferma — le altre (pagine wiki,
+        // skill, strumenti, modelli, integrazioni) la chiedono già così.
+        const conv = conversations.value.find(c => c.id === id);
+        const title = conv ? conv.title : id;
+        if (!window.confirm(`Eliminare la conversazione "${title}"? L'azione è irreversibile.`)) return;
+        try {
+            await model.deleteConversation(id);
+            conversations.value = await model.getConversations();
+            if (activeConversationId.value === id) {
+                activeConversationId.value = conversations.value.length ? conversations.value[0].id : null;
+            }
+        } catch (err) {
+            console.error("Errore eliminazione conversazione:", err);
+        }
+    };
+
+    const resolveConfirmation = async (allow) => {
+        if (!pendingConfirmations.value.length) return;
+        const current = pendingConfirmations.value.shift();
+        const confirmId = current.confirm_id;
+        
+        try {
+            await fetch('/api/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm_id: confirmId, allow: allow })
+            });
+        } catch (e) {
+            console.error("Failed to send confirmation", e);
+        }
+    };
+
+    // Upload one file: shows an "uploading" chip immediately, then flips it
+    // to done/error based on the backend's response. Each file is staged for
+    // the current conversation's next message.
+    const uploadOne = async (file, convId) => {
+        const chip = {
+            name: file.name,
+            status: 'uploading',
+            kind: null,
+            detail: ''
+        };
+        attachments.value.push(chip);
+        try {
+            const res = await model.uploadAttachment(convId, file);
+            chip.status = 'done';
+            chip.kind = res.kind;
+            if (res.kind === 'rag') {
+                chip.detail = `indicizzato (${res.chunks} passaggi)`;
+            } else {
+                chip.detail = `${res.budget_used_pct}% del budget`;
+            }
+        } catch (err) {
+            chip.status = 'error';
+            chip.detail = err.message;
+            console.error(`Errore upload '${file.name}':`, err);
+        }
+    };
+
+    // Entry point for both the 📎 button and drag-and-drop: ensure a
+    // conversation exists, then upload every chosen file (sequentially, so
+    // the cumulative-budget check on the backend is deterministic).
+    const attachFiles = async (fileList) => {
+        const files = Array.from(fileList || []);
+        if (!files.length) return;
+        let convId;
+        try {
+            convId = await ensureConversation();
+        } catch (err) {
+            console.error("Impossibile creare la conversazione per l'allegato:", err);
+            return;
+        }
+        // Tag the chips with their conversation BEFORE the first upload so the
+        // activeConversationId watcher (which may have fired when a new
+        // conversation was created above) does not wipe them.
+        attachmentsConvId.value = convId;
+        for (const file of files) {
+            await uploadOne(file, convId);
+        }
+    };
+
+    // Remove a not-yet-sent chip. This only drops it from the UI; the
+    // backend clears its whole pending list when the next message is sent,
+    // and a chip removed here simply won't have a matching send.
+    const removeAttachment = (index) => {
+        attachments.value.splice(index, 1);
+    };
+
+    // --- Drag and drop over the chat area -----------------------------
+    const onDragOver = (e) => {
+        e.preventDefault();
+        isDragging.value = true;
+    };
+    const onDragLeave = (e) => {
+        e.preventDefault();
+        isDragging.value = false;
+    };
+    const onDrop = (e) => {
+        e.preventDefault();
+        isDragging.value = false;
+        if (e.dataTransfer && e.dataTransfer.files) {
+            attachFiles(e.dataTransfer.files);
+        }
+    };
+
+    // Load list at mount
+    loadConversations();
+    loadDirectMode();
+
+    return {
+        conversations,
+        activeConversationId,
+        userInput,
+        messagesContainer,
+        contextBudget,
+        pendingConfirmations,
+        currentConfirmation,
+        attachments,
+        isDragging,
+        isStreaming,
+        getActiveMessages: activeMessages,
+        sendMessage,
+        rememberMode,
+        toggleRemember,
+        directMode,
+        toggleDirect,
+        stopGeneration,
+        startNewConversation,
+        deleteConversation,
+        resolveConfirmation,
+        scrollToBottom,
+        attachFiles,
+        removeAttachment,
+        onDragOver,
+        onDragLeave,
+        onDrop
+    };
+}

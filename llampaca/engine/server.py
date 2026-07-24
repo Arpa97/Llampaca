@@ -5,7 +5,13 @@ import socket
 import subprocess
 from pathlib import Path
 import requests
-from llampaca.config import BIN_DIR, LOGS_DIR, load_config
+from llampaca.config import (
+    BIN_DIR,
+    LOGS_DIR,
+    load_config,
+    DEFAULT_CONTEXT_SIZE,
+    EMBEDDING_CONTEXT_SIZE,
+)
 
 def is_port_in_use(port: int) -> bool:
     """Check if a port is already open on localhost."""
@@ -86,6 +92,16 @@ def cleanup_orphans():
         except OSError:
             pass
 
+_active_server = None
+
+def get_active_server():
+    global _active_server
+    return _active_server
+
+def set_active_server(server):
+    global _active_server
+    _active_server = server
+
 class LlamaServer:
     def __init__(self, model_path: Path, port: int = None, context_size: int = None,
                  n_threads: int = None, gpu_layers: int = None,
@@ -125,10 +141,10 @@ class LlamaServer:
             # (see --parallel in _build_command) so the chunk never has to
             # share it.
             self.port = port or config.get("embedding_port", 8180)
-            self.context_size = context_size or 4096
+            self.context_size = context_size or EMBEDDING_CONTEXT_SIZE
         else:
             self.port = port or config.get("server_port", 8080)
-            self.context_size = context_size or config.get("context_size", 4096)
+            self.context_size = context_size or config.get("context_size", DEFAULT_CONTEXT_SIZE)
         self.n_threads = n_threads or config.get("n_threads", 4)
         self.gpu_layers = gpu_layers if gpu_layers is not None else config.get("gpu_layers", -1)
 
@@ -343,6 +359,8 @@ class LlamaServer:
                             self.pid_file_path.write_text(str(self.process.pid))
                         except OSError:
                             pass
+                        global _active_server
+                        _active_server = self
                         return True
             except requests.RequestException:
                 pass
@@ -395,3 +413,109 @@ class LlamaServer:
         # Destructor to ensure process is stopped if object is garbage collected
         if hasattr(self, "process") and self.process:
             self.stop()
+
+
+def restart_active_server(model_name: str = None, port: int = None, context_size: int = None, n_threads: int = None, gpu_layers: int = None) -> bool:
+    """
+    Restart the llama-server. If the GUI event loop is running, we delegate
+    the restart to the main AgentManager loop task to avoid AnyIO cancel scope conflicts.
+    Otherwise, we fall back to a direct local restart.
+    """
+    try:
+        from llampaca.gui.server import agent_manager
+    except ImportError:
+        agent_manager = None
+
+    if agent_manager and agent_manager.loop and agent_manager.loop.is_running():
+        import concurrent.futures
+        fut = concurrent.futures.Future()
+        params = {
+            "model_name": model_name,
+            "port": port,
+            "context_size": context_size,
+            "n_threads": n_threads,
+            "gpu_layers": gpu_layers
+        }
+        def put():
+            agent_manager.request_queue.put_nowait(("restart_server", params, fut))
+        agent_manager.loop.call_soon_threadsafe(put)
+        return fut.result(timeout=65)
+
+    import asyncio
+    return asyncio.run(_restart_active_server_fallback(model_name, port, context_size, n_threads, gpu_layers))
+
+
+async def _restart_active_server_fallback(model_name: str = None, port: int = None, context_size: int = None, n_threads: int = None, gpu_layers: int = None) -> bool:
+    global _active_server
+    import traceback
+    
+    config = load_config()
+    
+    # 1. Resolve model name/path
+    if not model_name:
+        model_name = config.get("default_model", "")
+        
+    from llampaca.config import MODELS_DIR, MODEL_PRESETS
+    model_path = MODELS_DIR / model_name
+    if not model_path.exists():
+        model_path = Path(model_name)
+        if not model_path.exists():
+            if model_name in MODEL_PRESETS:
+                preset_file = MODEL_PRESETS[model_name]["file"]
+                model_path = MODELS_DIR / preset_file
+                
+    if not model_path.exists():
+        print(f"[Server Restart] Error: Model '{model_name}' could not be resolved.")
+        return False
+
+    # 2. Stop current server if running
+    if _active_server:
+        print(f"[Server Restart] Stopping active server on port {_active_server.port}...")
+        _active_server.stop()
+        # Give a small pause to release port
+        time.sleep(0.5)
+        _active_server = None
+
+    # 3. Resolve parameters
+    resolved_port = port or config.get("server_port", 8080)
+    resolved_ctx = context_size or config.get("context_size", DEFAULT_CONTEXT_SIZE)
+    resolved_threads = n_threads or config.get("n_threads", 4)
+    resolved_gpu = gpu_layers if gpu_layers is not None else config.get("gpu_layers", -1)
+
+    # 4. Instantiate new server
+    new_server = LlamaServer(
+        model_path=model_path,
+        port=resolved_port,
+        context_size=resolved_ctx,
+        n_threads=resolved_threads,
+        gpu_layers=resolved_gpu
+    )
+
+    # 5. Start new server
+    success = await new_server.start()
+    if success:
+        _active_server = new_server
+        # Update LlamaClient port dynamically in GUI agent manager if running
+        try:
+            from llampaca.gui.server import agent_manager
+            if agent_manager:
+                from llampaca.engine.client import LlamaClient
+                agent_manager.client = LlamaClient(port=new_server.port)
+                
+                # Update registry context size limit
+                from llampaca.tools import build_default_registry
+                agent_manager.registry = build_default_registry(max_result_chars=new_server.context_size)
+                
+                # Re-initialize MCP manager with the new registry
+                from llampaca.config import load_mcp_config
+                mcp_config = load_mcp_config()
+                mcp_servers_config = mcp_config.get("mcp_servers", {})
+                if mcp_servers_config:
+                    from llampaca.engine.mcp_client import McpClientManager
+                    agent_manager.mcp_manager = McpClientManager(mcp_servers_config)
+                    await agent_manager.mcp_manager.start(agent_manager.registry)
+        except Exception as e:
+            print(f"[Server Restart] Error updating agent_manager: {e}")
+            traceback.print_exc()
+
+    return success

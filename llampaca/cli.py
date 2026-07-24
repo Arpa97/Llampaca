@@ -13,13 +13,17 @@ from llampaca.config import (
     MODELS_DIR,
     MODEL_PRESETS,
     LLAMPACA_DIR,
-    ensure_dirs
+    ensure_dirs,
+    DEFAULT_CONTEXT_SIZE,
 )
 from llampaca.engine.downloader import download_llama_binaries, download_hf_model
 from llampaca.engine.server import LlamaServer, is_port_in_use
 from llampaca.engine.client import LlamaClient
 from llampaca.agent import Agent
+from llampaca.agent.loop import DEFAULT_SYSTEM_PROMPT
 from llampaca.tools import build_default_registry
+from llampaca import wiki
+from llampaca import skills
 
 def format_size(bytes_size: int) -> str:
     """Format bytes into human-readable size."""
@@ -83,18 +87,21 @@ def list_models():
     preset_table = []
     for name, preset in MODEL_PRESETS.items():
         is_downloaded = "Installed" if (MODELS_DIR / preset["file"]).exists() else "Not Installed"
-        preset_table.append([name, preset["repo"], preset["file"], is_downloaded, preset["description"]])
+        kind_label = preset.get("kind", "chat").upper()
+        preset_table.append([name, kind_label, preset["repo"], preset["file"], is_downloaded, preset["description"]])
         
-    click.echo(tabulate(preset_table, headers=["Preset Name", "HF Repo", "Filename", "Status", "Description"], tablefmt="simple"))
+    click.echo(tabulate(preset_table, headers=["Preset Name", "Kind", "HF Repo", "Filename", "Status", "Description"], tablefmt="simple"))
 
 @models.command(name="download")
+@click.argument("preset_name", required=False)
 @click.option("--preset", type=click.Choice(list(MODEL_PRESETS.keys())), help="Download a recommended model preset")
 @click.option("--repo", help="Hugging Face repository ID (e.g. Qwen/Qwen3.5-4B-Instruct-GGUF)")
 @click.option("--file", help="GGUF filename in the repository")
-def download_model(preset, repo, file):
+def download_model(preset_name, preset, repo, file):
     """Download a GGUF model from Hugging Face."""
-    if preset:
-        preset_info = MODEL_PRESETS[preset]
+    chosen_preset = preset or preset_name
+    if chosen_preset and chosen_preset in MODEL_PRESETS:
+        preset_info = MODEL_PRESETS[chosen_preset]
         repo_id = preset_info["repo"]
         filename = preset_info["file"]
     elif repo and file:
@@ -105,7 +112,8 @@ def download_model(preset, repo, file):
         click.echo("Please choose a model preset to download:")
         presets_list = list(MODEL_PRESETS.keys())
         for idx, name in enumerate(presets_list):
-            click.echo(f"[{idx + 1}] {name} ({MODEL_PRESETS[name]['description']})")
+            kind_tag = f"[{MODEL_PRESETS[name].get('kind', 'chat').upper()}] "
+            click.echo(f"[{idx + 1}] {kind_tag}{name} ({MODEL_PRESETS[name]['description']})")
         click.echo(f"[{len(presets_list) + 1}] Custom Hugging Face model")
         
         choice = click.prompt("Enter choice", type=int)
@@ -139,6 +147,8 @@ def download_model(preset, repo, file):
             config["embedding_model"] = filename
             save_config(config)
             click.echo(f"Successfully downloaded '{filename}' and set it as the embedding model (for document search/RAG).")
+        elif kind == "image":
+            click.echo(f"Successfully downloaded image generation model '{filename}'.")
         else:
             config["default_model"] = filename
             save_config(config)
@@ -287,6 +297,20 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
         max_result_chars=server.context_size
     )
 
+    mcp_manager = None
+    if registry is not None:
+        from llampaca.config import load_mcp_config
+        mcp_config = load_mcp_config()
+        mcp_servers_config = mcp_config.get("mcp_servers", {})
+        legacy_mcp = config.get("mcp_servers", {})
+        if legacy_mcp:
+            mcp_servers_config = {**legacy_mcp, **mcp_servers_config}
+
+        if mcp_servers_config:
+            from llampaca.engine.mcp_client import McpClientManager
+            mcp_manager = McpClientManager(mcp_servers_config)
+            await mcp_manager.start(registry)
+
     # The agent core asks for confirmation through this callback, and we render its events
     def confirm_action(prompt_text: str) -> bool:
         click.echo()  # break out of any partial output line
@@ -299,10 +323,31 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
         summary = conv_data.get("summary")
         last_summarized_id = conv_data.get("last_summarized_message_id")
 
+    # The wiki index (the model's persistent memory: page names +
+    # descriptions) rides in the system prompt so the model knows what it
+    # remembers without a tool call. Static for the session by design: a
+    # page written mid-session is confirmed by its tool result, and
+    # rebuilding the prompt on every write would invalidate llama-server's
+    # prefix cache (same trade-off as refresh_tools). Skipped with
+    # --no-tools: the index describes tools the model would not have.
+    system_prompt = None
+    if registry is not None:
+        system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+        # The Markdown skills index (slug + short description of each
+        # installed skill) also rides in the system prompt so the model
+        # knows which skills exist and can pull the full instructions with
+        # read_skill_page(). Without this the tool is registered but the
+        # model has no way to discover the available slugs. Mirrors what the
+        # GUI server already does per message.
+        skills_idx = skills.render_skills_index()
+        if skills_idx:
+            system_prompt += "\n\n" + skills_idx
+
     agent = Agent(
         client=client,
         registry=registry,
         confirm=confirm_action,
+        system_prompt=system_prompt,
         model=model_path.name,
         # Lets the agent trim old history before the prompt outgrows the
         # window, and powers the context-usage indicator after each turn.
@@ -392,6 +437,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
     else:
         click.echo(" Tools disabled (plain chat mode)")
     click.echo(" Type '/attach <file>' to attach a document (PDF, Word, text).")
+    if registry:
+        click.echo(" Type '/remember <fact>' to store a fact in the wiki "
+                   f"({wiki.WIKI_DIR}).")
     click.echo(" Type '/exit' or '/quit' to close the session.")
     click.echo("=" * 50 + "\n")
 
@@ -548,6 +596,42 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
                 ))
                 continue
 
+            # --- /remember <fact>: store a durable fact in the wiki ------
+            # Not written to disk directly: the fact is forwarded to the
+            # model as a normal turn, so IT picks (or creates) the right
+            # wiki page, and the write still passes through the standard
+            # update_wiki_page confirmation prompt. Deterministic trigger,
+            # model-side organization.
+            if user_input.strip().lower().startswith("/remember"):
+                fact = user_input.strip()[len("/remember"):].strip()
+                if not fact:
+                    click.echo("Usage: /remember <fact to store in the wiki>")
+                    continue
+                if no_tools:
+                    click.echo(click.style(
+                        "  [remember error] Tools are disabled (--no-tools), "
+                        "so the model cannot write to the wiki. Relaunch "
+                        "without --no-tools.", fg="red",
+                    ))
+                    continue
+                # The fact comes FIRST so the auto-title snippet below picks
+                # it up instead of the bracketed instruction.
+                user_input = (
+                    f"{fact}\n\n"
+                    "[The user asked to remember the fact above permanently. "
+                    "Store it in your wiki with update_wiki_page, copying the "
+                    "fact FAITHFULLY — the page content must state exactly "
+                    "the fact above, never something invented. Add it to the "
+                    "existing page it fits best (read the page first and "
+                    "keep its still-valid content), or create a new page if "
+                    "none fits. Then confirm in one short line where you "
+                    "stored it.]"
+                )
+                click.echo(click.style(
+                    "  [remember] asking the model to store this in the wiki "
+                    "(you will be asked to confirm the write)...", fg="cyan",
+                ))
+
             # The user's own words, captured BEFORE any merge below: used
             # for auto-titling, so a conversation is never titled
             # "[Attached file: ..." after a first message with attachments.
@@ -666,20 +750,20 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
             click.echo() # Newline at the end
             turn_seconds = time.monotonic() - turn_started
 
-            # Turn footer: context still free, how long the whole response
-            # took, and the generation speed measured by the server itself
-            # (summed across the turn's requests). The context estimate is
-            # heuristic (chars/4), hence the "~"; the speed part is omitted
-            # when the server sent no timings (older llama.cpp builds).
-            # Rendered dim so it reads as chrome, not as part of the
-            # model's answer.
+            # Turn footer: how much of the context the history now occupies,
+            # how long the whole response took, and the generation speed
+            # measured by the server itself (summed across the turn's
+            # requests). The context estimate is heuristic (chars/4), hence
+            # the "~"; the speed part is omitted when the server sent no
+            # timings (older llama.cpp builds). Rendered dim so it reads as
+            # chrome, not as part of the model's answer.
             used_tokens, total_tokens = agent.context_usage()
-            free_percent = max(0, 100 - (used_tokens * 100 // total_tokens))
+            used_percent = min(100, (used_tokens * 100 // total_tokens)) if total_tokens else 0
             speed = ""
             if gen_tokens and gen_ms > 0:
                 speed = f" | {gen_tokens} tok @ {gen_tokens / (gen_ms / 1000):.1f} tok/s"
             click.echo(click.style(
-                f"  [context: ~{free_percent}% free | took {turn_seconds:.1f}s{speed}]", dim=True
+                f"  [context: ~{used_percent}% used | took {turn_seconds:.1f}s{speed}]", dim=True
             ))
 
             if response_content:
@@ -712,6 +796,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
         config = load_config()
         config["active_conversation_id"] = ""
         save_config(config)
+
+        if mcp_manager:
+            await mcp_manager.stop()
 
         # Shutdown servers: the chat server and, if the session ever
         # indexed or searched documents, the embedding server too
@@ -763,6 +850,68 @@ def run(model_name, port, ctx, threads, gpu, no_tools, no_think):
     import asyncio
     asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think))
 
+@main.command(name="serve")
+@click.argument("model_name", required=False)
+@click.option("--port", type=int, help="Port to run llama-server on")
+@click.option("--api-port", type=int, default=8090, help="Port to run Llampaca API server on")
+@click.option("--ctx", type=int, help="Context size")
+@click.option("--threads", type=int, help="Number of CPU threads to use")
+@click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
+def serve(model_name, port, api_port, ctx, threads, gpu):
+    """Avvia il server Llampaca completo (llama-server + API HTTP) senza interfaccia grafica."""
+    config = load_config()
+    
+    # 1. Resolve model path
+    if not model_name:
+        model_name = config.get("default_model", "")
+        if model_name in MODEL_PRESETS:
+            model_name = MODEL_PRESETS[model_name]["file"]
+            
+    if not model_name:
+        click.echo("Error: No default model configured, and no model specified.")
+        click.echo("Please download a model using: llampaca models download")
+        sys.exit(1)
+        
+    model_path = MODELS_DIR / model_name
+    if not model_path.exists():
+        model_path = Path(model_name)
+        if not model_path.exists():
+            if model_name in MODEL_PRESETS:
+                preset_file = MODEL_PRESETS[model_name]["file"]
+                model_path = MODELS_DIR / preset_file
+                
+    if not model_path.exists():
+        click.echo(f"Error: Model '{model_name}' could not be resolved to a file path.")
+        click.echo(f"Looked in {MODELS_DIR} and current working directory.")
+        sys.exit(1)
+        
+    # Resolve parameters
+    port = port or config.get("server_port", 8080)
+    ctx = ctx or config.get("context_size", DEFAULT_CONTEXT_SIZE)
+    threads = threads or config.get("n_threads", 4)
+    gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
+    
+    # 2. Instantiate and start LlamaServer
+    from llampaca.engine.server import LlamaServer
+    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu)
+    
+    click.echo(f"Starting llama-server on port {port}...")
+    import asyncio
+    if not asyncio.run(server.start()):
+        click.echo("Failed to start llama-server.")
+        sys.exit(1)
+        
+    click.echo(f"llama-server is up and running on port {port}!")
+    
+    # 3. Start API HTTP server
+    from llampaca.gui.server import start_api_server
+    try:
+        start_api_server(port=api_port)
+    finally:
+        click.echo("Shutting down llama-server...")
+        server.stop()
+        click.echo("Server stopped. Goodbye!")
+
 @main.group()
 def history():
     """Gestisci lo storico delle chat."""
@@ -806,6 +955,453 @@ def delete_history(conversation_id, yes):
     # Rimuovi la conversazione (il database gestirà in cascata i messaggi correlati)
     asyncio.run(delete_conversation(conversation_id))
     click.echo(f"Conversazione eliminata con successo: '{conv['title']}' (ID: {conversation_id})")
+
+@main.command(name="mcp")
+def run_mcp_server():
+    """Avvia Llampaca come MCP Server per integrarlo con VSCode o Claude Desktop."""
+    from llampaca.engine.mcp_server import main as start_mcp
+    start_mcp()
+
+@main.command(name="gui")
+@click.argument("model_name", required=False)
+@click.option("--port", type=int, help="Port to run llama-server on")
+@click.option("--ctx", type=int, help="Context size")
+@click.option("--threads", type=int, help="Number of CPU threads to use")
+@click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
+def run_gui(model_name, port, ctx, threads, gpu):
+    """Avvia la dashboard grafica interattiva di Llampaca ed il server dei modelli."""
+    import sys
+    import subprocess
+    
+    # macOS runtime hack: override Application Menu Name in menu bar
+    if sys.platform == 'darwin':
+        try:
+            from Foundation import NSBundle
+            bundle = NSBundle.mainBundle()
+            if bundle:
+                info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+                if info:
+                    info['CFBundleName'] = 'Llampaca'
+                    info['CFBundleDisplayName'] = 'Llampaca'
+        except Exception:
+            pass
+            
+    try:
+        import webview
+    except ImportError:
+        click.echo("L'interfaccia grafica richiede la libreria 'pywebview'.")
+        if click.confirm("Desideri installarla automaticamente ora tramite pip?", default=True):
+            try:
+                click.echo("Installazione in corso...")
+                subprocess.run([sys.executable, "-m", "pip", "install", "pywebview"], check=True)
+                click.echo("Installazione completata!")
+            except Exception as e:
+                click.echo(f"Errore durante l'installazione automatica: {e}")
+                click.echo("Prova ad installarla manualmente eseguendo: pip install pywebview")
+                sys.exit(1)
+        else:
+            click.echo("Impossibile avviare la GUI senza 'pywebview'.")
+            sys.exit(1)
+
+    # 1. Resolve model path
+    config = load_config()
+    if not model_name:
+        model_name = config.get("default_model", "")
+        if model_name in MODEL_PRESETS:
+            model_name = MODEL_PRESETS[model_name]["file"]
+            
+    if not model_name:
+        click.echo("Error: No default model configured, and no model specified.")
+        click.echo("Please download a model using: llampaca models download")
+        sys.exit(1)
+        
+    model_path = MODELS_DIR / model_name
+    if not model_path.exists():
+        model_path = Path(model_name)
+        if not model_path.exists():
+            if model_name in MODEL_PRESETS:
+                preset_file = MODEL_PRESETS[model_name]["file"]
+                model_path = MODELS_DIR / preset_file
+                
+    if not model_path.exists():
+        click.echo(f"Error: Model '{model_name}' could not be resolved to a file path.")
+        click.echo(f"Looked in {MODELS_DIR} and current working directory.")
+        sys.exit(1)
+        
+    # Resolve parameters
+    port = port or config.get("server_port", 8080)
+    ctx = ctx or config.get("context_size", DEFAULT_CONTEXT_SIZE)
+    threads = threads or config.get("n_threads", 4)
+    gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
+
+    # 2. Instantiate and start LlamaServer
+    from llampaca.engine.server import LlamaServer
+    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu)
+    
+    click.echo(f"Starting llama-server on port {port}...")
+    import asyncio
+    if not asyncio.run(server.start()):
+        click.echo("Failed to start llama-server.")
+        sys.exit(1)
+        
+    click.echo(f"llama-server is up and running on port {port}!")
+            
+    from llampaca.gui.server import start_gui_window
+    try:
+        start_gui_window()
+    finally:
+        click.echo("Shutting down llama-server...")
+        from llampaca.engine.server import get_active_server
+        active = get_active_server()
+        if active:
+            active.stop()
+        else:
+            server.stop()
+        click.echo("Goodbye!")
+
+@main.group(name="integrations")
+def integrations():
+    """Gestisci le integrazioni esterne MCP (Model Context Protocol)."""
+    pass
+
+@integrations.command(name="list")
+def integrations_list():
+    """Elenca le integrazioni MCP esterne configurate."""
+    from llampaca.config import load_mcp_config, load_config
+    mcp_config = load_mcp_config()
+    config = load_config()
+    
+    servers = mcp_config.get("mcp_servers", {})
+    legacy_servers = config.get("mcp_servers", {})
+    
+    if not servers and not legacy_servers:
+        click.echo("Nessuna integrazione MCP configurata.")
+        return
+        
+    if servers:
+        click.echo("=== Integrazioni MCP (mcp_config.json) ===")
+        for name, cfg in servers.items():
+            click.echo(f"  Nome: {name}")
+            click.echo(f"    Comando: {cfg.get('command')}")
+            click.echo(f"    Argomenti: {cfg.get('args', [])}")
+            if cfg.get("env"):
+                click.echo(f"    Env: {list(cfg.get('env').keys())}")
+            click.echo("")
+            
+    if legacy_servers:
+        click.echo("=== Integrazioni MCP Legacy (config.json) ===")
+        for name, cfg in legacy_servers.items():
+            click.echo(f"  Nome: {name}")
+            click.echo(f"    Comando: {cfg.get('command')}")
+            click.echo(f"    Argomenti: {cfg.get('args', [])}")
+            if cfg.get("env"):
+                click.echo(f"    Env: {list(cfg.get('env').keys())}")
+            click.echo("")
+
+@integrations.command(name="browse")
+@click.option("--repo", help="Specifica l'URL del repository da navigare.")
+def integrations_browse(repo):
+    """Sfoglia i server MCP disponibili nei repository ed installali."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    import requests
+    
+    mcp_config = load_mcp_config()
+    registries = mcp_config.get("mcp_registries", [])
+    
+    if not registries:
+        click.echo("Errore: nessun repository MCP configurato in mcp_config.json.")
+        return
+        
+    selected_repo = repo
+    if not selected_repo:
+        if len(registries) == 1:
+            selected_repo = registries[0]
+        else:
+            click.echo("=== Seleziona il Repository MCP ===")
+            for idx, r in enumerate(registries, 1):
+                click.echo(f"[{idx}] {r}")
+            choice = click.prompt("Scegli un repository", type=int)
+            if choice < 1 or choice > len(registries):
+                click.echo("Scelta non valida.")
+                return
+            selected_repo = registries[choice - 1]
+            
+    # Initial search keyword prompt
+    click.echo("\n=== Sfoglia Integrazioni MCP ===")
+    search_query = click.prompt("Inserisci una parola chiave per cercare (premi Invio per mostrare tutti)", default="", show_default=False).strip()
+    if not search_query:
+        search_query = None
+        
+    after_cursor = None
+    cursors_history = []  # Stack for back-navigation: list of (after_cursor, search_query)
+    
+    while True:
+        # Build URL
+        url = f"{selected_repo}?limit=10"
+        if search_query:
+            url += f"&query={search_query}"
+        if after_cursor:
+            url += f"&after={after_cursor}"
+            
+        click.echo(f"\nConnessione a {selected_repo}...")
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            click.echo(f"Errore durante la connessione al repository: {e}")
+            return
+            
+        servers = data.get("servers", [])
+        page_info = data.get("pageInfo", {})
+        has_next = page_info.get("hasNextPage", False)
+        next_cursor = page_info.get("endCursor")
+        
+        if not servers:
+            click.echo("\nNessun server MCP trovato.")
+            if search_query:
+                if click.confirm("Vuoi azzerare la ricerca e mostrare tutti?", default=True):
+                    search_query = None
+                    after_cursor = None
+                    cursors_history = []
+                    continue
+            return
+            
+        click.echo(f"\n=== Server MCP Disponibili (Ricerca: {search_query or 'Nessuna'}) ===")
+        for idx, s in enumerate(servers, 1):
+            click.echo(f"[{idx}] {s.get('name')} (da {s.get('namespace', 'sconosciuto')})")
+            desc = s.get('description', '')
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            click.echo(f"    Descrizione: {desc}")
+            repo_url = s.get("repository", {}).get("url")
+            if repo_url:
+                click.echo(f"    Link: {repo_url}")
+        click.echo("-" * 50)
+        
+        # Build action options
+        options = []
+        action_map = {}
+        
+        # Selection options
+        for idx in range(1, len(servers) + 1):
+            action_map[str(idx)] = ("select", idx - 1)
+            
+        # Navigation options
+        if has_next and next_cursor:
+            options.append("[N] Prossima Pagina")
+            action_map["n"] = ("next", next_cursor)
+            
+        if cursors_history:
+            options.append("[P] Pagina Precedente")
+            action_map["p"] = ("prev", None)
+            
+        options.append("[S] Nuova Ricerca")
+        action_map["s"] = ("search", None)
+        
+        options.append("[Q] Annulla ed Esci")
+        action_map["q"] = ("cancel", None)
+        
+        click.echo("Opzioni: " + ", ".join(options))
+        choice = click.prompt("Scegli un'opzione o inserisci il numero del server", type=str).strip().lower()
+        
+        if choice not in action_map:
+            click.echo("Scelta non valida. Riprova.")
+            continue
+            
+        action, val = action_map[choice]
+        
+        if action == "cancel":
+            click.echo("Operazione annullata.")
+            return
+            
+        elif action == "search":
+            new_search = click.prompt("Inserisci la nuova parola chiave da cercare (premi Invio per mostrare tutti)", default="", show_default=False).strip()
+            search_query = new_search if new_search else None
+            after_cursor = None
+            cursors_history = []
+            continue
+            
+        elif action == "next":
+            cursors_history.append((after_cursor, search_query))
+            after_cursor = val
+            continue
+            
+        elif action == "prev":
+            prev_cursor, prev_search = cursors_history.pop()
+            after_cursor = prev_cursor
+            search_query = prev_search
+            continue
+            
+        elif action == "select":
+            server = servers[val]
+            name = server.get("slug") or server.get("name").lower().replace(" ", "-")
+            description = server.get("description", "")
+            repo_url = server.get("repository", {}).get("url")
+            schema = server.get("environmentVariablesJsonSchema", {}) or {}
+            
+            if repo_url:
+                if click.confirm(f"\nQuesto server ha un repository Git ({repo_url}).\nVuoi clonarlo ed effettuarne la build automaticamente in locale?", default=True):
+                    from llampaca.engine.mcp_installer import run_generic_git_setup
+                    run_generic_git_setup(name, repo_url, schema)
+                    return
+
+            click.echo(f"\nInstallazione di: {server.get('name')}")
+            click.echo(f"Descrizione: {description}")
+            if repo_url:
+                click.echo(f"GitHub: {repo_url}")
+                
+            # Propose default npx command
+            default_cmd = "npx"
+            default_args = ["-y", name]
+            
+            use_default = click.confirm(f"Usa il comando di esecuzione consigliato: {default_cmd} {' '.join(default_args)}?", default=True)
+            if use_default:
+                cmd = default_cmd
+                args = default_args
+            else:
+                cmd = click.prompt("Inserisci il comando da eseguire (es. python3, node)", type=str)
+                args_str = click.prompt("Inserisci gli argomenti separati da spazi", type=str, default="")
+                args = args_str.split() if args_str else []
+                
+            # Configure environment variables
+            env = {}
+            schema = server.get("environmentVariablesJsonSchema", {})
+            props = schema.get("properties", {})
+            required = schema.get("required", [])
+            
+            if props:
+                click.echo("\nConfigurazione Variabili d'Ambiente:")
+                for var_name, var_info in props.items():
+                    desc = var_info.get("description", "")
+                    is_req = var_name in required
+                    req_str = " (Obbligatorio)" if is_req else " (Opzionale)"
+                    prompt_str = f"  {var_name}{req_str}"
+                    if desc:
+                        prompt_str += f"\n    Desc: {desc}\n  Valore"
+                    val = click.prompt(prompt_str, default="", show_default=False)
+                    if val.strip():
+                        env[var_name] = val.strip()
+                    elif is_req:
+                        click.echo(f"Errore: {var_name} è obbligatorio.")
+                        return
+                        
+            # Save to mcp_config.json
+            mcp_config["mcp_servers"][name] = {
+                "command": cmd,
+                "args": args,
+                "env": env
+            }
+            save_mcp_config(mcp_config)
+            click.echo(f"\nIntegrazione '{name}' installata con successo in mcp_config.json!")
+            return
+
+@integrations.command(name="add")
+@click.argument("name")
+def integrations_add(name):
+    """Aggiungi manualmente un'integrazione MCP."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    
+    cmd = click.prompt("Inserisci il comando da eseguire (es. npx, python3)", type=str)
+    args_str = click.prompt("Inserisci gli argomenti separati da spazi", type=str, default="")
+    args = args_str.split() if args_str else []
+    
+    env = {}
+    while click.confirm("Vuoi aggiungere una variabile d'ambiente?", default=False):
+        var_name = click.prompt("Nome variabile (es. API_KEY)", type=str)
+        var_val = click.prompt(f"Valore per {var_name}", type=str)
+        env[var_name] = var_val
+        
+    mcp_config["mcp_servers"][name] = {
+        "command": cmd,
+        "args": args,
+        "env": env
+    }
+    save_mcp_config(mcp_config)
+    click.echo(f"Integrazione '{name}' aggiunta con successo in mcp_config.json.")
+
+@integrations.command(name="remove")
+@click.argument("name")
+def integrations_remove(name):
+    """Rimuovi un'integrazione MCP specificando il suo nome."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    
+    if name in mcp_config.get("mcp_servers", {}):
+        del mcp_config["mcp_servers"][name]
+        save_mcp_config(mcp_config)
+        click.echo(f"Integrazione '{name}' rimossa con successo.")
+    else:
+        click.echo(f"Errore: nessuna integrazione trovata con il nome '{name}' in mcp_config.json.")
+
+@integrations.command(name="setup")
+@click.argument("name")
+@click.option("--repo", required=True, help="L'URL del repository Git da clonare ed installare.")
+def integrations_setup(name, repo):
+    """Esegui la configurazione guidata generica per un repository Git MCP."""
+    from llampaca.engine.mcp_installer import run_generic_git_setup
+    run_generic_git_setup(name, repo, {})
+
+@integrations.group(name="repo")
+def repo_group():
+    """Gestisci i repository (registries) delle integrazioni MCP."""
+    pass
+
+@repo_group.command(name="list")
+def repo_list():
+    """Elenca i repository MCP configurati."""
+    from llampaca.config import load_mcp_config
+    mcp_config = load_mcp_config()
+    registries = mcp_config.get("mcp_registries", [])
+    
+    if not registries:
+        click.echo("Nessun repository MCP configurato.")
+    else:
+        click.echo("=== Repository MCP Configurati ===")
+        for idx, r in enumerate(registries, 1):
+            click.echo(f" [{idx}] {r}")
+
+@repo_group.command(name="add")
+@click.argument("url")
+def repo_add(url):
+    """Aggiungi un URL di un nuovo repository MCP."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    registries = mcp_config.setdefault("mcp_registries", [])
+    
+    if url in registries:
+        click.echo(f"Il repository '{url}' è già configurato.")
+    else:
+        registries.append(url)
+        save_mcp_config(mcp_config)
+        click.echo(f"Repository '{url}' aggiunto con successo.")
+
+@repo_group.command(name="remove")
+@click.argument("url")
+def repo_remove(url):
+    """Rimuovi un repository MCP esistente tramite il suo URL."""
+    from llampaca.config import load_mcp_config, save_mcp_config
+    mcp_config = load_mcp_config()
+    registries = mcp_config.get("mcp_registries", [])
+    
+    if url in registries:
+        registries.remove(url)
+        save_mcp_config(mcp_config)
+        click.echo(f"Repository '{url}' rimosso con successo.")
+    else:
+        click.echo(f"Errore: repository '{url}' non trovato in mcp_config.json.")
+
+@main.command(name="generate-image")
+@click.argument("prompt")
+@click.option("--output", help="Cartella o percorso di destinazione personalizzato dell'immagine")
+@click.option("--quality", type=click.Choice(["fast", "high"]), default="fast", help="Preset qualità/velocità: 'fast' (flash) o 'high' (alta qualità)")
+def generate_image_cmd(prompt, output, quality):
+    """Genera un'immagine locale da un prompt usando stable-diffusion.cpp (sd.cpp)."""
+    from llampaca.tools.image import generate_image
+    click.echo(f"Generazione immagine in corso per il prompt: '{prompt}'...")
+    res = generate_image(prompt=prompt, output_directory=output, quality=quality)
+    click.echo(res)
 
 if __name__ == "__main__":
     main()

@@ -11,14 +11,16 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 ## ✨ Features
 
 - 🔧 **Zero setup** — downloads `llama-server` binaries automatically for your OS and architecture (macOS arm64/Intel, Linux, Windows)
-- 🤖 **GPU accelerated** — uses Apple Metal (`-ngl 99`) on Apple Silicon, CUDA on NVIDIA out or HIP on AMD out zof the box
+- 🤖 **GPU accelerated** — uses Apple Metal (`-ngl 99`) on Apple Silicon, CUDA on NVIDIA or HIP on AMD out of the box
 - 🔀 **Smart port management** — automatically finds a free port if the default is in use (8080 → 8081 → ...)
 - 🧹 **Orphan-safe** — on startup, kills any leftover `llama-server` processes from crashed previous sessions
 - 📦 **Model management** — download GGUF models from Hugging Face with a single command, or load your own
 - 💬 **Interactive chat** — streaming terminal chat session with any loaded model
 - 📎 **File attachments** — attach a PDF, Word or text file to the conversation with `/attach` and ask questions about it
+- 🧠 **Personal wiki (persistent memory)** — the assistant remembers durable facts about you across sessions, stored as plain markdown pages you can read and edit yourself
 - 🤖 **Agentic tool use** — the model can read/write workspace files, run shell commands (with your confirmation) and fetch web pages, via native OpenAI-compatible tool calling
-- 🏗️ **Extensible** — register any Python function as a tool; MCP integration coming soon
+- 🔌 **MCP Support** — expand your agent's capabilities with external Model Context Protocol (MCP) servers (e.g., email, database, github, slack, etc.)
+- 🏗️ **Extensible** — register any Python function as a tool; write custom logic easily
 
 ---
 
@@ -79,6 +81,20 @@ You > What is the termination notice period?
 - **Large files**: the document is automatically **indexed for search** (RAG): it is chunked, embedded with a local embedding model, and stored in SQLite; the model then reads it through the `search_documents` tool, retrieving only the passages relevant to each question. Requires the embedding model (`llampaca models download --preset qwen3-embedding-0.6b`, ~640 MB) — a second, lightweight `llama-server` instance starts automatically the first time it is needed
 - Indexed documents **survive the session**: resume the conversation and they are searchable again without re-attaching. Deleting the conversation deletes its index.
 
+### 6. Teach it about you (optional)
+
+Llampaca has a **personal wiki**: plain markdown pages in `~/.llampaca/wiki/` that act as persistent memory across conversations.
+
+```
+You > /remember I prefer answers in Italian and I use conda, not venv
+  [remember] asking the model to store this in the wiki (you will be asked to confirm the write)...
+```
+
+- `/remember <fact>` forwards the fact to the model, which picks (or creates) the right page via the `update_wiki_page` tool — the write always asks for your confirmation first
+- The index of page names rides in the system prompt, so in every session the model knows what it remembers and reads the relevant page with `read_wiki_page` when needed
+- Pages are **plain markdown files**: inspect, correct, or delete them with any editor — no hidden state
+- No embeddings involved: a titled page index plus whole-page reads is more reliable than fuzzy retrieval for small local models
+
 ---
 
 ## 📋 CLI Reference
@@ -90,15 +106,26 @@ You > What is the termination notice period?
 | `llampaca models download` | Download a model from Hugging Face |
 | `llampaca models remove <filename>` | Delete a local model |
 | `llampaca run [model_name]` | Start the server and open an interactive chat session |
+| `llampaca gui [model_name]` | Start the standalone desktop app with GUI dashboard |
+| `llampaca serve [model_name]` | Start the full Llampaca backend (`llama-server` + HTTP API) headless, without a GUI — e.g. to drive it from another frontend |
+| `llampaca mcp` | Run Llampaca itself as an MCP server (stdio), exposing its built-in tools to VSCode or Claude Desktop |
 | `llampaca history list` | List all stored conversation sessions |
 | `llampaca history delete <id>` | Delete a conversation session by its ID |
+| `llampaca integrations list` | List all configured MCP integrations |
+| `llampaca integrations browse` | Search and install servers from the Smithery.ai registry |
+| `llampaca integrations add <name>` | Manually add a local or external MCP server |
+| `llampaca integrations remove <name>` | Uninstall/remove an MCP server |
+| `llampaca integrations setup <name> --repo <url>` | Clone a Git repository and run its setup script |
+| `llampaca integrations repo list` | List configured MCP registry URLs |
+| `llampaca integrations repo add <url>` | Add an MCP registry URL |
+| `llampaca integrations repo remove <url>` | Remove an MCP registry URL |
 
 ### `llampaca run` options
 
 | Flag | Default | Description |
 |---|---|---|
 | `--port` | `8080` | Starting port (auto-increments if occupied) |
-| `--ctx` | `4096` | Context window size in tokens |
+| `--ctx` | `8192` | Context window size in tokens |
 | `--threads` | auto | Number of CPU threads |
 | `--gpu` | `-1` (auto) | GPU layers to offload (`0` = CPU only, `-1` = all layers) |
 | `--no-tools` | off | Disable agent tools (plain chat mode) |
@@ -123,6 +150,8 @@ During a `llampaca run` session the model can call these built-in tools:
 | `web_search` | Search the web (DuckDuckGo, no API key) and return top results | No |
 | `fetch_url` | Download a web page as plain text | No |
 | `search_documents` | Search inside indexed attachments (only active when the conversation has documents indexed via `/attach`) | No |
+| `read_wiki_page` | Read a page of the persistent personal wiki (`~/.llampaca/wiki/`) | No |
+| `update_wiki_page` | Create/overwrite a wiki page with a durable fact about the user | **Yes** |
 
 Safety model:
 - **Workspace sandbox** — file tools can only touch paths inside the directory where you launched `llampaca run`; anything else (e.g. `../../etc/passwd`) is rejected
@@ -135,6 +164,87 @@ Tool calling works with any model, via two modes picked automatically:
 - **Prompt-based** — for models without tool support in their template (e.g. Gemma): tool definitions are injected into the system prompt and the model replies with a JSON object that Llampaca parses itself.
 
 The active mode is shown in the session header (`Tools enabled (native): ...`).
+
+---
+
+## 🔌 Model Context Protocol (MCP)
+
+Llampaca supports the **Model Context Protocol (MCP)**, allowing you to connect external tools (like databases, email clients, custom CLI utilities, or remote APIs) directly into your local agent.
+
+MCP servers are spawned dynamically in the background via stdio streams when starting a chat session. All active tools from the connected MCP servers are automatically registered in the agent's Tool Registry.
+
+### 🔍 How to use it
+
+1. **Browse and Install integrations** from the official Smithery.ai Registry:
+   ```bash
+   llampaca integrations browse
+   ```
+   This interactive prompt allows you to search for integrations (e.g., `gmail`, `sqlite`, `postgres`), clone their repository, build them, and configure them.
+
+2. **Manually Add an integration**:
+   If you have a local node or python script that runs as an MCP server, you can register it:
+   ```bash
+   llampaca integrations add my-custom-server
+   ```
+   Llampaca will prompt you for the command to execute (e.g., `npx`, `python3`, `node`), arguments (e.g., `-y`, `@modelcontextprotocol/server-sqlite`), and any environment variables (e.g., API keys, database URLs).
+
+3. **Check Configured integrations**:
+   ```bash
+   llampaca integrations list
+   ```
+
+4. **Run the Chat**:
+   Once registered, start chat as normal. The agent will discover all tools and ask for confirmation before calling any write/edit operations:
+   ```bash
+   llampaca run
+   ```
+
+All configurations are saved cleanly in `~/.llampaca/mcp_config.json`.
+
+---
+
+## 🖥️ GUI Desktop Dashboard
+
+Llampaca includes a standalone GUI desktop application built with `pywebview` and Vue.js. It features a complete dashboard to interact with your agent and configure your local environment visually.
+
+### How to start the GUI
+Start the dashboard with the following command:
+```bash
+llampaca gui
+```
+
+You can pass execution options just like `llampaca run`:
+```bash
+llampaca gui [model_name] [--port port] [--ctx ctx] [--threads threads] [--gpu gpu]
+```
+
+### Key Modules
+
+#### 💬 Chat & Session Manager
+* Stream agent outputs word-by-word with markdown formatting, including live tool-call and "thinking" indicators.
+* List, load, and delete conversation history persisted in the local SQLite database.
+* **File attachments** — attach PDF/Word/text files directly in the chat; small files are injected, large ones are indexed for RAG and searched via `search_documents`, exactly like the CLI `/attach` flow.
+* **Stop button** — interrupt an in-progress answer at any time; the partial output is kept and the backend is cancelled cleanly.
+* **Context & speed indicator** — after each turn the composer shows how much of the context window the conversation now occupies plus the generation speed and elapsed time (e.g. `Contesto: ~27% usato (2.3k / 8.2k token) · 33s · 658 tok @ 26.5 tok/s`), matching the CLI footer.
+
+#### 🧠 Personal Wiki ("Profilo")
+* Two-pane list + editor over the same markdown pages in `~/.llampaca/wiki/` used by the CLI.
+* Read, create, edit, and delete durable facts about yourself from the GUI; `/remember` in the chat also stores facts here (with confirmation), and the page index rides in the system prompt so the agent knows what it remembers.
+
+#### 📦 GGUF Model Catalogue
+* **Recommended Presets**: View pre-configured presets showing exact file sizes in GB. Download them in one click.
+* **Hugging Face Search**: Search Hugging Face dynamically for popular GGUF repositories, select a specific file from a dropdown showing its exact size in GB, and download it.
+* **Background Downloads**: Track download progress in real-time with progress bars. The catalog automatically reloads and unlocks the model once complete.
+* **Dynamic Modals**: Switch active models at runtime with automatic `llama-server` restarts.
+
+#### 🔌 MCP Integrations Manager
+* **Live Connection States**: View connected/disconnected statuses for configured MCP servers along with the exact count of registered tools.
+* **Smithery.ai MCP Registry**: Browse and search integrations in real-time using Smithery.ai APIs.
+* **Variables Configuration Overlay Modal**: Fill out environment variables and credential requirements (like API keys) through dynamic graphical forms mapping schemas directly.
+* **Runtime Hot-Reloading**: Automatically connect, spawn, and load MCP tools without having to restart the LLM inference server.
+
+#### ⚙️ Settings Panel
+* Update inference configuration settings (port, context size, CPU threads, and GPU layer offloading) at runtime.
 
 ---
 
@@ -159,6 +269,7 @@ llampaca/
 ├── config.py             # Paths, defaults, and model presets
 ├── attachments.py        # /attach: PDF/Word/text extraction and context budgeting
 ├── rag.py                # RAG core: chunking, vector serialization, cosine top-k
+├── wiki.py               # Personal wiki core: markdown pages, slugs, prompt index
 ├── engine/
 │   ├── downloader.py     # GitHub binary + Hugging Face model downloader
 │   ├── server.py         # llama-server subprocess manager (chat + embedding modes)
@@ -171,7 +282,8 @@ llampaca/
     ├── filesystem.py     # read_file / write_file / list_directory (sandboxed)
     ├── shell.py          # run_shell_command (confirmation-gated)
     ├── web.py            # fetch_url (HTML → plain text)
-    └── documents.py      # search_documents (RAG retrieval over indexed attachments)
+    ├── documents.py      # search_documents (RAG retrieval over indexed attachments)
+    └── wiki.py           # read_wiki_page / update_wiki_page (persistent memory)
 ```
 
 ### Application Data
@@ -182,6 +294,7 @@ All application data is stored in `~/.llampaca/`:
 |---|---|
 | `~/.llampaca/bin/` | `llama-server` binary and shared libraries |
 | `~/.llampaca/models/` | Downloaded GGUF model files |
+| `~/.llampaca/wiki/` | Personal wiki: markdown pages of persistent memory (`/remember`) |
 | `~/.llampaca/logs/` | Server logs and PID files per port |
 | `~/.llampaca/history.db` | SQLite database storing conversation history |
 | `~/.llampaca/config.json` | User configuration |
@@ -197,7 +310,7 @@ All application data is stored in `~/.llampaca/`:
     "llama_server_path": "",
     "default_model": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
     "server_port": 8080,
-    "context_size": 4096,
+    "context_size": 8192,
     "n_threads": 6,
     "gpu_layers": -1
 }
@@ -253,8 +366,9 @@ Llampaca automatically:
 - [x] Agentic tool/skill execution loop (filesystem, shell, web tools with confirmation gating)
 - [x] Web search integration (DuckDuckGo, no API key) — deeper "DeepSearch" (multi-step research) still to come
 - [x] File attachments (`/attach` — PDF/Word/text): direct injection for small files, automatic RAG (local embeddings + `search_documents` tool) for documents larger than the context budget
-- [ ] MCP (Model Context Protocol) integration
-- [ ] GUI (desktop application packaging)
+- [x] Personal wiki (`/remember` + `read_wiki_page`/`update_wiki_page`): persistent cross-session memory as plain markdown pages, with the page index injected in the system prompt
+- [x] MCP (Model Context Protocol) integration
+- [x] GUI (desktop application packaging)
 - [ ] One-click installer (no Python required)
 
 ---

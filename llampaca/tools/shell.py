@@ -12,7 +12,7 @@ import subprocess
 
 # Commands are killed after this many seconds so a hanging command
 # (e.g. an interactive program waiting for input) cannot freeze the agent.
-COMMAND_TIMEOUT_SECONDS = 60
+COMMAND_TIMEOUT_SECONDS = 25
 
 
 def run_shell_command(command: str) -> str:
@@ -23,6 +23,19 @@ def run_shell_command(command: str) -> str:
     Args:
         command: The shell command to execute (e.g. 'ls -la', 'git status').
     """
+    import os
+    from llampaca.config import LLAMPACA_DIR
+
+    env = os.environ.copy()
+    node_modules_path = str(LLAMPACA_DIR / "node_modules")
+    existing_node_path = env.get("NODE_PATH", "")
+    env["NODE_PATH"] = f"{node_modules_path}:{existing_node_path}".strip(":") if existing_node_path else node_modules_path
+    env["NODE_OPTIONS"] = "--unhandled-rejections=strict"
+
+    # Enforce isolated node_modules: redirect any direct `npm install` to ~/.llampaca
+    if "npm install" in command and "--prefix" not in command:
+        command = command.replace("npm install", f"npm install --prefix \"{LLAMPACA_DIR}\"")
+
     try:
         completed = subprocess.run(
             command,
@@ -30,6 +43,7 @@ def run_shell_command(command: str) -> str:
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT_SECONDS,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {COMMAND_TIMEOUT_SECONDS} seconds."

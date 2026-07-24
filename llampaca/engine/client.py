@@ -49,17 +49,105 @@ class LlamaClient:
         response.raise_for_status()
         return response.json().get("chat_template", "") or ""
 
-    async def chat_stream(self, messages: List[Dict[str, str]], model: str = "local-model") -> AsyncGenerator[str, None]:
+    async def prime_prompt_cache(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str = "local-model",
+        tools: Optional[List[dict]] = None,
+        no_think: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Pre-compute the KV cache for a prompt prefix, discarding the answer.
+
+        llama-server keeps the internal state it derives from the prompt and
+        reuses it for any later request that starts with the same tokens
+        (see `cache_prompt` in chat_stream_events). The first request after
+        startup therefore pays for the whole system prompt plus the tool
+        schemas — measured at ~2270 tokens and ~7.7 s on a 4B Q4 model — and
+        every request after it pays for a few dozen tokens.
+
+        Sending that prefix once at startup moves the cost off the user's
+        first message: the work still happens, but while the window is
+        opening rather than while they wait for an answer.
+
+        `max_tokens=1` because only the prompt matters; the generated token is
+        thrown away. The prefix must match the real requests EXACTLY (same
+        system prompt, same tools, same order) or the cache will not be hit —
+        callers should build it from the same objects the real path uses,
+        not from a copy of the strings.
+
+        Returns llama-server's `timings` (prompt token count and milliseconds)
+        so the caller can log what the warm-up actually did. Never raises:
+        priming is an optimisation, and a failure must not stop startup.
+        """
+        request_kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 1,
+            "stream": False,
+            "extra_body": {"cache_prompt": True},
+        }
+        # Must mirror the real requests: the toggle changes how the template
+        # renders, so priming with the other setting would cache a prefix that
+        # never matches.
+        if no_think:
+            request_kwargs["extra_body"]["chat_template_kwargs"] = {
+                "enable_thinking": False
+            }
+        if tools:
+            request_kwargs["tools"] = tools
+
+        try:
+            response = await self.client.chat.completions.create(**request_kwargs)
+            # `timings` is a llama-server extension, absent on other backends.
+            timings = getattr(response, "timings", None) or {}
+            if not isinstance(timings, dict):
+                timings = dict(timings)
+            return timings
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        model: str = "local-model",
+        max_tokens: Optional[int] = None,
+        no_think: bool = False,
+    ) -> AsyncGenerator[str, None]:
         """
         Stream the chat completion text chunks from llama-server (text only,
         no tool support). Errors are yielded inline as text.
+
+        Args:
+            max_tokens: Hard cap on the generated length. For short mechanical
+                outputs (a conversation title, a label) this bounds the worst
+                case rather than trusting the model to be brief.
+            no_think: Render the chat template with thinking disabled for THIS
+                request only, via llama-server's `chat_template_kwargs`
+                passthrough (Qwen3 reads `enable_thinking`). The CLI's
+                `--no-think` does the same thing with the `--reasoning off`
+                launch flag, which applies to the whole server; this is the
+                per-call equivalent, so a reasoning model can keep reasoning
+                for the user's questions while skipping it for throwaway
+                generations. Measured on Qwen3-4B: a 4-word title costs 195
+                tokens and 6.7 s with thinking, 8 tokens and 0.3 s without.
+                Harmless on templates that ignore the variable — Jinja simply
+                does not use it — but, like `--reasoning off`, it only has an
+                effect when the GGUF's template actually implements the toggle.
         """
         try:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                stream=True
-            )
+            request_kwargs: Dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+            }
+            if max_tokens is not None:
+                request_kwargs["max_tokens"] = max_tokens
+            if no_think:
+                request_kwargs["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False}
+                }
+            response = await self.client.chat.completions.create(**request_kwargs)
             async for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
@@ -71,6 +159,7 @@ class LlamaClient:
         messages: List[Dict[str, Any]],
         model: str = "local-model",
         tools: Optional[List[dict]] = None,
+        no_think: bool = False,
     ) -> AsyncGenerator[Tuple[str, Any], None]:
         """
         Stream a chat completion as structured events, with tool support.
@@ -130,6 +219,15 @@ class LlamaClient:
             # dependency visible.
             "extra_body": {"cache_prompt": True},
         }
+        # Skip the model's thinking phase for this request. Same switch as the
+        # CLI's --no-think (which sets it on the server at launch), but per
+        # call, so the GUI can toggle it without restarting llama-server.
+        # Measured on Qwen3-4B answering "ciao": 425 tokens and 16.2 s with
+        # thinking, 34 tokens and 1.3 s without.
+        if no_think:
+            request_kwargs["extra_body"]["chat_template_kwargs"] = {
+                "enable_thinking": False
+            }
         # Only include the tools parameter when there are tools: sending an
         # empty list can confuse some server versions.
         if tools:

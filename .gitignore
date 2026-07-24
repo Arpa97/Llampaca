@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated documents & dependencies
+*.docx
+*.txt
+node_modules/
+
+# I testi di licenza dei componenti di terze parti inclusi in
+# llampaca/gui/vendor/ devono essere versionati e finire nel pacchetto
+# distribuito: la regola "*.txt" qui sopra li escludeva, ma la SIL Open Font
+# License richiede che il suo testo accompagni i font che copre.
+!llampaca/gui/vendor/*.txt

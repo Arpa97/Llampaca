@@ -11,6 +11,20 @@ from pathlib import Path
 # import cycles.
 CHARS_PER_TOKEN = 4
 
+# Single source of truth for the default CHAT context window (in tokens).
+# Change it HERE and every entry point picks it up: DEFAULT_CONFIG seeds new
+# configs with it, and every `config.get("context_size", ...)` fallback across
+# the codebase (CLI run/serve/gui, the GUI backend, the Agent) references this
+# constant instead of a hard-coded number — so the default can never drift
+# between the terminal and the GUI again.
+DEFAULT_CONTEXT_SIZE = 8192
+
+# The embedding server's context is deliberately INDEPENDENT and much smaller:
+# it is sized for a single ~500-token chunk served to one slot, never for a
+# conversation. It is intentionally NOT tied to DEFAULT_CONTEXT_SIZE — raising
+# the chat window must not bloat the embedder's KV cache.
+EMBEDDING_CONTEXT_SIZE = 4096
+
 # Base directory for the application
 LLAMPACA_DIR = Path.home() / ".llampaca"
 CONFIG_PATH = LLAMPACA_DIR / "config.json"
@@ -18,6 +32,13 @@ BIN_DIR = LLAMPACA_DIR / "bin"
 MODELS_DIR = LLAMPACA_DIR / "models"
 LOGS_DIR = LLAMPACA_DIR / "logs"
 DB_PATH = LLAMPACA_DIR / "history.db"
+# The personal wiki: plain markdown pages the model (and the user) can read
+# and update across sessions. Lives in the app data dir — NOT in the launch
+# workspace — because it is the user's memory, shared by every project.
+WIKI_DIR = LLAMPACA_DIR / "wiki"
+# Modular markdown skills (.md): instructions and domain workflows
+# that can be imported, downloaded, or written by the user.
+SKILLS_DIR = LLAMPACA_DIR / "skills"
 
 # Recommended model presets.
 # The "kind" field separates chat models (loaded by `llampaca run`) from
@@ -36,19 +57,22 @@ MODEL_PRESETS = {
         # Fixed: old filename "Qwen3.5-4B-Instruct-Q4_K_M.gguf" doesn't exist in the repo (404), causing download failures
         "file": "Qwen3.5-4B-Q8_0.gguf",  # "Qwen3.5-4B-Instruct-Q4_K_M.gguf" (previous, invalid value)
         "description": "Qwen 3.5 4B Instruct - Excellent balance of performance and footprint (Recommended)",
-        "default": True
+        "default": True,
+        "size_gb": 4.17
     },
     "qwen2.5-coder-1.5b-instruct": {
         "repo": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
         "file": "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
         "description": "Qwen 2.5 Coder 1.5B Instruct - Super fast, outstanding for coding tasks",
-        "default": False
+        "default": False,
+        "size_gb": 1.04
     },
     "llama3.2-3b-instruct": {
         "repo": "unsloth/Llama-3.2-3B-Instruct-GGUF",
         "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
         "description": "Llama 3.2 3B Instruct - Meta's lightweight general-purpose model",
-        "default": False
+        "default": False,
+        "size_gb": 2.02
     },
     "qwen3-embedding-0.6b": {
         "repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
@@ -66,16 +90,59 @@ MODEL_PRESETS = {
             "that answer the query\nQuery: "
         ),
         "document_prefix": "",
+    },
+    "sdxl-turbo-q4": {
+        "repo": "gpustack/stable-diffusion-xl-1.0-turbo-GGUF",
+        "file": "stable-diffusion-xl-1.0-turbo-Q4_0.gguf",
+        "description": "SDXL Turbo GGUF (Flash / Veloce) - Generazione in 1-2 passi in pochissimi secondi",
+        "kind": "image",
+        "quality_preset": "fast",
+        "default_steps": 2,
+        "size_gb": 1.6
+    },
+    "flux-schnell-q4": {
+        "repo": "city96/FLUX.1-schnell-gguf",
+        "file": "flux1-schnell-Q4_0.gguf",
+        "description": "FLUX.1 Schnell GGUF (Alta Qualità) - 4 passi, dettagli fotorealistici eccezionali",
+        "kind": "image",
+        "quality_preset": "high",
+        "default_steps": 4,
+        "size_gb": 3.2
     }
 }
+
+IMAGE_PRESETS = {k: v for k, v in MODEL_PRESETS.items() if v.get("kind") == "image"}
+
+
+def get_user_documents_dir() -> Path:
+    """Returns default LlampacaDocs directory in user's Documents folder."""
+    docs_dir = Path.home() / "Documents" / "LlampacaDocs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    return docs_dir
+
+
+def resolve_user_output_path(filename: str, custom_dir: str = None, subfolder: str = "Images") -> Path:
+    """
+    Resolves output destination for user-generated files.
+    If custom_dir is provided (e.g. ~/Desktop or ./out), resolves it.
+    Otherwise defaults to ~/Documents/LlampacaDocs/<subfolder>/<filename>.
+    """
+    if custom_dir:
+        target_dir = Path(custom_dir).expanduser().resolve()
+    else:
+        target_dir = get_user_documents_dir() / subfolder
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / filename
+
 
 DEFAULT_CONFIG = {
     "llama_server_path": "",
     "default_model": "qwen3.5-4b-instruct",
     "server_port": 8080,
-    "context_size": 4096,
+    "context_size": DEFAULT_CONTEXT_SIZE,
     "n_threads": max(1, os.cpu_count() - 2 if os.cpu_count() else 4),
     "gpu_layers": -1,  # -1 means auto (enable metal/cuda if supported)
+    "mcp_servers": {},
     # Embedding (RAG) settings. embedding_model may be a preset name or a
     # GGUF filename in MODELS_DIR, same resolution rules as default_model.
     # The embedding server starts on its own port range so it never races
@@ -91,17 +158,28 @@ DEFAULT_CONFIG = {
     # matters for interactive token-generation speed. Set to -1 (auto) or
     # a specific layer count here to offload it too, e.g. on a machine
     # with GPU/RAM to spare.
-    "embedding_gpu_layers": 0
+    "embedding_gpu_layers": 0,
+    # Skip the "thinking" phase of reasoning models (Qwen3 and friends) for
+    # chat answers. Applied per request via llama-server's chat template
+    # kwargs, so it takes effect immediately — no server restart — and the
+    # CLI's --no-think launch flag is unaffected.
+    # Measured on Qwen3-4B-Q4_K_M answering "ciao", same warm cache:
+    #   thinking on  -> 425 tokens, 16.2 s
+    #   thinking off ->  34 tokens,  1.3 s
+    # Default False (thinking on) to preserve existing answer quality:
+    # reasoning earns its cost on multi-step tool use, and wastes it on
+    # everything else. The GUI exposes it as a toggle in Settings.
+    "no_think": False
 }
 
 
-def get_preset_for_file(filename: str) -> dict | None:
+def get_preset_for_file(filename: str):
     """
-    Reverse lookup: the preset entry whose "file" matches a GGUF filename,
-    or None. Used to recover per-model metadata (pooling, prefixes) when
+    Given a GGUF filename, return the matching preset dict from ALL_PRESETS
+    or None. Used to recover per-model metadata (pooling, prefixes, kind) when
     the config stores a plain filename instead of a preset name.
     """
-    for preset in MODEL_PRESETS.values():
+    for preset in ALL_PRESETS.values():
         if preset["file"] == filename:
             return preset
     return None
@@ -112,6 +190,7 @@ def ensure_dirs():
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    WIKI_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_config() -> dict:
     """Load configuration from the config file, creating it if it doesn't exist."""
@@ -139,4 +218,46 @@ def save_config(config: dict):
     """Save configuration to the config file."""
     ensure_dirs()
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4)
+
+MCP_CONFIG_PATH = LLAMPACA_DIR / "mcp_config.json"
+DEFAULT_REGISTRY = "https://glama.ai/api/mcp/v1/servers"
+
+def load_mcp_config() -> dict:
+    """Load configuration from mcp_config.json, creating it if it doesn't exist."""
+    ensure_dirs()
+    if not MCP_CONFIG_PATH.exists():
+        initial_config = {
+            "mcp_registries": [DEFAULT_REGISTRY],
+            "mcp_servers": {}
+        }
+        save_mcp_config(initial_config)
+        return initial_config
+    
+    try:
+        with open(MCP_CONFIG_PATH, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        # Ensure registries and servers keys exist
+        updated = False
+        if "mcp_registries" not in config or not isinstance(config["mcp_registries"], list):
+            config["mcp_registries"] = [DEFAULT_REGISTRY]
+            updated = True
+        if "mcp_servers" not in config or not isinstance(config["mcp_servers"], dict):
+            config["mcp_servers"] = {}
+            updated = True
+            
+        if updated:
+            save_mcp_config(config)
+        return config
+    except Exception:
+        return {
+            "mcp_registries": [DEFAULT_REGISTRY],
+            "mcp_servers": {}
+        }
+
+def save_mcp_config(config: dict):
+    """Save configuration to mcp_config.json."""
+    ensure_dirs()
+    with open(MCP_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)

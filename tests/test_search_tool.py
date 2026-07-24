@@ -92,9 +92,9 @@ class TestSearchDocumentsTool(unittest.IsolatedAsyncioTestCase):
         # The description must tell the model the docs are NOT in context.
         self.assertIn("NOT in your context", definition["description"])
 
-    def test_search_returns_formatted_hits(self):
+    async def test_search_returns_formatted_hits(self):
         registry = self._registry()
-        result = registry.execute(
+        result = await registry.execute(
             "search_documents", json.dumps({"query": "ascensore", "top_k": 2})
         )
         # Best hit first, with provenance header and relevance score.
@@ -103,9 +103,9 @@ class TestSearchDocumentsTool(unittest.IsolatedAsyncioTestCase):
         # top_k respected: 2 blocks, so exactly two headers.
         self.assertEqual(result.count("[guida.pdf"), 2)
 
-    def test_top_k_is_clamped(self):
+    async def test_top_k_is_clamped(self):
         registry = self._registry()
-        result = registry.execute(
+        result = await registry.execute(
             "search_documents", json.dumps({"query": "x", "top_k": 100})
         )
         # 100 clamps to 8, and only 3 chunks exist anyway.
@@ -116,22 +116,22 @@ class TestSearchDocumentsTool(unittest.IsolatedAsyncioTestCase):
             model_name="test-model", db_path=self.db_path
         )
         registry = self._registry(conversation_id=other_conv)
-        result = registry.execute("search_documents", json.dumps({"query": "x"}))
+        result = await registry.execute("search_documents", json.dumps({"query": "x"}))
         self.assertIn("No documents are indexed", result)
         self.assertIn("/attach", result)
 
-    def test_embed_failure_is_a_tool_error(self):
+    async def test_embed_failure_is_a_tool_error(self):
         def broken(_query):
             raise ConnectionError("connection refused")
         registry = self._registry(embed_query=broken)
-        result = registry.execute("search_documents", json.dumps({"query": "x"}))
+        result = await registry.execute("search_documents", json.dumps({"query": "x"}))
         self.assertIn("could not embed", result)
         self.assertIn("connection refused", result)
 
-    def test_dimension_mismatch_says_reindex(self):
+    async def test_dimension_mismatch_says_reindex(self):
         # Query embedded in 5 dims against a 3-dim index: incompatible.
         registry = self._registry(embed_query=lambda q: [1.0] * 5)
-        result = registry.execute("search_documents", json.dumps({"query": "x"}))
+        result = await registry.execute("search_documents", json.dumps({"query": "x"}))
         self.assertIn("incompatible", result)
         self.assertIn("Re-attach", result)
 
