@@ -35,7 +35,8 @@ class TestAgentDeclined(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        async def fake_events(messages, model="local-model", tools=None):
+        # Mirrors LlamaClient.chat_stream_events, no_think included.
+        async def fake_events(messages, model="local-model", tools=None, no_think=False):
             yield ("tool_name", "dangerous_tool")
             yield ("message", tool_call_msg)
 

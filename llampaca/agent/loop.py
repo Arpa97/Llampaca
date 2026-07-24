@@ -129,6 +129,7 @@ class Agent:
         max_iterations: int = MAX_ITERATIONS,
         context_size: int = DEFAULT_CONTEXT_SIZE,
         summary: Optional[str] = None,
+        no_think: bool = False,
     ):
         """
         Args:
@@ -201,6 +202,13 @@ class Agent:
         # Rebuilding from this base — instead of appending to messages[0] —
         # keeps those operations idempotent: no duplicated tool sections.
         self._base_system_prompt = f"{base_prompt} Today's date is {today}."
+
+        # Skip the reasoning phase on every request of this session. The CLI
+        # sets the equivalent on the server at launch (--no-think); this is the
+        # per-request form, so the GUI can flip it between turns without a
+        # restart. Only effective when the GGUF's chat template implements the
+        # toggle — official Qwen GGUFs do.
+        self.no_think = no_think
 
         # Full conversation history, in OpenAI messages format.
         # Kept on the instance so multiple send() calls form one conversation.
@@ -294,7 +302,8 @@ class Agent:
             buffering = prompt_mode
             try:
                 async for kind, data in self.client.chat_stream_events(
-                    messages_to_send, model=self.model, tools=tools
+                    messages_to_send, model=self.model, tools=tools,
+                    no_think=self.no_think
                 ):
                     if kind == "text":
                         produced_text = True

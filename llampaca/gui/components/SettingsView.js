@@ -62,8 +62,17 @@ export default {
                             </div>
                         </div>
 
+                        <!-- Le "risposte dirette" (ragionamento del modello on/off)
+                             NON stanno qui: sono una scelta per turno, non una
+                             configurazione, e vivono nel pulsante ⚡ del composer
+                             in chat. -->
+
                         <div style="display: flex; justify-content: flex-end;">
-                            <button class="btn btn-primary" @click="saveSettings">Salva e riavvia</button>
+                            <!-- "Salva" e basta: il riavvio del server avviene
+                                 solo per le impostazioni che lo richiedono
+                                 (porta, contesto, thread, GPU della chat), non
+                                 per le altre. -->
+                            <button class="btn btn-primary" @click="saveSettings">Salva impostazioni</button>
                         </div>
                     </div>
 

@@ -116,7 +116,18 @@ DEFAULT_CONFIG = {
     # matters for interactive token-generation speed. Set to -1 (auto) or
     # a specific layer count here to offload it too, e.g. on a machine
     # with GPU/RAM to spare.
-    "embedding_gpu_layers": 0
+    "embedding_gpu_layers": 0,
+    # Skip the "thinking" phase of reasoning models (Qwen3 and friends) for
+    # chat answers. Applied per request via llama-server's chat template
+    # kwargs, so it takes effect immediately — no server restart — and the
+    # CLI's --no-think launch flag is unaffected.
+    # Measured on Qwen3-4B-Q4_K_M answering "ciao", same warm cache:
+    #   thinking on  -> 425 tokens, 16.2 s
+    #   thinking off ->  34 tokens,  1.3 s
+    # Default False (thinking on) to preserve existing answer quality:
+    # reasoning earns its cost on multi-step tool use, and wastes it on
+    # everything else. The GUI exposes it as a toggle in Settings.
+    "no_think": False
 }
 
 

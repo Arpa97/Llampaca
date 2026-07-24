@@ -135,6 +135,15 @@ export default {
                                         @click="toggleRemember">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2z"/></svg>
                                 </button>
+                                <!-- Risposte dirette: salta il ragionamento del
+                                     modello. È una scelta per turno, non una
+                                     configurazione, quindi sta qui accanto al
+                                     campo e non sepolta in Impostazioni. -->
+                                <button class="icon-btn" :class="{ active: directMode }"
+                                        :title="directMode ? 'Risposte dirette ATTIVE: il modello risponde subito, senza ragionare. Clicca per farlo ragionare (più lento, meglio sui compiti in più passaggi).' : 'Il modello ragiona prima di rispondere: più lento. Clicca per ottenere risposte dirette.'"
+                                        @click="toggleDirect">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                </button>
                                 <textarea class="chat-input-field" ref="inputField" rows="1"
                                           v-model="userInput" :disabled="isStreaming"
                                           @input="autoGrow" @keydown.enter.exact.prevent="submit"

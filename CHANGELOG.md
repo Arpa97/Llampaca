@@ -30,6 +30,94 @@ Full restyle of the desktop dashboard. The five brand colours (`--amber-glow`, `
 - **`llampaca/gui/components/{ModelsView,McpView,ToolsView,SkillsView,WikiView,SettingsView}.js`** — all six now use the same `.view` / `.view-header` (title + subtitle + actions) / `.view-body` shell and the shared two-pane pattern, replacing six hand-rolled variants. Strumenti and Skills previously did not use `.view-body` at all, so their content sat outside the scroll container. Hundreds of inline styles were replaced by classes (`.section-head`, `.info-block`, `.code-block`, `.param-table`, `.empty-panel`, `.form-error`, badge variants). Italian copy tightened throughout: labels say what happens ("Salva e riavvia", "Nuova skill"), empty states explain the next action, and paths/identifiers are set in mono.
 - **`llampaca/gui/components/McpView.js`** — the registry "Installa" buttons are pacific rather than amber, matching "Scarica" in Modelli: fetching something from the internet has one colour, and a grid of filled amber blocks drowned out the real primary actions.
 
+### Added — "Risposte dirette": Skip the Reasoning Phase from the GUI
+
+`llampaca run` has `--no-think` to disable a reasoning model's thinking phase. `llampaca gui` had no equivalent, so every GUI answer paid for reasoning whether it helped or not — and on a small model that cost dwarfs everything else. Measured end to end through the GUI's own API, same prompt ("ciao"), same warm cache:
+
+| | tokens generated | turn |
+|---|---|---|
+| reasoning on | 1906 | **75.7 s** |
+| reasoning off | 12 | **0.8 s** |
+
+The variance is the point: the same one-word greeting produced 351, 425 and 1906 reasoning tokens across runs. That is what made "ciao" take 20+ seconds and made it feel random.
+
+Implemented per request rather than as a server launch flag, so it applies to the next message with no restart and can be toggled between turns:
+
+- **`llampaca/engine/client.py`**: `chat_stream_events()` and `prime_prompt_cache()` gained `no_think`, which adds `chat_template_kwargs: {enable_thinking: false}` to the request body (llama-server passes it into the Jinja chat template; Qwen3 reads it).
+- **`llampaca/agent/loop.py`**: `Agent` gained a `no_think` argument, stored on the instance and forwarded on every request of the session.
+- **`llampaca/gui/server.py`**: the agent is built with `no_think` from the config; the settings handler persists it, refreshes the manager's cached config (otherwise the Agent would keep reading the old value until the next launch) and re-primes the prompt cache, because the toggle changes how the template renders and the previously warmed prefix would no longer match. No server restart: it is not in the `need_restart` set.
+- **`llampaca/config.py`**: new `no_think` key, defaulting to `False` — existing behaviour is preserved rather than silently trading answer quality for speed. Reasoning earns its cost on multi-step tool use and wastes it elsewhere, so this is a judgement the user makes, not one made for them.
+- **`llampaca/gui/components/ChatView.js`** and **`controllers/chat_controller.js`**: exposed as a ⚡ toggle in the chat composer, next to the 🧠 remember flag, lit amber while active. It belongs there rather than in Settings because it is a per-turn decision, not a configuration: you want reasoning for "analyse this file and fix the bug" and not for "ciao", and a control you have to visit a settings page for is a control you never change. Optimistic update with rollback if the save fails, so the button never shows a state the backend does not have. The value still lives in `config.json` (same key the CLI uses), so the choice survives a restart.
+- **`llampaca/gui/models/settings_model.js`**: the Settings form deliberately does NOT send `no_think`. It would otherwise re-post whatever value was read when the tab was opened, silently undoing a change made from the composer in the meantime.
+- **`llampaca/gui/components/SettingsView.js`**: the save button now reads "Salva impostazioni" instead of "Salva e riavvia" — only some settings restart the server.
+- **`tests/test_stream_events.py`**, **`tests/test_declined.py`**: the `chat_stream_events` test doubles now mirror the new signature. Worth noting how the mismatch surfaced — the agent swallowed the resulting `TypeError` into a user-facing "❌ ATTENZIONE" message rather than failing loudly.
+
+The toggle deliberately does **not** re-prime the prompt cache. Measured against llama-server, switching it only changes the tail of the rendered prompt (the assistant's generation prefix), not the system block, so the warmed prefix stays valid: 13 tokens to compute after a switch versus 2271 from cold. An earlier version of this change re-primed on every toggle, which would have stalled the next message by ~8 s for nothing.
+
+### Fixed — The Cache Warm-Up Raced User Messages and Made Them Slower
+
+The warm-up below was fired as a background task with nothing stopping a user message from starting while it ran. Both drive the same llama-server, so they fought for the GPU. Measured by sending a message the instant the API came up: **28.5 s** for the turn — worse than the 19.3 s before any of this work — and the warm-up itself stretched from 8 s to 16 s. A user who launches the app and types immediately is the normal case, not an edge case, so this was a regression introduced by the optimisation.
+
+- **`llampaca/gui/server.py`**: added `AgentManager._inference_lock`, held by `_warm_prompt_cache()` for the priming request and awaited by the request-queue loop before it starts a turn. A message arriving mid-warm-up now waits for it instead of competing with it, then inherits the cache it just built. Turns are already serialised by that loop, so the lock adds no other contention.
+
+Measured after the fix, message sent immediately at startup: 21.9 s, and llama-server's log confirms the cache is doing its job — the turn computed **7 prompt tokens instead of 2286**. The remaining time is 8 s waiting for the warm-up (unavoidable: whoever pays the prefill, it costs ~8 s) plus 13.5 s of generation, because the model produced 351 tokens of reasoning to answer "ciao".
+
+That last figure is now the dominant cost of a turn in the GUI, and it is not addressed here: `llampaca run` exposes `--no-think` to disable the reasoning phase, but `llampaca gui` has no equivalent, so every GUI answer pays for reasoning whether it needs it or not.
+
+### Fixed — Auto-Titling Made the First Message of Every Chat ~7 s Slower
+
+The first message of a conversation triggers a second, complete inference just to name the chat. On a reasoning model that call *thinks* before writing four words, and the SSE stream stays open until it finishes — so the user waits for it after their answer has already been written. Measured on Qwen3-4B, producing the two-word title "Solo ok": **834 tokens and 29.5 s** in the worst case seen, 195 tokens and 6.7 s typically.
+
+- **`llampaca/engine/client.py`**: `chat_stream()` gained two optional arguments, both defaulting to the previous behaviour so the other call site (`agent/loop.py`, the self-aware error explanation) is unaffected:
+  - `no_think` — renders the chat template with thinking disabled for that single request, via llama-server's `chat_template_kwargs` passthrough (`enable_thinking: false`, which Qwen3's template reads). The CLI's `--no-think` does the same thing with the `--reasoning off` launch flag, which applies to the whole server; this is the per-call equivalent, so the model keeps reasoning for the user's actual questions and skips it only for throwaway generations.
+  - `max_tokens` — hard cap on the generated length.
+- **`llampaca/gui/server.py`**: the auto-titling call now passes `no_think=True, max_tokens=25`. The cap is a safety net for a GGUF whose template ignores the toggle and reasons anyway.
+
+Verified against llama-server before wiring it in, since a template that ignores the variable would have made this a silent no-op:
+
+| | tokens | time | title produced |
+|---|---|---|---|
+| as before | 195 | 6.7 s | `Read PDF with Python` |
+| `enable_thinking: false` | 8 | 0.3 s | `Come leggere PDF in Python?` |
+| + `max_tokens: 25` | 7 | 0.2 s | `Come leggere PDF in Python` |
+
+The titles also came out better: in the user's own language rather than drifting to English. Spot-checked across several conversations ("Come faccio a leggere un PDF con python?" → "Come leggere PDF in Python").
+
+Combined with the prompt-cache warm-up below, measured end to end on the first message of the first conversation after launch:
+
+| | time to first token | total turn |
+|---|---|---|
+| before both fixes | 12.17 s | 19.29 s |
+| warm-up only | 4.99 s | 16.38 s |
+| both | **4.57 s** | **4.93 s** |
+
+The first message is now no slower than the ones after it (4.93 s vs 5.85 s and 6.50 s for turns 2 and 3).
+
+### Added — Prompt Cache Warm-Up at Startup (first message ~7 s faster)
+
+Every conversation opens with the same block of tokens: system prompt, wiki index, skills index and the JSON schemas of all registered tools — measured at ~2286 tokens, of which ~1861 are tool schemas. llama-server caches the state it derives from a prompt prefix (`cache_prompt`, already enabled in `client.py`) and reuses it for any later request starting with the same tokens, so that cost is paid once per server process. Measured directly against llama-server:
+
+| request | tokens to compute | time |
+|---|---|---|
+| first | 2271 | 7690 ms |
+| next turn | 24 | 138 ms |
+| next turn | 30 | 156 ms |
+
+Until now that ~7.7 s landed on the user's first question. It is now paid at startup instead.
+
+- **`llampaca/engine/client.py`**: added `LlamaClient.prime_prompt_cache(messages, model, tools)` — a non-streaming `max_tokens=1` request that computes a prefix and discards the answer, returning llama-server's `timings`. Never raises: priming is an optimisation and must not be able to stop startup.
+- **`llampaca/gui/server.py`**: added `AgentManager._warm_prompt_cache()`, fired as a background task at the end of `_init_async` (after the MCP servers have registered their tools, since their schemas are part of the prefix) and again after `_restart_server_internal` succeeds (a restart means a new process with an empty cache). It builds the prefix by constructing a throwaway `Agent` with the same arguments `_process_message_coro` uses, then sends `agent.messages`. Building it that way rather than copying the strings is deliberate: `Agent.__init__` appends today's date and, in prompt-based tool mode, the tool instructions, and the cache is keyed on the exact token sequence — a hand-written copy would drift and silently waste the whole warm-up. `Agent.__init__` calls `get_chat_template()` with blocking `requests`, so it runs via `asyncio.to_thread` to keep the manager's event loop free.
+
+Measured end to end, first message of the first conversation after launch:
+
+| | before | after |
+|---|---|---|
+| time to first visible token | 12.17 s | **4.99 s** |
+
+The 7.2 s saved matches the measured prefill cost, confirming the cache is actually hit. Total turn time is still dominated by the auto-title generation, which is a separate issue (a second full inference that burns 198–834 reasoning tokens to produce a 4-word title) and is not addressed here.
+
+Two limits worth knowing: the work is relocated, not removed — it still costs ~8 s, just while the window is opening; and the system prompt is rebuilt from disk on every message, so editing a wiki page or adding a skill changes the prefix and the next message re-pays the prefill once before settling again.
+
 ### Fixed — The GUI Did Not Work Without an Internet Connection
 
 Llampaca's premise is "no cloud", but the desktop GUI could not start offline. Verified empirically by loading it in a browser with every external host blackholed: Vue never arrived, nothing mounted, and the window showed the raw unrendered template (`{{ toastMessage }}`, `{{ activeModelShort }}`, a stuck toast, no content area). Every third-party asset is now served from disk.
