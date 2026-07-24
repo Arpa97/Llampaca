@@ -87,18 +87,21 @@ def list_models():
     preset_table = []
     for name, preset in MODEL_PRESETS.items():
         is_downloaded = "Installed" if (MODELS_DIR / preset["file"]).exists() else "Not Installed"
-        preset_table.append([name, preset["repo"], preset["file"], is_downloaded, preset["description"]])
+        kind_label = preset.get("kind", "chat").upper()
+        preset_table.append([name, kind_label, preset["repo"], preset["file"], is_downloaded, preset["description"]])
         
-    click.echo(tabulate(preset_table, headers=["Preset Name", "HF Repo", "Filename", "Status", "Description"], tablefmt="simple"))
+    click.echo(tabulate(preset_table, headers=["Preset Name", "Kind", "HF Repo", "Filename", "Status", "Description"], tablefmt="simple"))
 
 @models.command(name="download")
+@click.argument("preset_name", required=False)
 @click.option("--preset", type=click.Choice(list(MODEL_PRESETS.keys())), help="Download a recommended model preset")
 @click.option("--repo", help="Hugging Face repository ID (e.g. Qwen/Qwen3.5-4B-Instruct-GGUF)")
 @click.option("--file", help="GGUF filename in the repository")
-def download_model(preset, repo, file):
+def download_model(preset_name, preset, repo, file):
     """Download a GGUF model from Hugging Face."""
-    if preset:
-        preset_info = MODEL_PRESETS[preset]
+    chosen_preset = preset or preset_name
+    if chosen_preset and chosen_preset in MODEL_PRESETS:
+        preset_info = MODEL_PRESETS[chosen_preset]
         repo_id = preset_info["repo"]
         filename = preset_info["file"]
     elif repo and file:
@@ -109,7 +112,8 @@ def download_model(preset, repo, file):
         click.echo("Please choose a model preset to download:")
         presets_list = list(MODEL_PRESETS.keys())
         for idx, name in enumerate(presets_list):
-            click.echo(f"[{idx + 1}] {name} ({MODEL_PRESETS[name]['description']})")
+            kind_tag = f"[{MODEL_PRESETS[name].get('kind', 'chat').upper()}] "
+            click.echo(f"[{idx + 1}] {kind_tag}{name} ({MODEL_PRESETS[name]['description']})")
         click.echo(f"[{len(presets_list) + 1}] Custom Hugging Face model")
         
         choice = click.prompt("Enter choice", type=int)
@@ -143,6 +147,8 @@ def download_model(preset, repo, file):
             config["embedding_model"] = filename
             save_config(config)
             click.echo(f"Successfully downloaded '{filename}' and set it as the embedding model (for document search/RAG).")
+        elif kind == "image":
+            click.echo(f"Successfully downloaded image generation model '{filename}'.")
         else:
             config["default_model"] = filename
             save_config(config)
@@ -1385,6 +1391,17 @@ def repo_remove(url):
         click.echo(f"Repository '{url}' rimosso con successo.")
     else:
         click.echo(f"Errore: repository '{url}' non trovato in mcp_config.json.")
+
+@main.command(name="generate-image")
+@click.argument("prompt")
+@click.option("--output", help="Cartella o percorso di destinazione personalizzato dell'immagine")
+@click.option("--quality", type=click.Choice(["fast", "high"]), default="fast", help="Preset qualità/velocità: 'fast' (flash) o 'high' (alta qualità)")
+def generate_image_cmd(prompt, output, quality):
+    """Genera un'immagine locale da un prompt usando stable-diffusion.cpp (sd.cpp)."""
+    from llampaca.tools.image import generate_image
+    click.echo(f"Generazione immagine in corso per il prompt: '{prompt}'...")
+    res = generate_image(prompt=prompt, output_directory=output, quality=quality)
+    click.echo(res)
 
 if __name__ == "__main__":
     main()

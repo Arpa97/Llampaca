@@ -260,9 +260,26 @@ export default {
             return text;
         };
 
+        const formatImageLinks = (text) => {
+            if (!text) return text;
+            if (text.includes('![') && text.includes('/api/media?path=')) return text;
+            return text.replace(
+                /(?:!\[([^\]]*)\]\((?:file:\/\/|\/api\/media\?path=)?([^)\s]+)\)|\[([^\]]*)\]\((?:file:\/\/)?([^)\s]+\.(?:png|jpg|jpeg|webp|gif))\)|(?:file:\/\/|~|\/Users|\/home|[a-zA-Z]:)[^\s)]+?\.(?:png|jpg|jpeg|webp|gif))/gi,
+                (match, alt1, path1, alt2, path2) => {
+                    let path = path1 || path2 || match;
+                    if (path.startsWith('file://')) path = path.slice(7);
+                    if (!/\.(png|jpg|jpeg|webp|gif)$/i.test(path)) return match;
+                    const cleanPath = decodeURIComponent(path);
+                    const mediaUrl = '/api/media?path=' + encodeURIComponent(cleanPath);
+                    const altText = alt1 || alt2 || 'Immagine generata';
+                    return `\n\n![${altText}](${mediaUrl})\n\n[📁 Apri file originale](file://${cleanPath})`;
+                }
+            );
+        };
+
         const parseMarkdown = (text) => {
             if (!text) return '';
-            const clean = collapseRemember(collapseAttachments(text));
+            const clean = formatImageLinks(collapseRemember(collapseAttachments(text)));
             // Use marked if available, fallback to plain text replacing newlines
             if (window.marked) {
                 return window.marked.parse(clean, { breaks: true });

@@ -251,6 +251,116 @@ def download_llama_binaries() -> bool:
     print("llama.cpp binaries and libraries installed successfully!")
     return True
 
+
+SD_GITHUB_API_URL = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest"
+
+def download_sd_binary():
+    """
+    Downloads the precompiled stable-diffusion.cpp (sd) executable
+    suited for the current OS and GPU architecture into BIN_DIR.
+    """
+    target_name = "sd.exe" if sys.platform == "win32" else "sd"
+    target_path = BIN_DIR / target_name
+    if target_path.exists() and os.access(target_path, os.X_OK if sys.platform != "win32" else os.F_OK):
+        return True
+
+    print(f"Checking for stable-diffusion.cpp binaries for {sys.platform}...")
+    headers = {"User-Agent": "Llampaca-App"}
+
+    try:
+        res = requests.get(SD_GITHUB_API_URL, headers=headers, timeout=10)
+        res.raise_for_status()
+        release_data = res.json()
+        assets = release_data.get("assets", [])
+    except Exception as e:
+        print(f"Failed to fetch GitHub release metadata for stable-diffusion.cpp: {e}")
+        return False
+
+    os_name, arch, gpu_type = get_platform_details()
+    target_asset = find_matching_asset(assets, os_name, arch, gpu_type)
+
+    if not target_asset:
+        # Fallback search for any binary zip in assets
+        for asset in assets:
+            if "bin" in asset["name"].lower() and asset["name"].endswith(".zip"):
+                target_asset = asset
+                break
+
+    if not target_asset:
+        print("Could not find suitable stable-diffusion.cpp binary asset for this platform.")
+        return False
+
+    download_url = target_asset["browser_download_url"]
+    asset_name = target_asset["name"]
+
+    print(f"Downloading stable-diffusion.cpp binary from {download_url}...")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir_path = Path(temp_dir)
+        temp_zip = temp_dir_path / asset_name
+
+        try:
+            with requests.get(download_url, headers=headers, stream=True, timeout=60) as response:
+                response.raise_for_status()
+                total_size = int(response.headers.get("content-length", 0))
+                with open(temp_zip, "wb") as f, tqdm(
+                    desc=asset_name,
+                    total=total_size,
+                    unit="iB",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                ) as bar:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        size = f.write(chunk)
+                        bar.update(size)
+        except Exception as e:
+            print(f"Failed to download stable-diffusion.cpp archive: {e}")
+            return False
+
+        extract_dir = temp_dir_path / "extracted"
+        extract_dir.mkdir()
+
+        try:
+            with zipfile.ZipFile(temp_zip, "r") as zip_ref:
+                zip_ref.extractall(extract_dir)
+        except Exception as e:
+            print(f"Failed to extract stable-diffusion.cpp zip: {e}")
+            return False
+
+        sd_executable = None
+        sd_names = ["sd-cli", "sd-cli.exe", "sd", "sd.exe", "stable-diffusion"]
+        for root, _, files in os.walk(extract_dir):
+            for file in files:
+                if file in sd_names:
+                    sd_executable = Path(root) / file
+                    break
+            if sd_executable:
+                break
+
+        BIN_DIR.mkdir(parents=True, exist_ok=True)
+        if sd_executable and sd_executable.exists():
+            # Copy all contents of the directory (including dylib / dll / so files)
+            bin_source_dir = sd_executable.parent
+            for item in bin_source_dir.iterdir():
+                if item.is_file():
+                    dest_path = BIN_DIR / item.name
+                    shutil.copy2(item, dest_path)
+                    if sys.platform != "win32" and not item.name.endswith((".dylib", ".so", ".txt")):
+                        os.chmod(dest_path, 0o755)
+
+            # Ensure 'sd' or 'sd.exe' exists as a symlink or copy to 'sd-cli'
+            if target_path != sd_executable and not target_path.exists():
+                shutil.copy2(sd_executable, target_path)
+                if sys.platform != "win32":
+                    os.chmod(target_path, 0o755)
+
+            print(f"Installed {target_name} binary to {target_path}")
+            return True
+        else:
+            print("Executable 'sd' not found in downloaded archive.")
+            return False
+
+
 import threading
 
 downloads_lock = threading.Lock()

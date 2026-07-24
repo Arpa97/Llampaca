@@ -91,17 +91,14 @@ MESSAGE_OVERHEAD_TOKENS = 4
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Llampaca, a helpful local AI personal assistant running entirely "
-    "on the user's machine. You can use the available tools to read and write "
+    "on the user's machine. You can use the available tools to generate images, read and write "
     "files in the user's workspace, run shell commands, search the web, and "
     "fetch web pages. "
+    "CRITICAL RULE FOR IMAGE GENERATION: Whenever the user asks to generate, create, draw, or render an image, picture, visual, or illustration, you MUST IMMEDIATELY call the 'generate_image' tool on the FIRST turn. Never describe or pretend to generate an image in plain text without calling the 'generate_image' tool! "
     "CRITICAL RULE FOR SKILLS: If the user's request matches any Available Markdown Skill listed below (such as creating/editing Word .docx files using the 'docx' skill, etc.), you MUST call read_skill_page('<skill_slug>') FIRST to read the complete workflow and instructions before calling file or shell tools! "
     "When the user asks about current events or facts that may "
     "have changed since your training, or anything you are unsure of or do "
     "not know, use web_search rather than guessing, and cite what you found. "
-    # Language models tokenize text, so they cannot reliably see individual
-    # characters and are notoriously bad at counting them or at exact
-    # arithmetic. The shell can do both perfectly, so we steer the model to
-    # compute these answers instead of guessing them.
     "You cannot see individual characters in text and you cannot do reliable "
     "arithmetic in your head. For anything that must be exact — counting "
     "characters, letters, words or lines, reversing or sorting text, and "
@@ -255,6 +252,7 @@ class Agent:
         summarize_pending() (see that method for the rationale).
         """
         self.messages.append({"role": "user", "content": user_input, "id": message_id})
+        last_image_result = None
 
         for _ in range(self.max_iterations):
             # Keep the history inside the context budget before *every*
@@ -440,6 +438,11 @@ class Agent:
 
             tool_calls = assistant_message.get("tool_calls")
             if not tool_calls:
+                if last_image_result and last_image_result not in (assistant_message.get("content") or ""):
+                    extra_preview = f"\n\n{last_image_result}"
+                    current_c = assistant_message.get("content") or ""
+                    assistant_message["content"] = current_c + extra_preview
+                    yield ("text", extra_preview)
                 return  # no tools requested: final answer for this turn
 
             for tool_call in tool_calls:
@@ -449,6 +452,9 @@ class Agent:
 
                 result = await self._execute_with_confirmation(name, arguments_json)
                 yield ("tool_result", {"name": name, "result": result})
+
+                if name == "generate_image" and ("![" in result or "/api/media" in result or "file://" in result):
+                    last_image_result = result
 
                 # Feed the result back to the model, linked to its call id
                 self.messages.append({

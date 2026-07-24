@@ -12,10 +12,13 @@ export function useModelsController() {
     // view can render them as separate sections. Anything not explicitly marked
     // "embedding" (including custom local files with no kind) is a chat model.
     const chatModels = computed(() =>
-        models.value.filter(m => (m.kind || 'chat') !== 'embedding')
+        models.value.filter(m => (m.kind || 'chat') !== 'embedding' && m.kind !== 'image')
     );
     const embeddingModels = computed(() =>
         models.value.filter(m => m.kind === 'embedding')
+    );
+    const imageModels = computed(() =>
+        models.value.filter(m => m.kind === 'image')
     );
 
     const startPolling = () => {
@@ -111,14 +114,16 @@ export function useModelsController() {
     // hence the blocking overlay); "embedding" only persists the choice, so no
     // overlay is shown for it.
     const setDefaultModel = async (name, kind = 'chat') => {
-        const isChat = kind !== 'embedding';
+        const isChat = kind !== 'embedding' && kind !== 'image';
         try {
             if (isChat) isRestarting.value = true;
             await model.setDefaultModel(name, kind);
             await loadModels();
             window.dispatchEvent(new CustomEvent('llampaca:status-changed'));
             if (window.showToast) {
-                const label = isChat ? 'Modello di chat predefinito' : 'Modello di embedding predefinito';
+                let label = 'Modello di chat predefinito';
+                if (kind === 'embedding') label = 'Modello di embedding predefinito';
+                if (kind === 'image') label = 'Modello immagini predefinito';
                 window.showToast(`${label} impostato su ${name}!`, 'success');
             }
         } catch (e) {
@@ -225,6 +230,7 @@ export function useModelsController() {
         models,
         chatModels,
         embeddingModels,
+        imageModels,
         downloadUrl,
         startDownload,
         setDefaultModel,

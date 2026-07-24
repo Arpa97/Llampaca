@@ -901,6 +901,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_get_clients_status()
         elif self.path.startswith('/api/clients/snippets'):
             self.handle_get_clients_snippets()
+        elif self.path.startswith('/api/media'):
+            self.handle_get_media(original_path)
         else:
             super().do_GET()
 
@@ -928,6 +930,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_post_skills()
         elif self.path.startswith('/api/clients/mcp/setup'):
             self.handle_post_clients_mcp_setup()
+        elif self.path.startswith('/api/open-file'):
+            self.handle_post_open_file()
         else:
             self.send_error(404, "Not Found")
 
@@ -1610,6 +1614,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             # (and vice versa), so the two "active" flags are computed against
             # two different config keys below.
             embedding_model = config.get("embedding_model", "")
+            image_model = config.get("image_model", "")
 
             # List local GGUF files
             from pathlib import Path
@@ -1644,6 +1649,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 is_installed = filename in installed_filenames
                 if kind == "embedding":
                     is_active = (embedding_model == p_name or embedding_model == filename)
+                elif kind == "image":
+                    is_active = (image_model == p_name or image_model == filename)
                 else:
                     is_active = (default_model == p_name or default_model == filename)
 
@@ -1678,6 +1685,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         quant_str = "Q8_0"
                     elif "q4_k_m" in filename.lower():
                         quant_str = "Q4_K_M"
+                    elif "q4_0" in filename.lower():
+                        quant_str = "Q4_0"
                         
                 models_list.append({
                     "id": filename,
@@ -1711,8 +1720,12 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     if q in name_lower:
                         quant_str = q.upper()
                         break
-                        
+                
+                kind = "chat"
                 is_active = (default_model == filename)
+                if any(kw in name_lower for kw in ["sdxl", "sd1", "sd2", "sd3", "flux", "stable-diffusion", "diffusion"]):
+                    kind = "image"
+                    is_active = (image_model == filename)
                 
                 models_list.append({
                     "id": filename,
@@ -1726,9 +1739,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "progress": 100,
                     "active": is_active,
                     "repo_id": None,
-                    # Custom local GGUF files are not in the preset table, so
-                    # their kind is unknown; they are treated as chat models.
-                    "kind": "chat"
+                    "kind": kind
                 })
                 
             # 3. Add other active custom downloads (not in presets)
@@ -2069,6 +2080,11 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     print(f"[GUI Server] Could not reset embedding service: {e}", flush=True)
                 print(f"[GUI Server] Default embedding model changed to {model_name}.", flush=True)
                 body = json.dumps({"status": "ok", "embedding_model": model_name}).encode('utf-8')
+            elif kind == "image":
+                config["image_model"] = model_name
+                save_config(config)
+                print(f"[GUI Server] Default image model changed to {model_name}.", flush=True)
+                body = json.dumps({"status": "ok", "image_model": model_name}).encode('utf-8')
             else:
                 config["default_model"] = model_name
                 save_config(config)
@@ -2519,6 +2535,84 @@ print(response.choices[0].message.content)"""
         except Exception as e:
             traceback.print_exc()
             self.send_error(500, str(e))
+
+    def handle_get_media(self, original_path):
+        """Serves local media files (e.g., generated images in LlampacaDocs) to the webview UI."""
+        try:
+            import urllib.parse
+            import mimetypes
+            query_str = ""
+            if "?" in original_path:
+                query_str = original_path.split("?", 1)[1]
+            params = urllib.parse.parse_qs(query_str)
+            raw_path = params.get("path", [""])[0]
+            if not raw_path:
+                self.send_error(400, "Missing path parameter")
+                return
+
+            raw_path = urllib.parse.unquote(raw_path)
+            if raw_path.startswith("file://"):
+                raw_path = raw_path[7:]
+
+            file_path = Path(raw_path).expanduser().resolve()
+            if not file_path.exists() or not file_path.is_file():
+                self.send_error(404, "File not found")
+                return
+
+            mime_type, _ = mimetypes.guess_type(str(file_path))
+            if not mime_type:
+                mime_type = "image/png" if file_path.suffix.lower() == ".png" else "application/octet-stream"
+
+            file_size = file_path.stat().st_size
+            self.send_response(200)
+            self.send_header('Content-Type', mime_type)
+            self.send_header('Content-Length', str(file_size))
+            self.send_header('Cache-Control', 'public, max-age=86400')
+            self.end_headers()
+
+            with open(file_path, "rb") as f:
+                import shutil
+                shutil.copyfileobj(f, self.wfile)
+        except Exception as e:
+            traceback.print_exc()
+            self.send_error(500, str(e))
+
+    def handle_post_open_file(self):
+        """Opens a local file or reveals it in OS File Manager (Finder / Explorer)."""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            payload = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
+            raw_path = (payload.get("path") or "").strip()
+            if not raw_path:
+                self._send_json({"error": "Missing path parameter"}, status=400)
+                return
+
+            import urllib.parse
+            raw_path = urllib.parse.unquote(raw_path)
+            if raw_path.startswith("file://"):
+                raw_path = raw_path[7:]
+
+            if "?path=" in raw_path:
+                raw_path = raw_path.split("?path=", 1)[1]
+                raw_path = urllib.parse.unquote(raw_path)
+
+            file_path = Path(raw_path).expanduser().resolve()
+            if not file_path.exists():
+                self._send_json({"error": f"File non trovato: {file_path}"}, status=404)
+                return
+
+            import subprocess, sys
+            if sys.platform == 'darwin':
+                subprocess.run(['open', '-R', str(file_path)])
+            elif sys.platform == 'win32':
+                subprocess.run(['explorer', '/select,', str(file_path)])
+            else:
+                subprocess.run(['xdg-open', str(file_path.parent)])
+
+            self._send_json({"success": True})
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, status=500)
 
 
 def _get_client_config_paths():

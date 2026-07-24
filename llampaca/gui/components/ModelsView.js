@@ -10,7 +10,9 @@ const ModelCard = {
     // they are choosing the chat model or the embedding model.
     computed: {
         defaultLabel() {
-            return this.m.kind === 'embedding' ? 'Usa per embedding' : 'Usa come default';
+            if (this.m.kind === 'embedding') return 'Usa per embedding';
+            if (this.m.kind === 'image') return 'Usa per immagini';
+            return 'Usa come default';
         }
     },
     template: `
@@ -112,6 +114,25 @@ export default {
                     <div v-else class="models-grid">
                         <model-card
                             v-for="m in embeddingModels"
+                            :key="m.id"
+                            :m="m"
+                            @set-default="onSetDefault"
+                            @delete="deleteModel"
+                            @download="onDownload"
+                        />
+                    </div>
+
+                    <!-- Image Generation models -->
+                    <div class="section-head">
+                        <h3 class="section-title">Generazione Immagini</h3>
+                        <p class="section-desc">Modelli Stable Diffusion GGUF per la generazione di immagini in locale. Vengono caricati in memoria solo quando richiesti (on-demand).</p>
+                    </div>
+                    <div v-if="imageModels.length === 0" class="empty-panel">
+                        Nessun modello di generazione immagini nel catalogo.
+                    </div>
+                    <div v-else class="models-grid">
+                        <model-card
+                            v-for="m in imageModels"
                             :key="m.id"
                             :m="m"
                             @set-default="onSetDefault"

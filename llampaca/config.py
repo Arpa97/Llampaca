@@ -90,8 +90,50 @@ MODEL_PRESETS = {
             "that answer the query\nQuery: "
         ),
         "document_prefix": "",
+    },
+    "sdxl-turbo-q4": {
+        "repo": "gpustack/stable-diffusion-xl-1.0-turbo-GGUF",
+        "file": "stable-diffusion-xl-1.0-turbo-Q4_0.gguf",
+        "description": "SDXL Turbo GGUF (Flash / Veloce) - Generazione in 1-2 passi in pochissimi secondi",
+        "kind": "image",
+        "quality_preset": "fast",
+        "default_steps": 2,
+        "size_gb": 1.6
+    },
+    "flux-schnell-q4": {
+        "repo": "city96/FLUX.1-schnell-gguf",
+        "file": "flux1-schnell-Q4_0.gguf",
+        "description": "FLUX.1 Schnell GGUF (Alta Qualità) - 4 passi, dettagli fotorealistici eccezionali",
+        "kind": "image",
+        "quality_preset": "high",
+        "default_steps": 4,
+        "size_gb": 3.2
     }
 }
+
+IMAGE_PRESETS = {k: v for k, v in MODEL_PRESETS.items() if v.get("kind") == "image"}
+
+
+def get_user_documents_dir() -> Path:
+    """Returns default LlampacaDocs directory in user's Documents folder."""
+    docs_dir = Path.home() / "Documents" / "LlampacaDocs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    return docs_dir
+
+
+def resolve_user_output_path(filename: str, custom_dir: str = None, subfolder: str = "Images") -> Path:
+    """
+    Resolves output destination for user-generated files.
+    If custom_dir is provided (e.g. ~/Desktop or ./out), resolves it.
+    Otherwise defaults to ~/Documents/LlampacaDocs/<subfolder>/<filename>.
+    """
+    if custom_dir:
+        target_dir = Path(custom_dir).expanduser().resolve()
+    else:
+        target_dir = get_user_documents_dir() / subfolder
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / filename
+
 
 DEFAULT_CONFIG = {
     "llama_server_path": "",
@@ -131,13 +173,13 @@ DEFAULT_CONFIG = {
 }
 
 
-def get_preset_for_file(filename: str) -> dict | None:
+def get_preset_for_file(filename: str):
     """
-    Reverse lookup: the preset entry whose "file" matches a GGUF filename,
-    or None. Used to recover per-model metadata (pooling, prefixes) when
+    Given a GGUF filename, return the matching preset dict from ALL_PRESETS
+    or None. Used to recover per-model metadata (pooling, prefixes, kind) when
     the config stores a plain filename instead of a preset name.
     """
-    for preset in MODEL_PRESETS.values():
+    for preset in ALL_PRESETS.values():
         if preset["file"] == filename:
             return preset
     return None

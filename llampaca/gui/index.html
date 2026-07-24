@@ -1410,6 +1410,25 @@
             margin: 0 0 11px;
         }
 
+        .markdown-body img {
+            max-width: 100%;
+            max-height: 480px;
+            height: auto;
+            border-radius: var(--r-md);
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-2);
+            margin: 12px 0;
+            display: block;
+            object-fit: contain;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            cursor: pointer;
+        }
+
+        .markdown-body img:hover {
+            transform: scale(1.01);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        }
+
         .markdown-body h1,
         .markdown-body h2,
         .markdown-body h3,
@@ -2347,6 +2366,24 @@
          l'interfaccia restava un template grezzo non montato. -->
     <script src="vendor/marked.min.js"></script>
     <script src="vendor/vue.global.prod.js"></script>
+    <!-- Interceptor for opening local files/images in OS Finder/Explorer -->
+    <script>
+        document.addEventListener('click', function (e) {
+            const a = e.target.closest('a');
+            if (!a) return;
+            const href = a.getAttribute('href');
+            if (!href) return;
+
+            if (href.startsWith('file://') || href.includes('/api/media?path=') || href.includes('/LlampacaDocs/') || /\.(png|jpg|jpeg|webp|gif|pdf|docx|txt)$/i.test(href)) {
+                e.preventDefault();
+                fetch('/api/open-file', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: href })
+                }).catch(function(err) { console.error('Error opening file:', err); });
+            }
+        });
+    </script>
     <!-- Frontend logic app.js (loaded as ES6 module) -->
     <script type="module" src="app.js"></script>
 </body>
