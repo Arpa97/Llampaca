@@ -132,16 +132,47 @@ def read_file(path: str, start_line: int = 0, max_lines: int = 0) -> str:
     return f"{header}\n{selected}{footer}"
 
 
+def is_project_workspace() -> bool:
+    """Returns True if the current workspace looks like a specific project directory,
+       False if it's a global run (like Home dir or an App bundle)."""
+    home = Path.home().resolve()
+    if WORKSPACE_ROOT == home:
+        return False
+    # If running from a Mac app bundle or root
+    if ".app/Contents" in str(WORKSPACE_ROOT) or str(WORKSPACE_ROOT) == "/":
+        return False
+    return True
+
 def write_file(path: str, content: str) -> str:
     """
-    Write text content to a file in the workspace, creating parent directories
-    if needed. Overwrites the file if it already exists.
+    Write text content to a file. If running globally (not in a project) and
+    no absolute path is provided, routes to ~/Documents/LlampacaDocs/<FileType>.
+    Otherwise writes to the workspace. Overwrites if it exists.
 
     Args:
-        path: Path of the file to write, relative to the workspace directory.
+        path: Path of the file to write.
         content: The full text content to write into the file.
     """
-    resolved = _resolve_in_workspace(path)
+    original_path = Path(path).expanduser()
+    
+    if not is_project_workspace() and not original_path.is_absolute():
+        ext = original_path.suffix.lower()
+        if ext in ('.txt', '.md', '.csv', '.rtf', '.json'):
+            subfolder = "Text"
+        elif ext == '.pdf':
+            subfolder = "PDFs"
+        elif ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
+            subfolder = "Images"
+        elif ext in ('.py', '.js', '.html', '.css', '.cpp', '.c', '.java', '.go', '.rs'):
+            subfolder = "Code"
+        else:
+            subfolder = "Files"
+            
+        from llampaca.config import resolve_user_output_path
+        resolved = resolve_user_output_path(str(original_path), subfolder=subfolder)
+    else:
+        resolved = _resolve_in_workspace(path)
+
     if resolved.is_dir():
         return f"Error: '{path}' is an existing directory, cannot write a file there."
 
