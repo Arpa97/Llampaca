@@ -58,6 +58,12 @@ export default {
                                      confronto stretto l'etichetta compariva solo sui
                                      messaggi appena generati e spariva al ricaricamento. -->
                                 <div v-if="m.role !== 'user'" class="message-role">Llampaca</div>
+                                <div class="message-reasoning" v-if="m.reasoning">
+                                    <details open>
+                                        <summary class="reasoning-header">💡 Ragionamento del modello</summary>
+                                        <div class="reasoning-content">{{ m.reasoning }}</div>
+                                    </details>
+                                </div>
                                 <div class="message-bubble markdown-body" v-html="parseMarkdown(m.content)" v-if="m.content"></div>
                                 <div class="message-thought" v-if="m.thought">
                                     <span class="thought-dot"></span>

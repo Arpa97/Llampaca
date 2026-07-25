@@ -49,6 +49,7 @@ export function useChatController() {
         // abandons its chips so they can't be sent with the wrong message.
         // The `!==` guard keeps chips that the attach flow just added to a
         // conversation it created on the fly (which triggers this same watch).
+        pendingConfirmations.value = [];
         if (attachmentsConvId.value !== newVal) {
             attachments.value = [];
         }
@@ -179,17 +180,28 @@ export function useChatController() {
                                 const msg = getMsg();
                                 if (msg) msg.thought = data;
                                 scrollToBottom();
+                            } else if (kind === "reasoning") {
+                                const msg = getMsg();
+                                if (msg) {
+                                    if (!msg.reasoning) msg.reasoning = '';
+                                    msg.reasoning += data;
+                                    msg.thought = 'Ragionamento in corso...';
+                                }
+                                scrollToBottom();
                             } else if (kind === "text") {
                                 // Accumulate streaming text
                                 const msg = getMsg();
                                 if (msg) {
-                                    if (msg.thought) msg.thought = '';
+                                    if (msg.thought && msg.thought.includes('in corso')) msg.thought = '';
                                     msg.content += data;
                                 }
                                 scrollToBottom();
                             } else if (kind === "tool_call") {
                                 const msg = getMsg();
-                                if (msg) msg.thought = `Uso lo strumento: ${data.name}...`;
+                                if (msg) {
+                                    msg.content = '';
+                                    msg.thought = `Uso lo strumento: ${data.name}...`;
+                                }
                                 console.log(`[tool] ${data.name}(${JSON.stringify(data.arguments)})`);
                                 scrollToBottom();
                             } else if (kind === "tool_result") {
@@ -212,6 +224,10 @@ export function useChatController() {
                                 const msg = getMsg();
                                 if (msg) msg.thought = `⚠️ Autorizzazione richiesta per l'operazione: ${data.name}...`;
                                 scrollToBottom();
+                            } else if (kind === "tool_confirm_cancel") {
+                                if (data && data.confirm_id) {
+                                    pendingConfirmations.value = pendingConfirmations.value.filter(c => c.confirm_id !== data.confirm_id);
+                                }
                             } else if (kind === "warning") {
                                 console.warn(`[avviso] ${data}`);
                             } else if (kind === "error") {
@@ -389,17 +405,24 @@ export function useChatController() {
 
     const resolveConfirmation = async (allow) => {
         if (!pendingConfirmations.value.length) return;
-        const current = pendingConfirmations.value.shift();
+        const current = pendingConfirmations.value[0];
         const confirmId = current.confirm_id;
         
         try {
-            await fetch('/api/confirm', {
+            const res = await fetch('/api/confirm', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ confirm_id: confirmId, allow: allow })
             });
+            if (res.ok) {
+                pendingConfirmations.value.shift();
+            } else {
+                console.error("Failed to send confirmation: HTTP", res.status);
+                pendingConfirmations.value.shift();
+            }
         } catch (e) {
             console.error("Failed to send confirmation", e);
+            pendingConfirmations.value.shift();
         }
     };
 

@@ -32,7 +32,10 @@ export class ChatModel {
     async addMessage(convId, role, content, signal) {
         const response = await fetch(`/api/conversations/${convId}/messages`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+            },
             body: JSON.stringify({ role, content }),
             signal   // AbortSignal: lets the caller stop reading the stream
         });

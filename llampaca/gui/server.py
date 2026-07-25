@@ -511,6 +511,7 @@ class AgentManager:
             return self.pending_confirmations.get(confirm_id, {}).get("result", False)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             print(f"[confirm_tool] Conferma per '{name}' (id: {confirm_id}) annullata o scaduta.", flush=True)
+            result_queue.put(("event", "tool_confirm_cancel", {"confirm_id": confirm_id}))
             return False
         finally:
             self.pending_confirmations.pop(confirm_id, None)
@@ -727,15 +728,9 @@ class AgentManager:
             agent.messages.extend(active_messages)
 
             response_content = ""
+            reasoning_content = ""
             print(f"\n[Agent Session] Processing message for conversation {conv_id}...", flush=True)
 
-            # Turn timing + generation counters — mirror the CLI footer so
-            # the GUI reports the exact same numbers. monotonic() so a system
-            # clock change mid-turn can't distort the elapsed time. The tokens
-            # and milliseconds are summed across every model request the turn
-            # makes (a turn with tool round-trips is several requests), and the
-            # speed is derived from tokens/generation-ms — never wall-clock —
-            # so tool execution time never dilutes the reported tok/s.
             import time as _time
             turn_started = _time.monotonic()
             gen_tokens = 0
@@ -746,14 +741,16 @@ class AgentManager:
                 if kind == "tool_call":
                     last_tool_call["name"] = data.get("name")
                     last_tool_call["arguments"] = data.get("arguments")
+                    response_content = ""  # Reset accumulated text: text before tool call was invocation syntax
+                    reasoning_content = ""  # Reset: reasoning from tool-invocation iteration is not the final answer
                 elif kind == "stats":
-                    # Per-request server timings: accumulate silently and
-                    # surface them once, in the turn footer (context_status).
                     gen_tokens += data.get("predicted_n") or 0
                     gen_ms += data.get("predicted_ms") or 0.0
                 result_queue.put(("event", kind, data))
                 if kind == "text":
                     response_content += data
+                elif kind == "reasoning":
+                    reasoning_content += data
                 elif kind == "summary_updated":
                     await update_conversation_summary(
                         conv_id,
@@ -763,6 +760,18 @@ class AgentManager:
 
             turn_seconds = _time.monotonic() - turn_started
             print("\n[Agent Session] Completed.", flush=True)
+            if not response_content and reasoning_content:
+                # Clean any raw <tool_call> tags that may remain from
+                # iterations where the model tried to call unregistered tools
+                # or emitted tool syntax in the reasoning stream.
+                import re as _re
+                cleaned_reasoning = _re.sub(r"<tool_call>\s*\{.*?\}\s*</tool_call>", "", reasoning_content, flags=_re.S)
+                cleaned_reasoning = _re.sub(r"<tool_call>.*", "", cleaned_reasoning, flags=_re.S)
+                cleaned_reasoning = cleaned_reasoning.strip()
+                if cleaned_reasoning:
+                    response_content = cleaned_reasoning
+                    result_queue.put(("event", "text", cleaned_reasoning))
+
             if response_content:
                 assistant_msg_id = await add_message(conv_id, "assistant", response_content)
                 result_queue.put(("done", {"assistant_message_id": assistant_msg_id}))
@@ -971,17 +980,22 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             confirm_id = payload.get("confirm_id")
             allow = payload.get("allow", False)
             
-            def resolve():
-                if confirm_id in agent_manager.pending_confirmations:
-                    agent_manager.pending_confirmations[confirm_id]["result"] = allow
-                    agent_manager.pending_confirmations[confirm_id]["event"].set()
-                    
-            agent_manager.loop.call_soon_threadsafe(resolve)
-            
+            found = False
+            if confirm_id and confirm_id in agent_manager.pending_confirmations:
+                found = True
+                def resolve():
+                    if confirm_id in agent_manager.pending_confirmations:
+                        agent_manager.pending_confirmations[confirm_id]["result"] = allow
+                        agent_manager.pending_confirmations[confirm_id]["event"].set()
+                agent_manager.loop.call_soon_threadsafe(resolve)
+                
+            status_str = "ok" if found else "expired"
+            body = json.dumps({"status": status_str}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(b'{"status":"ok"}')
+            self.wfile.write(body)
         except Exception as e:
             print("!!! [API POST ERROR] Exception in /api/confirm:", flush=True)
             traceback.print_exc()
@@ -1129,7 +1143,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
-            self.send_header('Connection', 'keep-alive')
+            self.send_header('Connection', 'close')
             self.send_header('Transfer-Encoding', 'chunked')
             self.send_header('X-Accel-Buffering', 'no')
             self.end_headers()
@@ -1164,6 +1178,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         self.emit_sse("text", data)
                         sys.stdout.write(data)
                         sys.stdout.flush()
+                    elif kind == "reasoning":
+                        self.emit_sse("reasoning", data)
                     elif kind == "tool_call":
                         self.emit_sse("tool_call", data)
                         print(f"\n  [tool] {data['name']}({data['arguments']})", flush=True)
@@ -1175,6 +1191,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         print(f"  [result] {preview}", flush=True)
                     elif kind == "tool_confirm_request":
                         self.emit_sse("tool_confirm_request", data)
+                    elif kind == "tool_confirm_cancel":
+                        self.emit_sse("tool_confirm_cancel", data)
                     elif kind == "summary_updated":
                         # The summary DB update is now handled by the Agent internally
                         # We just emit the SSE
@@ -1325,7 +1343,8 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     # hangs — exactly the reported symptom.) Padding every event up to this
     # size with an ignored SSE comment line guarantees each event on its own
     # exceeds the threshold and is delivered instantly.
-    _SSE_MIN_CHUNK_BYTES = 2048
+    # 65536 is used to guarantee flushing of all browser network buffers (Safari and some WebKit variants buffer up to 64KB of streaming responses).
+    _SSE_MIN_CHUNK_BYTES = 65536
 
     def emit_sse(self, kind, data):
         """Helper to send event stream chunks to the frontend."""
@@ -2787,6 +2806,23 @@ def start_http_server(directory, port):
             super().__init__(*args, directory=str(directory), **kwargs)
 
     class ThreadedServer(socketserver.ThreadingTCPServer):
+        def server_bind(self):
+            import socket
+            try:
+                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+            super().server_bind()
+
+        def get_request(self):
+            import socket
+            sock, addr = super().get_request()
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+            return sock, addr
+
         def handle_error(self, request, client_address):
             import sys, socket
             exc_type, exc_val = sys.exc_info()[:2]

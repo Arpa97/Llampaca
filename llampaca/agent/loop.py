@@ -104,6 +104,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "characters, letters, words or lines, reversing or sorting text, and "
     "arithmetic — do not guess: use run_shell_command to compute the answer, "
     "then report the computed result. "
+    "If the user asks about his identity, read the right page with the profile with 'read_wiki_page'. "
+    "If the user asks you to update his identity or personal information, update the right page with the profile "
+    "using 'update_wiki_page' tool. Do not delete information unless explicitly asked by the user. "
     "Use tools when they help you answer accurately; answer directly when you "
     "don't need them. Be concise."
 )
@@ -193,12 +196,19 @@ class Agent:
         # free. Applied to custom prompts too, since the problem is the same.
         base_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         today = datetime.now().strftime("%A, %d %B %Y")
+        year = datetime.now().year
         # The tool-free part of the system prompt, kept on the instance so
         # the full prompt can be REBUILT whenever the tool set or the tool
         # mode changes mid-session (refresh_tools, _switch_to_prompt_mode).
         # Rebuilding from this base — instead of appending to messages[0] —
         # keeps those operations idempotent: no duplicated tool sections.
-        self._base_system_prompt = f"{base_prompt} Today's date is {today}."
+        self._base_system_prompt = (
+            f"{base_prompt} "
+            f"Today's date is {today}. The current year is {year}. "
+            f"La data di oggi è: {today}. L'anno corrente è {year}. "
+            f"When searching the web, ALWAYS include the current year ({year}) in the query "
+            f"if the user's question refers to recent or current events."
+        )
 
         # Skip the reasoning phase on every request of this session. The CLI
         # sets the equivalent on the server at launch (--no-think); this is the
@@ -292,6 +302,7 @@ class Agent:
             # --- 1. Query the model (streaming) -------------------------
             assistant_message: Optional[Dict[str, Any]] = None
             produced_text = False  # did we stream any assistant text this call?
+            accumulated_reasoning = ""
             # In prompt mode a tool call arrives as JSON *text*. We hold the
             # stream back while the output still looks like JSON (so the raw
             # call is never shown to the user), but flush and stream live as
@@ -315,15 +326,8 @@ class Agent:
                         else:
                             yield ("text", data)
                     elif kind == "reasoning":
-                        # Thinking streams through untouched (never buffered:
-                        # the prompt-mode JSON buffering only concerns the
-                        # answer text, a tool call never hides in reasoning).
-                        # It also counts as produced output for the
-                        # tool-rejection heuristic below: a template that
-                        # rejects the tools parameter fails before generating
-                        # anything, so once thinking has streamed, a later
-                        # error is a runtime failure, not a rejection.
                         produced_text = True
+                        accumulated_reasoning += data
                         yield ("reasoning", data)
                     elif kind == "tool_name":
                         # Early announcement: the call's arguments are still
@@ -403,7 +407,7 @@ class Agent:
                 text = assistant_message.get("content") or ""
                 # Only text that stayed JSON-looking to the end (still
                 # buffered) can be a tool call; flushed prose is an answer.
-                call = self._extract_tool_call(text) if buffering else None
+                call = (self._extract_tool_call(text) if buffering else None) or self._extract_tool_call(accumulated_reasoning)
 
                 # The model's literal reply goes into the history either way,
                 # so it can see its own (attempted) call next round.
@@ -434,16 +438,48 @@ class Agent:
                 continue  # let the model see the result
 
             # --- 2b. Native mode: structured tool_calls from the server -
-            self.messages.append(assistant_message)
-
             tool_calls = assistant_message.get("tool_calls")
+            print(f"\n  [DEBUG native] assistant_message keys: {list(assistant_message.keys())}", flush=True)
+            print(f"  [DEBUG native] tool_calls from server: {tool_calls is not None} ({type(tool_calls).__name__})", flush=True)
+            print(f"  [DEBUG native] content (first 100): {(assistant_message.get('content') or '')[:100]!r}", flush=True)
+            print(f"  [DEBUG native] accumulated_reasoning (first 100): {accumulated_reasoning[:100]!r}", flush=True)
             if not tool_calls:
-                if last_image_result and last_image_result not in (assistant_message.get("content") or ""):
-                    extra_preview = f"\n\n{last_image_result}"
-                    current_c = assistant_message.get("content") or ""
-                    assistant_message["content"] = current_c + extra_preview
-                    yield ("text", extra_preview)
-                return  # no tools requested: final answer for this turn
+                text_content = assistant_message.get("content") or ""
+                fallback = self._extract_tool_call(text_content) or self._extract_tool_call(accumulated_reasoning)
+                print(f"  [DEBUG native] fallback result: {fallback}", flush=True)
+                if fallback:
+                    name, arguments_json = fallback
+                    call_id = f"call_fallback_{len(self.messages)}"
+                    tool_calls = [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": arguments_json,
+                        }
+                    }]
+                    # Sincronizza il messaggio assistente nella cronologia salvando il tool_calls sintetico
+                    # e pulendo la chiamata grezza dal contenuto di testo
+                    assistant_message["tool_calls"] = tool_calls
+                    assistant_message["content"] = self._clean_tool_call_text(text_content)
+                else:
+                    # If content is empty but reasoning contains the actual answer
+                    # (Qwen with reasoning enabled sometimes puts everything in
+                    # the thinking stream), promote the cleaned reasoning to content.
+                    if not (assistant_message.get("content") or "").strip() and accumulated_reasoning.strip():
+                        cleaned = self._clean_tool_call_text(accumulated_reasoning)
+                        if cleaned:
+                            assistant_message["content"] = cleaned
+                            yield ("text", cleaned)
+                    if last_image_result and last_image_result not in (assistant_message.get("content") or ""):
+                        extra_preview = f"\n\n{last_image_result}"
+                        current_c = assistant_message.get("content") or ""
+                        assistant_message["content"] = current_c + extra_preview
+                        yield ("text", extra_preview)
+                    self.messages.append(assistant_message)
+                    return  # no tools requested: final answer for this turn
+
+            self.messages.append(assistant_message)
 
             for tool_call in tool_calls:
                 name = tool_call["function"]["name"]
@@ -748,6 +784,11 @@ class Agent:
         stripped = text.strip()
         candidates = []
 
+        # XML tag format used by Qwen models: <tool_call> { ... } </tool_call> or <tool_call> { ... }
+        xml_tag = re.search(r"<tool_call>\s*(\{.*?\})(?:\s*</tool_call>|\s*$)", stripped, re.S)
+        if xml_tag:
+            candidates.append(xml_tag.group(1))
+
         # Fenced block: ```json { ... } ```
         fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.S)
         if fence:
@@ -775,6 +816,17 @@ class Agent:
             ):
                 return obj["name"], json.dumps(obj.get("arguments", {}))
         return None
+
+    @staticmethod
+    def _clean_tool_call_text(text: Optional[str]) -> Optional[str]:
+        """Strip raw XML <tool_call> tags or fenced JSON tool calls from assistant text content."""
+        if not text:
+            return None
+        cleaned = re.sub(r"<tool_call>\s*\{.*?\}\s*</tool_call>", "", text, flags=re.S)
+        cleaned = re.sub(r"<tool_call>.*", "", cleaned, flags=re.S)
+        cleaned = re.sub(r"```(?:json)?\s*\{\s*\"name\"\s*:.*?\s*\}\s*```", "", cleaned, flags=re.S)
+        cleaned = cleaned.strip()
+        return cleaned if cleaned else None
 
     # ------------------------------------------------------------------
     # Shared helpers
