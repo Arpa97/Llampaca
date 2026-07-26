@@ -213,14 +213,17 @@ export function useChatController() {
                                 scrollToBottom();
                             } else if (kind === "context_status") {
                                 // Turn footer: context occupancy (same estimate
-                                // the CLI uses), plus generation speed and the
-                                // elapsed time for the whole turn.
-                                contextBudget.value = data;
                             } else if (kind === "title_updated") {
                                 const conv = conversations.value.find(c => c.id === convId);
                                 if (conv) conv.title = data.title;
+                            } else if (kind === "tool_result") {
+                                const msg = getMsg();
+                                if (msg) msg.thought = `Risultato strumento ricevuto, in analisi...`;
                             } else if (kind === "tool_confirm_request") {
-                                pendingConfirmations.value.push(data);
+                                // Rendi la ricezione idempotente: ignora duplicati dello stesso confirm_id
+                                if (!pendingConfirmations.value.some(c => c.confirm_id === data.confirm_id)) {
+                                    pendingConfirmations.value.push(data);
+                                }
                                 const msg = getMsg();
                                 if (msg) msg.thought = `⚠️ Autorizzazione richiesta per l'operazione: ${data.name}...`;
                                 scrollToBottom();
@@ -228,6 +231,11 @@ export function useChatController() {
                                 if (data && data.confirm_id) {
                                     pendingConfirmations.value = pendingConfirmations.value.filter(c => c.confirm_id !== data.confirm_id);
                                 }
+                            } else if (kind === "context_status") {
+                                // Turn footer: context occupancy (same estimate
+                                // the CLI uses), plus generation speed and the
+                                // elapsed time for the whole turn.
+                                contextBudget.value = data;
                             } else if (kind === "warning") {
                                 console.warn(`[avviso] ${data}`);
                             } else if (kind === "error") {
@@ -408,21 +416,26 @@ export function useChatController() {
         const current = pendingConfirmations.value[0];
         const confirmId = current.confirm_id;
         
+        // Rimuoviamo immediatamente dalla coda in modo ottimistico
+        // per prevenire problemi di doppio click che altrimenti 
+        // finirebbero per consumare le conferme successive (shift() cieco).
+        pendingConfirmations.value = pendingConfirmations.value.filter(c => c.confirm_id !== confirmId);
+
         try {
             const res = await fetch('/api/confirm', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ confirm_id: confirmId, allow: allow })
             });
-            if (res.ok) {
-                pendingConfirmations.value.shift();
-            } else {
+            if (!res.ok) {
                 console.error("Failed to send confirmation: HTTP", res.status);
-                pendingConfirmations.value.shift();
+                // Rollback in case of server error
+                pendingConfirmations.value.unshift(current);
             }
         } catch (e) {
             console.error("Failed to send confirmation", e);
-            pendingConfirmations.value.shift();
+            // Rollback in case of network error
+            pendingConfirmations.value.unshift(current);
         }
     };
 
