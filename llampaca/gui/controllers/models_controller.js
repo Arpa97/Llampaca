@@ -20,6 +20,9 @@ export function useModelsController() {
     const imageModels = computed(() =>
         models.value.filter(m => m.kind === 'image')
     );
+    const projectorModels = computed(() =>
+        models.value.filter(m => m.kind === 'projector')
+    );
 
     const startPolling = () => {
         if (pollInterval) return;
@@ -199,7 +202,7 @@ export function useModelsController() {
         }
     };
 
-    const downloadSearchModel = async (repoId, filename) => {
+    const downloadSearchModel = async (repoId, filename, mmprojFilename = null) => {
         if (!filename) {
             if (window.showToast) {
                 window.showToast("Seleziona prima un file GGUF!", "error");
@@ -207,9 +210,14 @@ export function useModelsController() {
             return;
         }
         try {
-            await model.downloadModel(repoId, filename, null);
+            // Se c'è un mmproj, lo passiamo al backend nel body.
+            // Il modello (in lib/model.js) dovrà supportare un nuovo parametro o accodarlo all'oggetto payload.
+            await model.downloadModel(repoId, filename, null, mmprojFilename);
             if (window.showToast) {
                 window.showToast(`Avvio download di ${filename}...`, 'success');
+                if (mmprojFilename) {
+                    window.showToast(`Avvio download projector ${mmprojFilename}...`, 'success');
+                }
             }
             await loadModels();
         } catch (e) {
@@ -231,6 +239,7 @@ export function useModelsController() {
         chatModels,
         embeddingModels,
         imageModels,
+        projectorModels,
         downloadUrl,
         startDownload,
         setDefaultModel,

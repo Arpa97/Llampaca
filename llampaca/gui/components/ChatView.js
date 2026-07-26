@@ -120,7 +120,7 @@ export default {
 
                             <div v-if="attachments.length" class="attachment-chips">
                                 <div v-for="(a, i) in attachments" :key="i" class="attachment-chip" :class="a.status">
-                                    <span class="chip-icon">{{ a.status === 'uploading' ? '⏳' : (a.status === 'error' ? '⚠️' : (a.kind === 'rag' ? '🔍' : '📄')) }}</span>
+                                    <span class="chip-icon">{{ a.status === 'uploading' ? '⏳' : (a.status === 'error' ? '⚠️' : (a.kind === 'image' ? '🖼️' : (a.kind === 'rag' ? '🔍' : '📄'))) }}</span>
                                     <span class="chip-name" :title="a.name">{{ a.name }}</span>
                                     <span v-if="a.detail" class="chip-detail">{{ a.detail }}</span>
                                     <span class="chip-remove" role="button" tabindex="0" @click="removeAttachment(i)"
@@ -283,8 +283,17 @@ export default {
             );
         };
 
-        const parseMarkdown = (text) => {
-            if (!text) return '';
+        const parseMarkdown = (rawText) => {
+            if (!rawText) return '';
+            let text = rawText;
+            if (Array.isArray(rawText)) {
+                // Multimodal message: extract text parts and add image placeholders
+                text = rawText.map(item => {
+                    if (item.type === 'text') return item.text;
+                    if (item.type === 'image_url') return `📎 *[Immagine allegata]*`;
+                    return '';
+                }).join('\n\n');
+            }
             const clean = formatImageLinks(collapseRemember(collapseAttachments(text)));
             // Use marked if available, fallback to plain text replacing newlines
             if (window.marked) {

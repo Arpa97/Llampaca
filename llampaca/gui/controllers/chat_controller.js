@@ -117,9 +117,14 @@ export function useChatController() {
         // their chips now — but first capture their names so the sent bubble
         // shows WHAT was attached. Errored uploads never reached the backend,
         // so they are excluded.
-        const attachedNames = attachments.value
-            .filter(a => a.status !== 'error')
-            .map(a => a.name);
+        const validAttachments = attachments.value.filter(a => a.status !== 'error');
+        const attachedNames = validAttachments.map(a => a.name);
+        
+        // Extract base64 image data before clearing the array
+        const base64Images = validAttachments
+            .filter(a => a.base64Data)
+            .map(a => a.base64Data);
+            
         attachments.value = [];
 
         // 1. Immediately append user message to UI. Prepend a "📎 name" line
@@ -154,7 +159,20 @@ export function useChatController() {
 
         try {
             // Initiate send to backend API
-            const stream = await model.addMessage(convId, 'user', promptText, abortController.signal);
+            let payloadContent = promptText;
+            if (base64Images.length > 0) {
+                payloadContent = [
+                    { type: "text", text: promptText || " " }
+                ];
+                for (const imgData of base64Images) {
+                    payloadContent.push({
+                        type: "image_url",
+                        image_url: { url: imgData }
+                    });
+                }
+            }
+            
+            const stream = await model.addMessage(convId, 'user', payloadContent, abortController.signal);
             const reader = stream.getReader();
             const decoder = new TextDecoder("utf-8");
             let buffer = "";
@@ -447,9 +465,33 @@ export function useChatController() {
             name: file.name,
             status: 'uploading',
             kind: null,
-            detail: ''
+            detail: '',
+            base64Data: null
         };
         attachments.value.push(chip);
+        
+        // Image handling: process locally as base64 instead of uploading as document
+        if (file.type && file.type.startsWith('image/')) {
+            try {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    chip.base64Data = e.target.result;
+                    chip.status = 'done';
+                    chip.kind = 'image';
+                    chip.detail = 'immagine allegata';
+                };
+                reader.onerror = () => {
+                    chip.status = 'error';
+                    chip.detail = 'errore lettura immagine';
+                };
+                reader.readAsDataURL(file);
+            } catch (err) {
+                chip.status = 'error';
+                chip.detail = err.message;
+            }
+            return;
+        }
+
         try {
             const res = await model.uploadAttachment(convId, file);
             chip.status = 'done';

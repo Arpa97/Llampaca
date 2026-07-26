@@ -1090,14 +1090,15 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             role = payload.get('role', 'user')
             content = payload.get('content', '')
-            print(f"--- [API POST MESSAGE] Content payload: '{content[:100]}...'", flush=True)
+            
+            is_multimodal = isinstance(content, list)
+            if is_multimodal:
+                print(f"--- [API POST MESSAGE] Content payload: Multimodal array ({len(content)} items)", flush=True)
+            else:
+                print(f"--- [API POST MESSAGE] Content payload: '{content[:100]}...'", flush=True)
 
             # /remember <fact>: the GUI equivalent of the CLI chat command.
-            # Not written to disk directly — the fact is forwarded to the model
-            # as a normal turn, so IT picks (or creates) the right wiki page and
-            # the write still passes through the standard update_wiki_page
-            # confirmation (which appears as the GUI's Allow/Decline prompt).
-            if content.strip().lower().startswith("/remember"):
+            if not is_multimodal and content.strip().lower().startswith("/remember"):
                 fact = content.strip()[len("/remember"):].strip()
                 if fact:
                     content = (
@@ -1112,24 +1113,29 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     )
 
             # Merge any files staged for this conversation into the user turn,
-            # mirroring the CLI: injected attachments (document text) and RAG
-            # index notes go BEFORE the user's request, as one user message.
-            # Done here — before persisting — so the document travels with the
-            # message in the DB and stays available for follow-up questions on
-            # resume, not just for the single turn it was attached on.
             attachments, index_notes = agent_manager.take_pending(conv_id)
             if attachments or index_notes:
                 from llampaca.attachments import build_attachment_block
                 blocks = [build_attachment_block(n, t) for n, t in attachments]
                 blocks.extend(index_notes)
-                content = "\n\n".join(blocks + [content])
+                if is_multimodal:
+                    # In multimodal mode, if there are text attachments, prepend them as a text block
+                    blocks_str = "\n\n".join(blocks)
+                    if content and content[0].get("type") == "text":
+                        content[0]["text"] = blocks_str + "\n\n" + content[0].get("text", "")
+                    else:
+                        content.insert(0, {"type": "text", "text": blocks_str})
+                else:
+                    content = "\n\n".join(blocks + [content])
+                
                 names = ", ".join(n for n, _ in attachments)
                 if index_notes:
                     names = f"{names + ', ' if names else ''}{len(index_notes)} indexed doc(s)"
                 print(f"--- [API POST MESSAGE] Merged attachments: {names}", flush=True)
 
             # 1. Add user message to DB
-            user_msg_id = run_async(add_message(conv_id, role, content))
+            content_for_db = json.dumps(content) if is_multimodal else content
+            user_msg_id = run_async(add_message(conv_id, role, content_for_db))
             print(f"--- [API POST MESSAGE] Saved user message with ID: {user_msg_id}", flush=True)
 
             # Fetch conversation to get full history
@@ -1727,6 +1733,39 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             for filename in installed_filenames:
                 if filename in preset_filenames:
                     continue
+                # Identifichiamo i projector per una sezione separata
+                if filename.startswith("mmproj-") or filename.startswith("mmproj_"):
+                    linked_models = []
+                    for meta_file in MODELS_DIR.glob("*.gguf.json"):
+                        try:
+                            with open(meta_file, 'r', encoding='utf-8') as f:
+                                meta = json.load(f)
+                                if meta.get("mmproj") == filename:
+                                    linked_models.append(meta_file.name.replace(".json", ""))
+                        except:
+                            pass
+                    
+                    file = installed_paths[filename]
+                    size_bytes = file.stat().st_size
+                    from llampaca.cli import format_size
+                    size_str = format_size(size_bytes)
+                    
+                    models_list.append({
+                        "id": filename,
+                        "name": filename,
+                        "preset_id": None,
+                        "description": "Modulo aggiuntivo per l'analisi di immagini.",
+                        "size": size_str,
+                        "quant": "Sconosciuta",
+                        "installed": True,
+                        "downloading": False,
+                        "progress": 100,
+                        "active": False,
+                        "repo_id": None,
+                        "kind": "projector",
+                        "linked_models": linked_models
+                    })
+                    continue
                 with downloads_lock:
                     if filename in active_downloads and active_downloads[filename]["status"] == "downloading":
                         continue
@@ -1827,11 +1866,25 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             if not repo_id or not filename:
                 raise Exception("Impossibile identificare repository HF o nome file. Usa il formato 'utente/repo/nomefile.gguf'.")
                 
+            mmproj_filename = payload.get("mmproj_filename")
+                
             # Start background download
             from llampaca.engine.downloader import download_hf_model_async
             download_hf_model_async(repo_id, filename)
             
-            body = json.dumps({"status": "download_started", "repo_id": repo_id, "filename": filename}).encode('utf-8')
+            if mmproj_filename:
+                # Accodiamo anche il file projector, salvandolo con prefisso mmproj- 
+                # (anche se dovrebbe già chiamarsi mmproj-...) per poterlo trovare facilmente
+                download_hf_model_async(repo_id, mmproj_filename)
+                
+                # Salviamo un file JSON di metadati per collegare il modello al suo projector
+                from llampaca.config import MODELS_DIR
+                metadata_path = MODELS_DIR / f"{filename}.json"
+                MODELS_DIR.mkdir(parents=True, exist_ok=True)
+                with open(metadata_path, 'w', encoding='utf-8') as f:
+                    json.dump({"mmproj": mmproj_filename}, f)
+            
+            body = json.dumps({"status": "download_started", "repo_id": repo_id, "filename": filename, "mmproj_filename": mmproj_filename}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -2161,6 +2214,27 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             model_path = MODELS_DIR / model_filename
             if not model_path.exists():
                 raise Exception("Modello non trovato su disco.")
+                
+            # Eliminazione a cascata: controlliamo se esiste un file json associato e un projector
+            metadata_path = MODELS_DIR / f"{model_filename}.json"
+            if metadata_path.exists():
+                try:
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        meta = json.load(f)
+                        mmproj_filename = meta.get("mmproj")
+                        if mmproj_filename:
+                            mmproj_path = MODELS_DIR / mmproj_filename
+                            if mmproj_path.exists():
+                                mmproj_path.unlink()
+                                print(f"[GUI Server] Deleted associated projector: {mmproj_filename}", flush=True)
+                except Exception as e:
+                    print(f"Failed to read/delete projector metadata during cascade delete: {e}", flush=True)
+                
+                try:
+                    metadata_path.unlink()
+                    print(f"[GUI Server] Deleted metadata file: {metadata_path.name}", flush=True)
+                except Exception as e:
+                    pass
                 
             model_path.unlink()
             print(f"[GUI Server] Deleted model file: {model_filename}", flush=True)
@@ -2773,14 +2847,21 @@ def search_hf_models(query: str = None, page: int = 1, limit: int = 8):
                     })
                     
             if gguf_files:
+                # Separate mmproj files
+                mmproj_files = [f for f in gguf_files if "mmproj" in f["filename"].lower()]
+                main_gguf_files = [f for f in gguf_files if "mmproj" not in f["filename"].lower()]
+                
                 # Sort files alphabetically/by name
-                gguf_files.sort(key=lambda x: x["filename"])
+                main_gguf_files.sort(key=lambda x: x["filename"])
+                mmproj_files.sort(key=lambda x: x["filename"])
                 
                 results.append({
                     "repo_id": repo_id,
                     "downloads": downloads,
-                    "files": gguf_files,
-                    "description": f"Repository con {len(gguf_files)} file GGUF."
+                    "gguf_files": main_gguf_files,
+                    "mmproj_files": mmproj_files,
+                    "download_mmproj": len(mmproj_files) > 0,
+                    "description": f"Repository con {len(main_gguf_files)} file GGUF."
                 })
         except Exception as e:
             print(f"Error reading model info for {repo_id}: {e}")

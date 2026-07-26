@@ -25,11 +25,11 @@ export class GgufModel {
         return await r.json();
     }
 
-    async downloadModel(repoId, filename, inputVal) {
+    async downloadModel(repoId, filename, inputVal, mmprojFilename = null) {
         const r = await fetch('/api/models/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo_id: repoId, filename: filename, input_val: inputVal })
+            body: JSON.stringify({ repo_id: repoId, filename: filename, input_val: inputVal, mmproj_filename: mmprojFilename })
         });
         if (!r.ok) throw new Error(await r.text());
         return await r.json();

@@ -29,6 +29,11 @@ const ModelCard = {
             <div v-if="m.preset_id" class="model-card-file">{{ m.name }}</div>
 
             <div class="model-card-desc">{{ m.description }}</div>
+            
+            <div v-if="m.kind === 'projector' && m.linked_models && m.linked_models.length > 0" style="margin: 8px 0; font-size: 11px; padding: 6px; border-radius: var(--radius-sm); background: var(--bg-100);">
+                <div style="color: var(--text-muted); margin-bottom: 2px;">Collegato a:</div>
+                <div v-for="l in m.linked_models" :key="l" style="font-family: var(--font-mono); color: var(--pacific-500);">{{ l }}</div>
+            </div>
 
             <div class="model-card-meta">
                 <span>Dimensione <strong>{{ m.size }}</strong></span>
@@ -50,7 +55,7 @@ const ModelCard = {
             <div class="model-card-actions">
                 <!-- Case 1: Installed -->
                 <template v-if="m.installed">
-                    <button v-if="!m.active" class="btn btn-secondary" @click="$emit('set-default', m)">{{ defaultLabel }}</button>
+                    <button v-if="!m.active && m.kind !== 'projector'" class="btn btn-secondary" @click="$emit('set-default', m)">{{ defaultLabel }}</button>
                     <button class="btn btn-danger" @click="$emit('delete', m.id)">Elimina</button>
                 </template>
                 <!-- Case 2: Downloading -->
@@ -141,6 +146,25 @@ export default {
                         />
                     </div>
 
+                    <!-- Projector models -->
+                    <div class="section-head">
+                        <h3 class="section-title">Proiettori Multimodali (Vision)</h3>
+                        <p class="section-desc">File GGUF accessori che permettono al modello chat principale di "vedere" le immagini. Vengono avviati in automatico col modello a cui sono collegati e cancellati assieme ad esso.</p>
+                    </div>
+                    <div v-if="projectorModels.length === 0" class="empty-panel">
+                        Nessun proiettore vision installato.
+                    </div>
+                    <div v-else class="models-grid">
+                        <model-card
+                            v-for="m in projectorModels"
+                            :key="m.id"
+                            :m="m"
+                            @set-default="onSetDefault"
+                            @delete="deleteModel"
+                            @download="onDownload"
+                        />
+                    </div>
+
                     <!-- Hugging Face Search Browser Results -->
                     <div class="section-head">
                         <h3 class="section-title">
@@ -184,15 +208,32 @@ export default {
                             <div class="form-group">
                                 <label class="form-label" style="font-size: 11.5px;">File GGUF da scaricare</label>
                                 <select v-model="r.selected_file" class="download-input" style="font-family: var(--font-mono); font-size: 11.5px;">
-                                    <option v-for="f in r.files" :key="f.filename" :value="f.filename">
+                                    <option v-for="f in r.gguf_files" :key="f.filename" :value="f.filename">
+                                        {{ f.filename }} ({{ f.size_gb ? f.size_gb + ' GB' : 'dimensione ignota' }})
+                                    </option>
+                                </select>
+                            </div>
+
+                            <!-- Projector Selection -->
+                            <div class="form-group" v-if="r.mmproj_files && r.mmproj_files.length > 0" style="background: rgba(var(--pacific-500-rgb), 0.1); padding: 12px; border-radius: var(--radius-md); border: 1px solid rgba(var(--pacific-500-rgb), 0.2);">
+                                <label class="form-label" style="font-size: 11.5px; color: var(--pacific-500); display: flex; align-items: center; gap: 4px;">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                                    Vision Support Detected
+                                </label>
+                                <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                                    <input type="checkbox" v-model="r.download_mmproj" :id="'chk-'+r.repo_id.replace('/', '-')" />
+                                    <label :for="'chk-'+r.repo_id.replace('/', '-')" style="font-size: 11.5px; cursor: pointer; color: var(--text-200);">Scarica il file projector associato per il riconoscimento immagini</label>
+                                </div>
+                                <select v-if="r.download_mmproj && r.mmproj_files.length > 1" v-model="r.selected_mmproj" class="download-input" style="font-family: var(--font-mono); font-size: 11.5px; margin-top: 8px;">
+                                    <option v-for="f in r.mmproj_files" :key="f.filename" :value="f.filename">
                                         {{ f.filename }} ({{ f.size_gb ? f.size_gb + ' GB' : 'dimensione ignota' }})
                                     </option>
                                 </select>
                             </div>
 
                             <div class="model-card-actions">
-                                <button class="btn btn-pacific btn-block" @click="downloadSearchModel(r.repo_id, r.selected_file)">
-                                    Scarica il file selezionato
+                                <button class="btn btn-pacific btn-block" @click="downloadSearchModel(r.repo_id, r.selected_file, r.download_mmproj ? (r.selected_mmproj || r.mmproj_files[0].filename) : null)">
+                                    Scarica file selezionati
                                 </button>
                             </div>
                         </div>

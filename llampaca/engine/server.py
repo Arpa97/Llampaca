@@ -163,6 +163,23 @@ class LlamaServer:
         # "llama-server-*" glob that cleanup_orphans() scans.
         prefix = "llama-server-embed" if embedding else "llama-server"
         self._file_prefix = prefix
+        
+        # Check for mmproj metadata
+        self.mmproj_path = None
+        metadata_path = Path(self.model_path).with_suffix(Path(self.model_path).suffix + ".json")
+        if metadata_path.exists():
+            import json
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                    mmproj_filename = meta.get("mmproj")
+                    if mmproj_filename:
+                        from llampaca.config import MODELS_DIR
+                        mmproj_full = MODELS_DIR / mmproj_filename
+                        if mmproj_full.exists():
+                            self.mmproj_path = mmproj_full
+            except Exception as e:
+                print(f"Failed to read model metadata from {metadata_path}: {e}")
         self.log_file_path = LOGS_DIR / f"{prefix}-{self.port}.log"
         self.pid_file_path = LOGS_DIR / f"{prefix}-{self.port}.pid"
         from llampaca.engine import db
@@ -255,6 +272,9 @@ class LlamaServer:
         ngl = 99 if self.gpu_layers == -1 else self.gpu_layers
         if ngl > 0:
             cmd.extend(["-ngl", str(ngl)])
+
+        if self.mmproj_path:
+            cmd.extend(["--mmproj", str(self.mmproj_path)])
 
         return cmd
 

@@ -272,7 +272,17 @@ async def get_conversation(conversation_id: str, db_path: Path = None) -> dict:
             (conversation_id,)
         )
         rows = await cursor.fetchall()
-        messages = [dict(row) for row in rows]
+        import json
+        messages = []
+        for row in rows:
+            msg = dict(row)
+            content = msg["content"]
+            if content and isinstance(content, str) and content.startswith("[") and content.endswith("]"):
+                try:
+                    msg["content"] = json.loads(content)
+                except json.JSONDecodeError:
+                    pass
+            messages.append(msg)
         conv_data["messages"] = messages
         
     return conv_data
