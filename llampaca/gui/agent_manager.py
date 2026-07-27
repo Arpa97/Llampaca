@@ -80,6 +80,7 @@ class AgentManager:
         self.pending_confirmations = {}
         self.current_task = None
         self._mcp_reload_lock = None
+        self.is_restarting = False
         self.mcp_config_mtime = 0
         # Serialises the startup cache warm-up against real user turns.
         # Both drive the same single llama-server: letting them overlap made
@@ -195,76 +196,79 @@ class AgentManager:
         if self._mcp_reload_lock is None:
             self._mcp_reload_lock = asyncio.Lock()
         async with self._mcp_reload_lock:
-            import time
-            # 1. Stop current MCP sessions (if any)
-            if self.mcp_manager:
-                logger.info("[AgentManager] Stopping active MCP manager in main task...")
-                await self.mcp_manager.stop()
-                self.mcp_manager = None
+            try:
+                import time
+                # 1. Stop current MCP sessions (if any)
+                if self.mcp_manager:
+                    logger.info("[AgentManager] Stopping active MCP manager in main task...")
+                    await self.mcp_manager.stop()
+                    self.mcp_manager = None
+                    
+                # 2. Stop current llama-server and start new one
+                from llampaca.engine.server import LlamaServer
+                active_server = state.get_chat_server()
+                if active_server:
+                    logger.info(f"[AgentManager] Stopping active llama-server on port {active_server.port}...")
+                    active_server.stop()
+                    time.sleep(0.5)
+                    state.set_chat_server(None)
+                    
+                config = load_config()
+                model_name = params.get("model_name") or config.get("default_model", "")
                 
-            # 2. Stop current llama-server and start new one
-            from llampaca.engine.server import LlamaServer
-            active_server = state.get_chat_server()
-            if active_server:
-                logger.info(f"[AgentManager] Stopping active llama-server on port {active_server.port}...")
-                active_server.stop()
-                time.sleep(0.5)
-                state.set_chat_server(None)
-                
-            config = load_config()
-            model_name = params.get("model_name") or config.get("default_model", "")
-            
-            from llampaca.config import MODELS_DIR, MODEL_PRESETS
-            model_path = MODELS_DIR / model_name
-            if not model_path.exists():
-                model_path = Path(model_name)
+                from llampaca.config import MODELS_DIR, MODEL_PRESETS
+                model_path = MODELS_DIR / model_name
                 if not model_path.exists():
-                    if model_name in MODEL_PRESETS:
-                        preset_file = MODEL_PRESETS[model_name]["file"]
-                        model_path = MODELS_DIR / preset_file
-                        
-            if not model_path.exists():
-                logger.error(f"[AgentManager] Error: Model '{model_name}' could not be resolved.")
-                return False
-
-            resolved_port = params.get("port") or config.get("server_port", 8080)
-            resolved_ctx = params.get("context_size") or config.get("context_size", DEFAULT_CONTEXT_SIZE)
-            resolved_threads = params.get("n_threads") or config.get("n_threads", 4)
-            resolved_gpu = params.get("gpu_layers") if params.get("gpu_layers") is not None else config.get("gpu_layers", -1)
-
-            new_server = LlamaServer(
-                model_path=model_path,
-                port=resolved_port,
-                context_size=resolved_ctx,
-                n_threads=resolved_threads,
-                gpu_layers=resolved_gpu
-            )
-
-            success = await new_server.start()
-            if success:
-                state.set_chat_server(new_server)
-                from llampaca.engine.client import LlamaClient
-                self.client = LlamaClient(port=new_server.port)
-                
-                # Update registry context size limit
-                from llampaca.tools import build_default_registry
-                self.registry = build_default_registry(max_result_chars=new_server.context_size)
-                
-                # Start fresh MCP manager matching the new registry
-                from llampaca.config import load_mcp_config
-                mcp_config = load_mcp_config()
-                mcp_servers_config = mcp_config.get("mcp_servers", {})
-                if mcp_servers_config:
-                    from llampaca.engine.mcp_client import McpClientManager
-                    self.mcp_manager = McpClientManager(mcp_servers_config)
-                    await self.mcp_manager.start(self.registry)
-
-                # A restart means a brand-new llama-server process, so its KV
-                # cache is empty again: without this the first message after
-                # switching model or context size would pay the full prefill.
-                asyncio.create_task(self._warm_prompt_cache())
-
-            return success
+                    model_path = Path(model_name)
+                    if not model_path.exists():
+                        if model_name in MODEL_PRESETS:
+                            preset_file = MODEL_PRESETS[model_name]["file"]
+                            model_path = MODELS_DIR / preset_file
+                            
+                if not model_path.exists():
+                    logger.error(f"[AgentManager] Error: Model '{model_name}' could not be resolved.")
+                    return False
+    
+                resolved_port = params.get("port") or config.get("server_port", 8080)
+                resolved_ctx = params.get("context_size") or config.get("context_size", DEFAULT_CONTEXT_SIZE)
+                resolved_threads = params.get("n_threads") or config.get("n_threads", 4)
+                resolved_gpu = params.get("gpu_layers") if params.get("gpu_layers") is not None else config.get("gpu_layers", -1)
+    
+                new_server = LlamaServer(
+                    model_path=model_path,
+                    port=resolved_port,
+                    context_size=resolved_ctx,
+                    n_threads=resolved_threads,
+                    gpu_layers=resolved_gpu
+                )
+    
+                success = await new_server.start()
+                if success:
+                    state.set_chat_server(new_server)
+                    from llampaca.engine.client import LlamaClient
+                    self.client = LlamaClient(port=new_server.port)
+                    
+                    # Update registry context size limit
+                    from llampaca.tools import build_default_registry
+                    self.registry = build_default_registry(max_result_chars=new_server.context_size)
+                    
+                    # Start fresh MCP manager matching the new registry
+                    from llampaca.config import load_mcp_config
+                    mcp_config = load_mcp_config()
+                    mcp_servers_config = mcp_config.get("mcp_servers", {})
+                    if mcp_servers_config:
+                        from llampaca.engine.mcp_client import McpClientManager
+                        self.mcp_manager = McpClientManager(mcp_servers_config)
+                        await self.mcp_manager.start(self.registry)
+    
+                    # A restart means a brand-new llama-server process, so its KV
+                    # cache is empty again: without this the first message after
+                    # switching model or context size would pay the full prefill.
+                    asyncio.create_task(self._warm_prompt_cache())
+    
+                return success
+            finally:
+                self.is_restarting = False
 
     async def reload_mcp_manager(self):
         fut = asyncio.get_running_loop().create_future()
@@ -678,7 +682,8 @@ class AgentManager:
             del self.registry._tools["search_documents"]
         register_document_tools(
             self.registry,
-            embed_query=service.query_embedder(),
+            embed_client=service._client,
+            query_prefix=service.query_prefix,
             conversation_id=conv_id,
         )
 

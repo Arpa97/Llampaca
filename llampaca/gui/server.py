@@ -68,13 +68,17 @@ def start_http_server(directory):
             
     return ServerWrapper(server), port
 
-def start_gui_window():
+def start_gui_window(on_ready=None):
     """Start the background HTTP server and launch the pywebview standalone native window."""
     import sys
     import os
+    import socket
+    import threading
+    import time
     from llampaca.logutil import setup_logging
     from llampaca.config import LLAMPACA_DIR
     from pathlib import Path
+    
     setup_logging(console=True, log_dir=Path(LLAMPACA_DIR) / "logs")
     
     # macOS runtime hack: override Application Menu Name in menu bar
@@ -163,40 +167,132 @@ def start_gui_window():
             # Linux: icon handling relies on window manager / pywebview favicon
             pass
 
-    # Set icon before starting window
-    _set_app_icon()
+    # Pre-bind the socket so we know the port before starting the main window
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(('127.0.0.1', 0))
+    port = sock.getsockname()[1]
 
-    server, port = start_http_server(gui_dir)
-
-    logger.info(f"GUI HTTP Server running locally at http://127.0.0.1:{port}")
-    logger.info("Opening native window...")
-
-    try:
-        # Per-launch cache-buster on the window URL. pywebview's WebKit
-        # backend keeps its own persistent HTTP cache (not fully cleared by
-        # wiping ~/Library/WebKit/<app>/WebsiteData), so it can keep loading a
-        # stale index.html / JS bundle across launches — making already-fixed
-        # frontend bugs reappear. A fresh query string every launch forces the
-        # main document (and, via the no-cache headers, its subresources) to
-        # be re-fetched. Files are local, so always-fresh has no real cost.
-        import time as _time
-        cache_buster = int(_time.time())
-        webview.create_window(
-            "Llampaca Dashboard",
-            f"http://127.0.0.1:{port}/index.html?v={cache_buster}",
-            width=1150,
-            height=780,
-            min_size=(950, 680)
+    # Create the frameless native splash screen
+    splash_html = gui_dir / "splash.html"
+    splash_window = webview.create_window(
+        "Llampaca Startup",
+        url=str(splash_html),
+        frameless=True,
+        width=400,
+        height=320,
+        resizable=False
+    )
+    
+    # Create the main window, but hide it for now
+    cache_buster = int(time.time())
+    main_window = webview.create_window(
+        "Llampaca Dashboard",
+        f"http://127.0.0.1:{port}/index.html?v={cache_buster}",
+        width=1150,
+        height=780,
+        min_size=(950, 680),
+        hidden=True
+    )
+    shutdown_window = webview.create_window(
+        "Llampaca Shutdown",
+        url=str(splash_html) + "?mode=shutdown",
+        frameless=True,
+        width=400,
+        height=320,
+        resizable=False,
+        hidden=True
+    )
+    
+    server_wrapper = [None]
+    
+    def on_closing():
+        if getattr(main_window, 'is_shutting_down', False):
+            return True
+        main_window.is_shutting_down = True
+        
+        main_window.hide()
+        shutdown_window.show()
+        
+        def shutdown_task():
+            if server_wrapper[0]:
+                server_wrapper[0].shutdown()
+            agent_manager.stop()
+            
+            from llampaca.engine.state import get_chat_server
+            active = get_chat_server()
+            if active:
+                active.stop()
+                
+            # Allow short time for pywebview to paint before destroying
+            import time
+            time.sleep(0.5)
+            shutdown_window.destroy()
+            main_window.destroy()
+            
+        threading.Thread(target=shutdown_task, daemon=True).start()
+        return False
+        
+    main_window.events.closing += on_closing
+    
+    def background_startup():
+        _set_app_icon()
+        
+        # We give the splash screen a tiny bit of time to draw itself on macOS
+        time.sleep(0.3)
+        
+        # 1. Start the HTTP server (FastAPI/Uvicorn)
+        from llampaca.config import load_config
+        config = load_config()
+        agent_manager.start(config)
+        
+        import uvicorn
+        from llampaca.gui.routes import app
+        
+        config_uv = uvicorn.Config(
+            app, 
+            host="127.0.0.1", 
+            log_level="error",
+            ws_ping_interval=None,
+            ws_ping_timeout=None
         )
-        # Setting LLAMPACA_DEBUG=1 enables the WebKit Web Inspector
-        # (right-click -> Inspect Element) so the Console/Network tabs can be
-        # used to diagnose frontend issues live.
-        debug = os.environ.get("LLAMPACA_DEBUG", "").strip() in ("1", "true", "yes")
-        webview.start(func=_set_app_icon, debug=debug)
+        uv_server = uvicorn.Server(config_uv)
+        
+        def run_uvicorn():
+            uv_server.run(sockets=[sock])
+            
+        uv_thread = threading.Thread(target=run_uvicorn, daemon=True)
+        uv_thread.start()
+        
+        while not uv_server.started:
+            time.sleep(0.05)
+            
+        class ServerWrapper:
+            def shutdown(self):
+                uv_server.should_exit = True
+            def server_close(self):
+                pass
+        server_wrapper[0] = ServerWrapper()
+        
+        logger.info(f"GUI HTTP Server running locally at http://127.0.0.1:{port}")
+        
+        # 2. Trigger the heavy llama-server load
+        if on_ready:
+            on_ready()
+            
+        # 3. Transition: Show main window, destroy splash
+        time.sleep(0.2) # small buffer to ensure main_window html is served
+        main_window.show()
+        splash_window.destroy()
+
+    debug = os.environ.get("LLAMPACA_DEBUG", "").strip() in ("1", "true", "yes")
+    
+    try:
+        webview.start(func=background_startup, debug=debug)
     finally:
         logger.info("Window closed. Stopping HTTP server...")
-        server.shutdown()
-        server.server_close()
+        if server_wrapper[0]:
+            server_wrapper[0].shutdown()
+            server_wrapper[0].server_close()
         agent_manager.stop()
 
 def start_api_server(port=8090):

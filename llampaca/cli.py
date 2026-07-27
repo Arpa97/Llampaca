@@ -397,29 +397,42 @@ def run_gui(model_name, port, ctx, threads, gpu):
     threads = threads or config.get("n_threads", 4)
     gpu = gpu if gpu is not None else config.get("gpu_layers", -1)
 
-    # 2. Instantiate and start LlamaServer
-    from llampaca.engine.server import LlamaServer
-    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu)
+    # 2. Start GUI and load model asynchronously
+    click.echo(f"Starting Llampaca GUI...")
+    click.echo(f"Model will initialize in the background (port {port})...")
     
-    click.echo(f"Starting llama-server on port {port}...")
-    import asyncio
-    if not asyncio.run(server.start()):
-        click.echo("Failed to start llama-server.")
-        sys.exit(1)
-        
-    click.echo(f"llama-server is up and running on port {port}!")
+    from llampaca.gui.agent_manager import agent_manager
+    agent_manager.is_restarting = True  # Tell the frontend that we are loading!
+    
+    def async_startup():
+        agent_manager.ready_event.wait()
+        from llampaca.gui.restart_bridge import restart_via_agent_manager
+        try:
+            # We use restart_via_agent_manager to do a clean initialization using the GUI's lifecycle
+            success = restart_via_agent_manager(
+                agent_manager,
+                port=port,
+                context_size=ctx,
+                n_threads=threads,
+                gpu_layers=gpu,
+                model_name=model_name
+            )
+            if success:
+                click.echo(f"llama-server is up and running on port {port}!")
+            else:
+                click.echo("Failed to start llama-server.")
+        except Exception as e:
+            click.echo(f"Error during async startup: {e}")
             
     from llampaca.gui.server import start_gui_window
     try:
-        start_gui_window()
+        start_gui_window(on_ready=async_startup)
     finally:
         click.echo("Shutting down llama-server...")
         from llampaca.engine.state import get_chat_server
         active = get_chat_server()
         if active:
             active.stop()
-        else:
-            server.stop()
         click.echo("Goodbye!")
 
 @main.group(name="integrations")

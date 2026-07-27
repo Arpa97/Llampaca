@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="it">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Llampaca Startup</title>
+    <!-- Use exact same fonts as main app if possible, or fallback to system sans-serif -->
+    <link rel="stylesheet" href="vendor/fonts.css">
+    <style>
+        :root {
+            --dusk-blue: #2e5077;
+            --white: #FFFFFF;
+            --amber-glow: #ffa630;
+            --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background: var(--white);
+            color: var(--dusk-blue);
+            font-family: var(--font-display);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-app-region: drag;
+            /* allows dragging the frameless window */
+            border-radius: 12px;
+        }
+
+        .logo {
+            width: 130px;
+            margin-bottom: 24px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        p {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            opacity: 0.7;
+            margin-top: 8px;
+            margin-bottom: 0;
+        }
+
+        .loader-container {
+            margin-top: 40px;
+            width: 220px;
+            text-align: left;
+        }
+
+        #status-text {
+            color: var(--dusk-blue);
+            font-size: 11px;
+            font-family: var(--font-mono);
+            opacity: 0.7;
+            margin-bottom: 8px;
+        }
+
+        .loader {
+            width: 100%;
+            height: 4px;
+            /* Su sfondo bianco serve un colore scuro in trasparenza per la traccia */
+            background: rgba(46, 80, 119, 0.15);
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .loader-bar {
+            position: absolute;
+            height: 100%;
+            background: var(--amber-glow);
+            border-radius: 4px;
+            animation: splash-load 2s infinite ease-in-out;
+        }
+
+        @keyframes splash-load {
+            0% {
+                left: -30%;
+                width: 30%;
+            }
+
+            50% {
+                left: 30%;
+                width: 60%;
+            }
+
+            100% {
+                left: 100%;
+                width: 30%;
+            }
+        }
+    </style>
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const status_text = document.getElementById("status-text");
+
+            // Check if we are in shutdown mode
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('mode') === 'shutdown') {
+                status_text.textContent = "Arresto dei processi e pulizia VRAM in corso...";
+                // Don't cycle messages during shutdown
+                return;
+            }
+
+            const messages = [
+                "Brucando l'erba...",
+                "Diventando intelligente...",
+                "Pensando intensamente...",
+                "Humming...",
+                "AI in inizializzazione...",
+                "Tonsando i parametri...",
+                "Sputando sui bug...",
+                "Caricando i tensori nella stalla...",
+                "Affilando l'attenzione...",
+                "Scaldando i pesi del modello...",
+                "Calcolando i token al pascolo...",
+                "Alimentando la rete neurale a fieno...",
+                "Pettinando i layer nascosti...",
+                "Sincronizzando gli zoccoli quantizzati...",
+                "Estrazione del contesto in corso...",
+                "Caricando Llampaca nella VRAM...",
+                "Masticando i dati di addestramento...",
+                "Preparando il mantello per l'inferenza...",
+                "Tessendo la lana dei prompt...",
+                "Risvegliando l'oracolo andino...",
+                "Addomesticando i vettori...",
+                "Ottimizzando il ruminamento...",
+                "Allineando i lama...",
+                "Invocando la magia dei transformer...",
+                "Regolando la temperatura di generazione..."
+            ];
+
+            status_text.textContent = messages[0];
+            setInterval(() => {
+                const randomIndex = Math.floor(Math.random() * messages.length);
+                status_text.textContent = messages[randomIndex];
+            }, 2000);
+        });
+    </script>
+</head>
+
+<body>
+    <img class="logo" src="logo.png" alt="Llampaca Logo" />
+
+    <div class="loader-container">
+        <div id="status-text"></div>
+        <div class="loader">
+            <div class="loader-bar"></div>
+        </div>
+    </div>
+</body>
+
+</html>

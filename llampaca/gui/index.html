@@ -2277,7 +2277,8 @@
 </head>
 
 <body>
-    <div id="app">
+
+    <div id="app" v-cloak>
         <!-- Toast Notification -->
         <div v-if="toastMessage" class="toast-notification" :class="toastType">
             {{ toastMessage }}
