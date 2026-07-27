@@ -3,6 +3,23 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-07-27]
+
+### Fixed — The GUI window would not open when an MCP server waits for an external authorization
+
+Reported symptom: `llampaca gui` no longer opened at all; the only visible sign was a request to authorize at `https://smithery.ai/connect`, and declining it left the application stuck with no window.
+
+**Cause.** MCP servers were connected on the critical path of the window's creation. The chain was: `start_gui_window()` → `start_http_server()` → `agent_manager.start(config)` → `ready_event.wait()` (no timeout) → the manager thread runs `_init_async`, which ended with `await self.mcp_manager.start(self.registry)`. `webview.create_window()` runs *after* `start_http_server()` returns, so no window could exist until every configured MCP server had answered. The configured server was `npx -y @smithery/cli run gmail`, which blocks on an interactive OAuth grant and therefore never answers — and `McpClientManager.start()` waited **300 seconds** per server before giving up. Declining the authorization did not fail fast; it simply guaranteed the full five-minute wait, during which the app looked dead.
+
+Nothing about the user's configuration was invalid: one unauthenticated integration should cost its own tools, not the entire dashboard.
+
+- **`llampaca/gui/agent_manager.py`** — MCP connection moved off startup into a new background task, `_connect_mcp_then_warm()`. `_init_async` now schedules it and returns immediately, so `ready_event` is set and the window opens in ~0.02 s (measured against a server that never responds) instead of after the connect timeout. MCP tools register into the shared registry as soon as each server answers; a message sent before that sees the built-in tools only, and `self.mcp_manager` stays `None` while connecting so `/api/mcp` reports the servers as not (yet) connected rather than lying.
+  - The prompt-cache warm-up stays *chained after* the connection instead of running in parallel with it: the MCP tool schemas are part of the cached prompt prefix, so priming before they are registered would cache a prefix no real request ever sends. This preserves the ordering the previous inline code guaranteed.
+  - The task takes `_mcp_reload_lock`, the same lock the reload paths use. The GUI polls `/api/mcp`, which can trigger `reload_mcp_manager()` while the initial connection is still in flight; without the lock two managers could register tools into one registry.
+  - Failures are logged and swallowed: a broken integration must degrade to "its tools are missing", never to a session that will not start.
+  - Removed the now-unused `McpClientManager` import from `_init_async`.
+- **`llampaca/engine/mcp_client.py`** — the per-server connect timeout is now the named constant `MCP_CONNECT_TIMEOUT_SECONDS = 60`, down from an inline `300.0`. 300 s is not a startup timeout, it is a hang: the slowest legitimate case is `npx -y <pkg>` downloading a package on first run, which 60 s covers, while a server waiting on a browser authorization will never answer no matter how long it is given. The `TimeoutError` message now names the likely cause (an external OAuth grant) and gives the two ways out — complete the authorization once by running the server's command manually in a terminal, or `llampaca integrations remove <name>`.
+
 ## [2026-07-23]
 
 ### Changed — GUI Visual Redesign (palette preserved, structure unchanged)

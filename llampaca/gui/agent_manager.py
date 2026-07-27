@@ -343,7 +343,6 @@ class AgentManager:
         self._inference_lock = asyncio.Lock()
         from llampaca.tools import build_default_registry
         from llampaca.engine.client import LlamaClient
-        from llampaca.engine.mcp_client import McpClientManager
         from llampaca.config import load_mcp_config
         
         self.client = LlamaClient(port=config.get("server_port", 8080))
@@ -358,15 +357,49 @@ class AgentManager:
         if legacy_mcp:
             mcp_servers_config = {**legacy_mcp, **mcp_servers_config}
             
-        if mcp_servers_config:
-            self.mcp_manager = McpClientManager(mcp_servers_config)
-            await self.mcp_manager.start(self.registry)
+        # Connecting the MCP servers happens OFF this function, in a
+        # background task: _init_async gates ready_event, start() blocks on
+        # ready_event, and start_gui_window() only creates the pywebview
+        # window after start() returns. Connecting inline therefore put every
+        # configured MCP server on the critical path of the window opening —
+        # a server that never answers (typically one waiting for an
+        # interactive OAuth grant, e.g. `npx @smithery/cli run <x>`) kept the
+        # dashboard from appearing at all until it timed out. The prompt-cache
+        # warm-up is chained after it there, for the reason documented in
+        # _connect_mcp_then_warm.
+        asyncio.create_task(self._connect_mcp_then_warm(mcp_servers_config))
 
-        # Warm the shared prompt prefix in the background. Deliberately AFTER
-        # the MCP servers have registered their tools: their schemas are part
-        # of the prefix, so warming any earlier would cache a prompt that no
-        # real request ever sends.
-        asyncio.create_task(self._warm_prompt_cache())
+    async def _connect_mcp_then_warm(self, mcp_servers_config: dict) -> None:
+        """
+        Connect the configured MCP servers, then warm the prompt cache.
+
+        Runs detached from startup (see the call site) so that a slow or
+        stuck MCP server delays only its own tools, never the GUI window.
+        The tools land in the shared registry as soon as each server
+        answers; a message sent before that simply sees the built-in tools.
+
+        The warm-up stays chained AFTER the connection rather than running
+        in parallel with it: the MCP tool schemas are part of the cached
+        prompt prefix, so priming before they are registered would cache a
+        prefix that no real request ever sends (and waste the warm-up).
+
+        Takes the same lock as the reload paths: the GUI polls /api/mcp and
+        can trigger a reload while this is still connecting, and two
+        managers driving the same registry would double-register tools.
+
+        Best-effort by design: a failing MCP server must degrade to "its
+        tools are missing", never to a broken session.
+        """
+        try:
+            if mcp_servers_config:
+                from llampaca.engine.mcp_client import McpClientManager
+                async with self._mcp_reload_lock:
+                    manager = McpClientManager(mcp_servers_config)
+                    await manager.start(self.registry)
+                    self.mcp_manager = manager
+        except Exception as e:
+            logger.error(f"[AgentManager] MCP startup failed (session continues): {e}")
+        await self._warm_prompt_cache()
 
     async def _warm_prompt_cache(self):
         """

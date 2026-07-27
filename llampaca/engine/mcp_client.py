@@ -16,6 +16,15 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from llampaca.tools.registry import Tool, ToolRegistry
 
+# How long to wait for one MCP server to connect and answer list_tools.
+# Sized for the slowest LEGITIMATE case — `npx -y <pkg>` downloading the
+# package on first run over a slow link — and no longer. It used to be 300
+# seconds, which is not a startup timeout but a hang: servers that wait for
+# an interactive authorization (e.g. `@smithery/cli run <x>`, which blocks
+# on an OAuth grant at smithery.ai) never answer at all, and every second
+# spent waiting is a second the rest of the app is held back.
+MCP_CONNECT_TIMEOUT_SECONDS = 60
+
 
 def format_mcp_result(result) -> str:
     """Format the result of a tool call returned by an MCP server into a single string."""
@@ -122,9 +131,21 @@ class McpClientManager:
 
                 import asyncio
                 try:
-                    tools_result = await asyncio.wait_for(_connect_and_init(), timeout=300.0)
+                    tools_result = await asyncio.wait_for(
+                        _connect_and_init(), timeout=MCP_CONNECT_TIMEOUT_SECONDS
+                    )
                 except asyncio.TimeoutError:
-                    raise RuntimeError("Connection or initialization timed out after 300 seconds")
+                    # Name the likely cause and the fix: the common failure
+                    # here is a server that is waiting for the user to grant
+                    # an authorization in a browser, which no amount of extra
+                    # waiting will resolve.
+                    raise RuntimeError(
+                        f"non ha risposto entro {MCP_CONNECT_TIMEOUT_SECONDS} secondi. "
+                        "Se il server richiede un'autorizzazione esterna (es. l'OAuth di "
+                        "smithery.ai), completala una volta in un terminale eseguendo il "
+                        "suo comando a mano, oppure rimuovilo con "
+                        f"'llampaca integrations remove {name}'."
+                    )
 
                 registered_count = 0
                 for mcp_tool in tools_result.tools:
