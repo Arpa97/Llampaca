@@ -456,8 +456,7 @@ class AgentManager:
                 logger.info(
                     f"[AgentManager] Prompt cache warmed: "
                     f"{timings.get('prompt_n', '?')} tokens in {elapsed:.1f}s "
-                    f"— the first message no longer pays for them.",
-                    flush=True,
+                    f"— the first message no longer pays for them."
                 )
         except Exception as e:
             logger.info(f"[AgentManager] Prompt cache warm-up failed (harmless): {e}")

@@ -202,32 +202,51 @@ async def get_settings():
     return load_config()
 
 class SettingsPayload(BaseModel):
-    server_port: int
-    context_size: int
-    threads: int
-    gpu_layers: int
+    server_port: Optional[int] = None
+    context_size: Optional[int] = None
+    n_threads: Optional[int] = None
+    gpu_layers: Optional[int] = None
+    embedding_gpu_layers: Optional[int] = None
+    no_think: Optional[bool] = None
 
 @app.post("/api/settings")
 async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTasks):
     config = load_config()
-    old_port = config.get("server_port")
     
-    config["server_port"] = payload.server_port
-    config["context_size"] = payload.context_size
-    config["threads"] = payload.threads
-    config["gpu_layers"] = payload.gpu_layers
+    requires_restart = False
+    if payload.server_port is not None:
+        config["server_port"] = payload.server_port
+        requires_restart = True
+    if payload.context_size is not None:
+        config["context_size"] = payload.context_size
+        requires_restart = True
+    if payload.n_threads is not None:
+        config["n_threads"] = payload.n_threads
+        requires_restart = True
+    if payload.gpu_layers is not None:
+        config["gpu_layers"] = payload.gpu_layers
+        requires_restart = True
+    if payload.embedding_gpu_layers is not None:
+        config["embedding_gpu_layers"] = payload.embedding_gpu_layers
+        requires_restart = True
+    if payload.no_think is not None:
+        config["no_think"] = payload.no_think
+
     save_config(config)
 
-    def restart_task():
-        restart_via_agent_manager(
-            port=payload.server_port,
-            context_size=payload.context_size,
-            n_threads=payload.threads,
-            gpu_layers=payload.gpu_layers
-        )
-
-    background_tasks.add_task(restart_task)
-    return {"status": "ok", "message": "Settings saved. Restarting server in background..."}
+    if requires_restart:
+        def restart_task():
+            restart_via_agent_manager(
+                agent_manager,
+                port=config.get("server_port", 8080),
+                context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
+                n_threads=config.get("n_threads", 4),
+                gpu_layers=config.get("gpu_layers", -1)
+            )
+        background_tasks.add_task(restart_task)
+        return {"status": "ok", "message": "Settings saved. Restarting server in background...", "config": config}
+    
+    return {"status": "ok", "message": "Settings saved.", "config": config}
 
 # --- MODELS ---
 
@@ -506,6 +525,7 @@ def set_default_model(payload: DefaultModelPayload, background_tasks: Background
         
         def restart_task():
             restart_via_agent_manager(
+                agent_manager,
                 model_name=payload.model_name,
                 port=config.get("server_port", 8080),
                 context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
