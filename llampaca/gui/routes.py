@@ -57,6 +57,46 @@ async def delete_conversation_route(conv_id: str):
     run_async(delete_conversation(conv_id))
     return {"status": "ok"}
 
+@app.post("/api/conversations/{conv_id}/attach")
+async def attach_file(conv_id: str, request: Request):
+    filename_encoded = request.headers.get("X-Attachment-Filename", "")
+    filename = urllib.parse.unquote(filename_encoded)
+    if not filename:
+        raise HTTPException(status_code=400, detail="Missing X-Attachment-Filename header")
+        
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file body")
+        
+    import tempfile
+    from pathlib import Path
+    import os
+    from llampaca.attachments import extract_text, AttachmentError
+    
+    config = load_config()
+    context_size = config.get("context_size", 8192)
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp:
+        tmp.write(body)
+        tmp_path = Path(tmp.name)
+        
+    try:
+        text = extract_text(tmp_path)
+    except AttachmentError as e:
+        os.unlink(tmp_path)
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        os.unlink(tmp_path)
+        return JSONResponse(status_code=500, content={"error": f"Extraction failed: {e}"})
+        
+    os.unlink(tmp_path)
+    
+    try:
+        result = await agent_manager.stage_attachment(conv_id, filename, text, context_size)
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/api/conversations/{conv_id}/messages")
 async def post_message(conv_id: str, request: Request):
     payload = await request.json()

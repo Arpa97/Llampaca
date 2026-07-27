@@ -649,7 +649,8 @@ class AgentManager:
             del self.registry._tools["search_documents"]
         register_document_tools(
             self.registry,
-            embed_query=service.query_embedder(),
+            embed_client=service._client,
+            query_prefix=service.query_prefix,
             conversation_id=conv_id,
         )
 
