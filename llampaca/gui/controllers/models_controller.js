@@ -12,7 +12,7 @@ export function useModelsController() {
     // view can render them as separate sections. Anything not explicitly marked
     // "embedding" (including custom local files with no kind) is a chat model.
     const chatModels = computed(() =>
-        models.value.filter(m => (m.kind || 'chat') !== 'embedding' && m.kind !== 'image')
+        models.value.filter(m => (m.kind || 'chat') !== 'embedding' && m.kind !== 'image' && m.kind !== 'projector')
     );
     const embeddingModels = computed(() =>
         models.value.filter(m => m.kind === 'embedding')
@@ -113,6 +113,23 @@ export function useModelsController() {
 
     const isRestarting = ref(false);
 
+    const waitForServer = async () => {
+        // Wait 1.5s to give the background task time to stop the old server
+        await new Promise(r => setTimeout(r, 1500));
+        let attempts = 0;
+        while (attempts < 60) {
+            try {
+                const res = await fetch(`/api/server/status?_t=${Date.now()}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.running) return;
+                }
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 1000));
+            attempts++;
+        }
+    };
+
     // kind: "chat" restarts the llama-server (chat model swap needs a reload,
     // hence the blocking overlay); "embedding" only persists the choice, so no
     // overlay is shown for it.
@@ -122,6 +139,7 @@ export function useModelsController() {
             if (isChat) isRestarting.value = true;
             await model.setDefaultModel(name, kind);
             await loadModels();
+            if (isChat) await waitForServer();
             window.dispatchEvent(new CustomEvent('llampaca:status-changed'));
             if (window.showToast) {
                 let label = 'Modello di chat predefinito';

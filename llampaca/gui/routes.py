@@ -208,6 +208,7 @@ class SettingsPayload(BaseModel):
     gpu_layers: Optional[int] = None
     embedding_gpu_layers: Optional[int] = None
     no_think: Optional[bool] = None
+    kv_cache_type: Optional[str] = None
 
 @app.post("/api/settings")
 async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTasks):
@@ -229,12 +230,17 @@ async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTa
     if payload.embedding_gpu_layers is not None:
         config["embedding_gpu_layers"] = payload.embedding_gpu_layers
         requires_restart = True
+    if payload.kv_cache_type is not None:
+        config["kv_cache_quant_k"] = payload.kv_cache_type
+        config["kv_cache_quant_v"] = payload.kv_cache_type
+        requires_restart = True
     if payload.no_think is not None:
         config["no_think"] = payload.no_think
 
     save_config(config)
 
     if requires_restart:
+        agent_manager.is_restarting = True
         def restart_task():
             restart_via_agent_manager(
                 agent_manager,
@@ -247,6 +253,20 @@ async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTa
         return {"status": "ok", "message": "Settings saved. Restarting server in background...", "config": config}
     
     return {"status": "ok", "message": "Settings saved.", "config": config}
+
+@app.get("/api/server/status")
+async def server_status():
+    if getattr(agent_manager, 'is_restarting', False):
+        return {"status": "ok", "running": False}
+
+    from llampaca.engine import state
+    active = state.get_chat_server()
+    if not active or not active.process:
+        return {"status": "ok", "running": False}
+        
+    is_alive = active.process.poll() is None
+    running = is_alive and is_server_running(port=active.port)
+    return {"status": "ok", "running": running}
 
 # --- MODELS ---
 
@@ -523,6 +543,7 @@ def set_default_model(payload: DefaultModelPayload, background_tasks: Background
         config["default_model"] = payload.model_name
         save_config(config)
         
+        agent_manager.is_restarting = True
         def restart_task():
             restart_via_agent_manager(
                 agent_manager,
@@ -1029,25 +1050,28 @@ def _get_client_config_paths():
     if system == 'darwin':
         code_user = home / "Library" / "Application Support" / "Code" / "User"
         vscode_paths.extend([
+            code_user / "globalStorage" / "saoudrizwan.claude-dev" / "settings" / "cline_mcp_settings.json",
+            code_user / "globalStorage" / "rooveterinaryinc.roo-cline" / "settings" / "cline_mcp_settings.json",
             code_user / "settings.json",
-            code_user / "mcp.json",
-            code_user / "globalStorage" / "mcp.json"
+            code_user / "mcp.json"
         ])
     elif system == 'win32':
         appdata = os.environ.get("APPDATA")
         if appdata:
             code_user = Path(appdata) / "Code" / "User"
             vscode_paths.extend([
+                code_user / "globalStorage" / "saoudrizwan.claude-dev" / "settings" / "cline_mcp_settings.json",
+                code_user / "globalStorage" / "rooveterinaryinc.roo-cline" / "settings" / "cline_mcp_settings.json",
                 code_user / "settings.json",
-                code_user / "mcp.json",
-                code_user / "globalStorage" / "mcp.json"
+                code_user / "mcp.json"
             ])
     else:
         code_user = home / ".config" / "Code" / "User"
         vscode_paths.extend([
+            code_user / "globalStorage" / "saoudrizwan.claude-dev" / "settings" / "cline_mcp_settings.json",
+            code_user / "globalStorage" / "rooveterinaryinc.roo-cline" / "settings" / "cline_mcp_settings.json",
             code_user / "settings.json",
-            code_user / "mcp.json",
-            code_user / "globalStorage" / "mcp.json"
+            code_user / "mcp.json"
         ])
 
     continue_path = home / ".continue" / "config.json"
@@ -1076,41 +1100,125 @@ def _resolve_llampaca_command():
     return "llampaca"
 
 # --- CLIENTS/MCP SETUP ---
+
+def _is_mcp_installed(paths_list):
+    for p in paths_list:
+        if p and p.exists():
+            try:
+                import json
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if "mcpServers" in data and "llampaca" in data["mcpServers"]:
+                    return True
+            except Exception:
+                pass
+    return False
+
+def _setup_mcp_in_file(p, action):
+    import json
+    if not p.exists():
+        if action == "remove":
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+    else:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+            
+    if "mcpServers" not in data or not isinstance(data.get("mcpServers"), dict):
+        data["mcpServers"] = {}
+        
+    modified = False
+    if action == "install":
+        data["mcpServers"]["llampaca"] = {
+            "command": _resolve_llampaca_command(),
+            "args": ["mcp"]
+        }
+        modified = True
+    elif action == "remove":
+        if "llampaca" in data["mcpServers"]:
+            del data["mcpServers"]["llampaca"]
+            modified = True
+            
+    if modified:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
 @app.get("/api/clients/status")
 async def clients_status():
-
     paths = _get_client_config_paths()
-    res = []
-    for client, cp in paths.items():
-        res.append({
-            "client": client,
-            "installed": cp is not None and os.path.exists(cp),
-            "config_path": str(cp) if cp else None
-        })
-    return {"clients": res}
+    return {
+        "claude_desktop": {
+            "mcp_connected": _is_mcp_installed([paths.get("claude_desktop")])
+        },
+        "vscode": {
+            "mcp_connected": _is_mcp_installed(paths.get("vscode", []))
+        }
+    }
 
 class McpSetupPayload(BaseModel):
-    client: str
+    target: str
+    action: str
 
 @app.post("/api/clients/mcp/setup")
 async def clients_mcp_setup(payload: McpSetupPayload):
-    import subprocess
-    cmd = _resolve_llampaca_command(['mcp', 'setup', payload.client])
+    paths = _get_client_config_paths()
+    if payload.target == "claude_desktop":
+        target_paths = [paths.get("claude_desktop")]
+    elif payload.target == "vscode":
+        target_paths = paths.get("vscode", [])
+    else:
+        raise HTTPException(status_code=400, detail="Invalid target")
+        
     try:
-        subprocess.run(cmd, check=True)
+        for p in target_paths:
+            if p:
+                _setup_mcp_in_file(p, payload.action)
         return {"status": "ok"}
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=400, detail=f"Setup failed: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Setup failed: {e}")
 
 @app.get("/api/clients/snippets")
 async def clients_snippets():
-    import subprocess
-    cmd = _resolve_llampaca_command(['mcp', 'setup', 'snippet'])
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        return {"snippet": res.stdout}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    config = load_config()
+    port = config.get("server_port", 8080)
+    model = config.get("default_model", "Nessun modello attivo")
+    url = f"http://127.0.0.1:{port}/v1"
+    
+    snippet_continue = f"""models:
+  - title: Llampaca Local
+    provider: openai
+    model: AUTODETECT
+    apiBase: {url}"""
+    
+    snippet_cline = f"""{{
+  "mcpServers": {{
+    "llampaca": {{
+      "command": "{_resolve_llampaca_command()}",
+      "args": ["mcp"]
+    }}
+  }}
+}}"""
+    
+    snippet_python = f"""from openai import OpenAI
+client = OpenAI(base_url="{url}", api_key="not-needed")
+response = client.chat.completions.create(
+    model="{model}",
+    messages=[{{"role": "user", "content": "Ciao!"}}]
+)
+print(response.choices[0].message.content)"""
+
+    return {
+        "continue": snippet_continue,
+        "cline_roo": snippet_cline,
+        "mcp": snippet_cline,
+        "python": snippet_python,
+        "endpoint_url": url,
+        "active_model": model
+    }
 
 # --- MEDIA ---
 @app.get("/api/media/{path:path}")

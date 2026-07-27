@@ -82,6 +82,8 @@ createApp({
             }
         };
 
+
+
         onMounted(() => {
             loadStatus();
             // Listener per l'evento personalizzato 'llampaca:status-changed': reattivo e 0 polling inutili

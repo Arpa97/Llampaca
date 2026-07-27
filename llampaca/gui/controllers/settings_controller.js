@@ -25,10 +25,28 @@ export function useSettingsController() {
 
     const isSaving = ref(false);
 
+    const waitForServer = async () => {
+        // Wait 1.5s to give the background task time to stop the old server
+        await new Promise(r => setTimeout(r, 1500));
+        let attempts = 0;
+        while (attempts < 60) {
+            try {
+                const res = await fetch(`/api/server/status?_t=${Date.now()}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.running) return;
+                }
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 1000));
+            attempts++;
+        }
+    };
+
     const saveSettings = async () => {
         try {
             isSaving.value = true;
             settings.value = await model.saveSettings(settings.value);
+            await waitForServer();
             // Riallinea il blocco di stato nella sidebar (porta e contesto appena salvati)
             window.dispatchEvent(new CustomEvent('llampaca:status-changed'));
             if (window.showToast) {
