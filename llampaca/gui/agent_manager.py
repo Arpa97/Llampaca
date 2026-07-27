@@ -204,7 +204,6 @@ class AgentManager:
                 
             # 2. Stop current llama-server and start new one
             from llampaca.engine.server import LlamaServer
-            from llampaca.engine import state
             active_server = state.get_chat_server()
             if active_server:
                 logger.info(f"[AgentManager] Stopping active llama-server on port {active_server.port}...")
@@ -466,7 +465,6 @@ class AgentManager:
     def stop(self):
         # Stop active llama-server if any
         try:
-            from llampaca.engine import state
             active = state.get_chat_server()
             if active:
                 logger.info("[AgentManager] Stopping active llama-server on shutdown...")
@@ -855,8 +853,5 @@ class AgentManager:
             result_queue.put(("error", str(e)))
         finally:
             result_queue.put(("close", None))
-
-agent_manager = AgentManager()
-
 
 agent_manager = AgentManager()

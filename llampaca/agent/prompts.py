@@ -83,12 +83,14 @@ def build_system_prompt(
         parts.append(wiki_index)
     if skills_index:
         parts.append(skills_index)
+    if tool_definitions:
+        parts.append(tool_instructions_from_defs(tool_definitions))
 
     full = "\n\n".join(parts)
 
     if len(full) > max_chars:
-        # Truncate wiki first (it's the largest variable)
-        wiki_lines = wiki_index.splitlines()
+        # Truncate wiki first (it's the largest variable), but keep tools
+        wiki_lines = wiki_index.splitlines() if wiki_index else []
         while len(full) > max_chars and len(wiki_lines) > 5:
             wiki_lines = wiki_lines[:-1]
             parts = [base_prompt]
@@ -97,12 +99,9 @@ def build_system_prompt(
             parts.append("\n".join(wiki_lines) + "\n... (wiki truncated)")
             if skills_index:
                 parts.append(skills_index)
+            if tool_definitions:
+                parts.append(tool_instructions_from_defs(tool_definitions))
             full = "\n\n".join(parts)
-            
-    # Append tools if needed
-    if tool_definitions:
-        parts.append(tool_instructions_from_defs(tool_definitions))
-        full = "\n\n".join(parts)
 
     return full
 

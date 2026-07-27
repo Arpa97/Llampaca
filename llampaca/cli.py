@@ -766,8 +766,8 @@ def generate_image_cmd(prompt, output, quality):
     res = generate_image(prompt=prompt, output_directory=output, quality=quality)
     click.echo(res)
 
-if __name__ == "__main__":
-    main()
+
+
 
 @main.group()
 def config():
@@ -784,3 +784,7 @@ def set_kv_cache(k, v):
     cfg["kv_cache_quant_v"] = v
     save_config(cfg)
     click.echo(f"KV cache set to K={k}, V={v}. Restart the server to apply.")
+
+
+if __name__ == "__main__":
+    main()

@@ -21,50 +21,42 @@ from llampaca.config import load_config, DEFAULT_CONTEXT_SIZE
 from llampaca.gui.agent_manager import agent_manager
 
 import logging
-import logging
 logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
-def find_free_port(start_port=8090):
-    port = start_port
-    while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(('127.0.0.1', port))
-                return port
-            except OSError:
-                port += 1
 
-def start_http_server(directory, port):
+
+
+def start_http_server(directory):
     config = load_config()
     agent_manager.start(config)
     
     import uvicorn
+    import socket
     from llampaca.gui.routes import app
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(('127.0.0.1', 0))
+    port = sock.getsockname()[1]
     
     config_uv = uvicorn.Config(
         app, 
         host="127.0.0.1", 
-        port=port, 
         log_level="error",
         ws_ping_interval=None,
         ws_ping_timeout=None
     )
     server = uvicorn.Server(config_uv)
     
-    thread = threading.Thread(target=server.run)
+    def run_server():
+        server.run(sockets=[sock])
+        
+    thread = threading.Thread(target=run_server)
     thread.daemon = True
     thread.start()
     
     # Wait for uvicorn to actually start listening
-    import time, socket
-    started = False
-    for _ in range(50):
-        try:
-            with socket.create_connection(('127.0.0.1', port), timeout=0.1):
-                started = True
-                break
-        except OSError:
-            time.sleep(0.1)
+    import time
+    while not server.started:
+        time.sleep(0.05)
     
     class ServerWrapper:
         def __init__(self, srv):
@@ -74,7 +66,7 @@ def start_http_server(directory, port):
         def server_close(self):
             pass
             
-    return ServerWrapper(server)
+    return ServerWrapper(server), port
 
 def start_gui_window():
     """Start the background HTTP server and launch the pywebview standalone native window."""
@@ -174,8 +166,7 @@ def start_gui_window():
     # Set icon before starting window
     _set_app_icon()
 
-    port = find_free_port()
-    server = start_http_server(gui_dir, port)
+    server, port = start_http_server(gui_dir)
 
     logger.info(f"GUI HTTP Server running locally at http://127.0.0.1:{port}")
     logger.info("Opening native window...")

@@ -503,6 +503,7 @@ async def _restart_active_server_fallback(model_name: str = None, port: int = No
     success = await new_server.start()
     if success:
         state.set_chat_server(new_server)
+
         # Update LlamaClient port dynamically in GUI agent manager if running
         try:
             from llampaca.gui.server import agent_manager
