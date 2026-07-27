@@ -1,820 +1,239 @@
-import http.server
-import socketserver
-import threading
-import socket
-import sys
-import json
-import asyncio
-import traceback
-import queue
-from pathlib import Path
 
-# Import database methods
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any, Union
+import json, uuid, os, shutil, re, time, urllib.parse, io, base64, queue
+from pathlib import Path
+import logging
+
 from llampaca.engine.db import (
-    list_conversations,
-    get_conversation,
-    create_conversation,
-    add_message,
-    delete_conversation,
-    update_conversation_title,
+    list_conversations, get_conversation, create_conversation,
+    add_message, delete_conversation, update_conversation_title,
     update_conversation_summary
 )
-from llampaca.config import load_config, DEFAULT_CONTEXT_SIZE
-import urllib.parse
-import io
-import base64
-import uuid
-import shutil
-import time
-import re
+from llampaca.config import load_config, save_config, MODELS_DIR, MODEL_PRESETS, DEFAULT_CONTEXT_SIZE
 from llampaca.gui.agent_manager import agent_manager, run_async, is_server_running
 from llampaca.gui.restart_bridge import restart_via_agent_manager
-from llampaca.config import MODELS_DIR, MODEL_PRESETS, save_config
-import logging
+
 logger = logging.getLogger(__name__)
-class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
 
-    # I font in llampaca/gui/vendor/fonts/ vanno serviti con il MIME giusto.
-    # La tabella di `mimetypes` conosce .woff2 solo da Python 3.11 in poi, ma
-    # pyproject.toml dichiara requires-python = ">=3.10": su 3.10 il font
-    # uscirebbe come application/octet-stream. Lo registriamo esplicitamente
-    # invece di dipendere dalla versione dell'interprete.
-    extensions_map = {
-        **http.server.SimpleHTTPRequestHandler.extensions_map,
-        '.woff2': 'font/woff2',
-        '.woff': 'font/woff',
-    }
+app = FastAPI(title="Llampaca GUI API")
 
-    def log_message(self, format, *args):
-        # Log only API requests to the console, ignore static asset prints
-        if self.path.startswith('/api/'):
-            sys.stdout.write(f"[{self.log_date_time_string()}] API REQUEST: {self.command} {self.path} -> Response Code: {args[1]}\n")
-            sys.stdout.flush()
+# --- CONVERSATIONS ---
+@app.get("/api/conversations")
+async def get_conversations():
+    convs = run_async(list_conversations())
+    return convs
 
-    def end_headers(self):
-        # Force revalidation of static frontend assets (JS/CSS/HTML).
-        # Without an explicit Cache-Control, both browsers and the pywebview
-        # WebKit backend apply "heuristic caching" and keep serving an old
-        # cached copy of the frontend WITHOUT revalidating — so after the
-        # source is updated the running window still executes stale JS. That
-        # is exactly what caused the multi-tool confirmation bug to persist
-        # for some users while others (with a fresh cache) never saw it.
-        # 'no-cache' does not mean "never cache": paired with the
-        # Last-Modified/304 handling SimpleHTTPRequestHandler already does, it
-        # means "always revalidate first", so unchanged files stay fast (304)
-        # and changed files are always re-fetched. API responses are skipped
-        # (they set their own cache semantics, e.g. the SSE stream).
-        if not self.path.startswith('/api/'):
-            self.send_header('Cache-Control', 'no-cache, must-revalidate')
-        super().end_headers()
+@app.get("/api/conversations/{conv_id}")
+async def get_conversation_by_id(conv_id: str):
+    conv = run_async(get_conversation(conv_id))
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
 
-    def do_GET(self):
-        original_path = self.path
-        self.path = self.path.split('?')[0]
-        if self.path.startswith('/api/conversations'):
-            self.handle_get_conversations()
-        elif self.path.startswith('/api/settings'):
-            self.handle_get_settings()
-        elif self.path.startswith('/api/models/search'):
-            self.handle_get_models_search(original_path)
-        elif self.path.startswith('/api/models'):
-            self.handle_get_models()
-        elif self.path.startswith('/api/mcp/config-schema'):
-            self.handle_get_mcp_schema(original_path)
-        elif self.path.startswith('/api/mcp/search'):
-            self.handle_get_mcp_search(original_path)
-        elif self.path.startswith('/api/mcp'):
-            self.handle_get_mcp()
-        elif self.path.startswith('/api/tools'):
-            self.handle_get_tools()
-        elif self.path.startswith('/api/wiki'):
-            self.handle_get_wiki()
-        elif self.path.startswith('/api/skills'):
-            self.handle_get_skills()
-        elif self.path.startswith('/api/clients/status'):
-            self.handle_get_clients_status()
-        elif self.path.startswith('/api/clients/snippets'):
-            self.handle_get_clients_snippets()
-        elif self.path.startswith('/api/media'):
-            self.handle_get_media(original_path)
-        else:
-            super().do_GET()
+class CreateConvPayload(BaseModel):
+    title: Optional[str] = None
+    system_prompt: Optional[str] = None
 
-    def do_POST(self):
-        self.path = self.path.split('?')[0]
-        if self.path.startswith('/api/confirm'):
-            self.handle_post_confirm()
-        elif self.path.startswith('/api/cancel'):
-            self.handle_post_cancel()
-        elif self.path.startswith('/api/conversations'):
-            self.handle_post_conversations()
-        elif self.path.startswith('/api/settings'):
-            self.handle_post_settings()
-        elif self.path.startswith('/api/models/default'):
-            self.handle_post_models_default()
-        elif self.path.startswith('/api/models/download'):
-            self.handle_post_models_download()
-        elif self.path.startswith('/api/mcp/install'):
-            self.handle_post_mcp_install()
-        elif self.path.startswith('/api/tools/custom'):
-            self.handle_post_tools_custom()
-        elif self.path.startswith('/api/wiki'):
-            self.handle_post_wiki()
-        elif self.path.startswith('/api/skills'):
-            self.handle_post_skills()
-        elif self.path.startswith('/api/clients/mcp/setup'):
-            self.handle_post_clients_mcp_setup()
-        elif self.path.startswith('/api/open-file'):
-            self.handle_post_open_file()
-        else:
-            self.send_error(404, "Not Found")
+@app.post("/api/conversations")
+async def create_new_conversation(payload: CreateConvPayload):
+    config = load_config()
+    default_model = config.get("default_model", "qwen3.5-4b-instruct")
+    title = payload.title if payload.title else 'New Conversation'
+    
+    conv_id = run_async(create_conversation(
+        model_name=default_model,
+        title=title
+    ))
+    
+    conv = run_async(get_conversation(conv_id))
+    return conv
 
-    def do_DELETE(self):
-        self.path = self.path.split('?')[0]
-        if self.path.startswith('/api/conversations'):
-            self.handle_delete_conversation()
-        elif self.path.startswith('/api/models/'):
-            self.handle_delete_model()
-        elif self.path.startswith('/api/mcp/uninstall/'):
-            self.handle_delete_mcp()
-        elif self.path.startswith('/api/tools/custom/'):
-            self.handle_delete_tools_custom()
-        elif self.path.startswith('/api/wiki/'):
-            self.handle_delete_wiki()
-        elif self.path.startswith('/api/skills/'):
-            self.handle_delete_skills()
-        else:
-            self.send_error(404, "Not Found")
+@app.delete("/api/conversations/{conv_id}")
+async def delete_conversation_route(conv_id: str):
+    run_async(delete_conversation(conv_id))
+    return {"status": "ok"}
 
-    def handle_post_cancel(self):
-        """POST /api/cancel — stop the in-flight generation, if any. Runs on a
-        separate handler thread from the blocked streaming request (the HTTP
-        server is threaded), so it can interrupt it mid-stream."""
-        try:
-            cancelled = agent_manager.cancel_current()
-            self._send_json({"cancelled": cancelled})
-        except Exception as e:
-            logger.error("!!! [API POST CANCEL ERROR]")
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
-
-    def handle_post_confirm(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-            confirm_id = payload.get("confirm_id")
-            allow = payload.get("allow", False)
-            
-            found = False
-            if confirm_id and confirm_id in agent_manager.pending_confirmations:
-                found = True
-                def resolve():
-                    if confirm_id in agent_manager.pending_confirmations:
-                        agent_manager.pending_confirmations[confirm_id]["result"] = allow
-                        agent_manager.pending_confirmations[confirm_id]["event"].set()
-                agent_manager.loop.call_soon_threadsafe(resolve)
-                
-            status_str = "ok" if found else "expired"
-            body = json.dumps({"status": status_str}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            logger.error("!!! [API POST ERROR] Exception in /api/confirm:")
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_get_conversations(self):
-        logger.info(f"\n>>> [API GET] {self.path}")
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) == 3:  # GET /api/conversations/<id>
-                conv_id = parts[2]
-                logger.info(f"--- [API GET] Fetching details for conversation UUID: {conv_id}")
-                conv = run_async(get_conversation(conv_id))
-                if conv:
-                    logger.info(f"<<< [API GET] Found details with {len(conv.get('messages', []))} messages.")
-                    body = json.dumps(conv).encode('utf-8')
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json')
-                    self.send_header('Content-Length', str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                else:
-                    logger.info(f"<<< [API GET] Conversation NOT FOUND for UUID: {conv_id}")
-                    self.send_error(404, "Conversation not found")
-            else:  # GET /api/conversations
-                logger.info("--- [API GET] Listing all conversations...")
-                convs = run_async(list_conversations())
-                logger.info(f"<<< [API GET] Found {len(convs)} conversations.")
-                body = json.dumps(convs).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-        except Exception as e:
-            logger.error("!!! [API GET ERROR] Exception occurred during fetch:")
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_post_conversations(self):
-        logger.info(f"\n>>> [API POST] {self.path}")
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) == 4 and parts[3] == 'messages':  # POST /api/conversations/<id>/messages
-                conv_id = parts[2]
-                self.handle_post_message(conv_id)
-                return
-
-            if len(parts) == 4 and parts[3] == 'attach':  # POST /api/conversations/<id>/attach
-                conv_id = parts[2]
-                self.handle_post_attach(conv_id)
-                return
-
-            # Otherwise: POST /api/conversations (Create new conversation)
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = {}
-            if content_length > 0:
-                payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-
-            logger.info(f"--- [API POST] Creating conversation with payload: {payload}")
-            config = load_config()
-            default_model = config.get("default_model", "qwen3.5-4b-instruct")
-
-            # Create in SQLite DB
-            conv_id = run_async(create_conversation(
-                model_name=default_model,
-                title=payload.get('title', 'New Conversation')
-            ))
-
-            # Retrieve created conversation
-            conv = run_async(get_conversation(conv_id))
-            logger.info(f"<<< [API POST] Conversation created with UUID: {conv_id}")
-
-            body = json.dumps(conv).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            logger.error("!!! [API POST ERROR] Exception occurred during creation:")
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_post_message(self, conv_id):
-        logger.info(f"\n>>> [API POST MESSAGE] Conversation ID: {conv_id}")
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = {}
-            if content_length > 0:
-                payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-
-            role = payload.get('role', 'user')
-            content = payload.get('content', '')
-            
-            is_multimodal = isinstance(content, list)
-            if is_multimodal:
-                logger.info(f"--- [API POST MESSAGE] Content payload: Multimodal array ({len(content)} items)")
-            else:
-                logger.info(f"--- [API POST MESSAGE] Content payload: '{content[:100]}...'")
-
-            # /remember <fact>: the GUI equivalent of the CLI chat command.
-            if not is_multimodal and content.strip().lower().startswith("/remember"):
-                fact = content.strip()[len("/remember"):].strip()
-                if fact:
-                    content = (
-                        f"{fact}\n\n"
-                        "[The user asked to remember the fact above permanently. "
-                        "Store it in your wiki with update_wiki_page, copying the "
-                        "fact FAITHFULLY — the page content must state exactly the "
-                        "fact above, never something invented. Add it to the "
-                        "existing page it fits best (read the page first and keep "
-                        "its still-valid content), or create a new page if none "
-                        "fits. Then confirm in one short line where you stored it.]"
-                    )
-
-            # Merge any files staged for this conversation into the user turn,
-            attachments, index_notes = agent_manager.take_pending(conv_id)
-            if attachments or index_notes:
-                from llampaca.attachments import build_attachment_block
-                blocks = [build_attachment_block(n, t) for n, t in attachments]
-                blocks.extend(index_notes)
-                if is_multimodal:
-                    # In multimodal mode, if there are text attachments, prepend them as a text block
-                    blocks_str = "\n\n".join(blocks)
-                    if content and content[0].get("type") == "text":
-                        content[0]["text"] = blocks_str + "\n\n" + content[0].get("text", "")
-                    else:
-                        content.insert(0, {"type": "text", "text": blocks_str})
-                else:
-                    content = "\n\n".join(blocks + [content])
-                
-                names = ", ".join(n for n, _ in attachments)
-                if index_notes:
-                    names = f"{names + ', ' if names else ''}{len(index_notes)} indexed doc(s)"
-                logger.info(f"--- [API POST MESSAGE] Merged attachments: {names}")
-
-            # 1. Add user message to DB
-            content_for_db = json.dumps(content) if is_multimodal else content
-            user_msg_id = run_async(add_message(conv_id, role, content_for_db))
-            logger.info(f"--- [API POST MESSAGE] Saved user message with ID: {user_msg_id}")
-
-            # Fetch conversation to get full history
-            conv_data = run_async(get_conversation(conv_id))
-            if not conv_data:
-                logger.info("<<< [API POST MESSAGE] Conversation NOT FOUND")
-                self.send_error(404, "Conversation not found")
-                return
-
-            # Start Server-Sent Events (SSE) Response
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/event-stream')
-            self.send_header('Cache-Control', 'no-cache')
-            self.send_header('Connection', 'close')
-            self.send_header('Transfer-Encoding', 'chunked')
-            self.send_header('X-Accel-Buffering', 'no')
-            self.end_headers()
-            self.wfile.flush()
-
-            # Verify if Llama model server is active
-            config = load_config()
-            server_port = config.get("server_port", 8080)
-
-            if not is_server_running(port=server_port):
-                warn_msg = (
-                    f"Il server dei modelli (llama-server) non è attivo sulla porta {server_port}. "
-                    "Avvialo nel tuo terminale con 'llampaca run' per parlare con l'agente."
-                )
-                logger.info(f"⚠️ [API POST MESSAGE] llama-server NOT running on port {server_port}! Sending warning to client...")
-                assistant_msg_id = run_async(add_message(conv_id, "assistant", warn_msg))
-                self.emit_sse("text", warn_msg)
-                self.emit_sse("done", {"assistant_message_id": assistant_msg_id})
-                self.end_sse()
-                return
-
-            logger.info(f"--- [API POST MESSAGE] llama-server is ACTIVE on port {server_port}. Enqueuing to AgentManager...")
-            
-            q = queue.Queue()
-            agent_manager.process_message(conv_id, content, user_msg_id, conv_data, config, q)
-            
-            while True:
-                msg_type, *args = q.get()
-                if msg_type == "event":
-                    kind, data = args
-                    if kind == "text":
-                        self.emit_sse("text", data)
-                        sys.stdout.write(data)
-                        sys.stdout.flush()
-                    elif kind == "reasoning":
-                        self.emit_sse("reasoning", data)
-                    elif kind == "tool_call":
-                        self.emit_sse("tool_call", data)
-                        logger.info(f"\n  [tool] {data['name']}({data['arguments']})")
-                    elif kind == "tool_result":
-                        self.emit_sse("tool_result", data)
-                        preview = data["result"].replace("\n", " ")
-                        if len(preview) > 120:
-                            preview = preview[:120] + "..."
-                        logger.info(f"  [result] {preview}")
-                    elif kind == "tool_confirm_request":
-                        self.emit_sse("tool_confirm_request", data)
-                    elif kind == "tool_confirm_cancel":
-                        self.emit_sse("tool_confirm_cancel", data)
-                    elif kind == "summary_updated":
-                        # The summary DB update is now handled by the Agent internally
-                        # We just emit the SSE
-                        self.emit_sse("summary_updated", data)
-                    elif kind == "context_status":
-                        self.emit_sse("context_status", data)
-                    elif kind == "title_updated":
-                        self.emit_sse("title_updated", data)
-                    elif kind == "warning":
-                        self.emit_sse("warning", data)
-                        logger.warning(f"\n  [warning] {data}")
-                    elif kind == "error":
-                        self.emit_sse("error", data)
-                        logger.error(f"\n  [error] {data}")
-                    elif kind == "cancelled":
-                        self.emit_sse("cancelled", data)
-                        logger.info("\n  [cancelled] generation stopped by user")
-                elif msg_type == "done":
-                    self.emit_sse("done", args[0])
-                elif msg_type == "error":
-                    self.emit_sse("error", args[0])
-                    logger.error(f"\n  [error] {args[0]}")
-                elif msg_type == "close":
-                    self.end_sse()
-                    break
-
-        except Exception as e:
-            logger.error("!!! [API POST MESSAGE ERROR] Exception occurred:")
-            traceback.print_exc()
-            try:
-                self.send_error(500, str(e))
-            except Exception:
-                pass
-
-    def handle_post_attach(self, conv_id):
-        """
-        Upload a file to stage for the conversation's next message (the GUI
-        equivalent of the CLI's /attach). The raw file bytes are the request
-        body; the original filename rides in the X-Attachment-Filename header
-        (URL-encoded) because do_POST already stripped the query string and
-        the suffix is what extract_text dispatches on.
-
-        Responds with JSON describing whether the file was injected directly
-        or indexed for RAG, or a 4xx/5xx with a user-facing error message.
-        """
-        import tempfile
-        import os
-        from urllib.parse import unquote
-
-        logger.info(f"\n>>> [API POST ATTACH] Conversation ID: {conv_id}")
-        tmp_path = None
-        try:
-            raw_name = self.headers.get('X-Attachment-Filename', '')
-            filename = os.path.basename(unquote(raw_name)) or "attachment"
-
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length <= 0:
-                self.send_error(400, "Empty upload")
-                return
-            data = self.rfile.read(content_length)
-
-            # Persist to a temp file preserving the suffix: extract_text keys
-            # off the extension, and pypdf/python-docx read from a path.
-            suffix = Path(filename).suffix
-            fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-
-            from llampaca.attachments import extract_text, AttachmentError
-            try:
-                text = extract_text(Path(tmp_path))
-            except AttachmentError as e:
-                # User-facing extraction problem (unsupported type, encrypted
-                # PDF, empty file...): 400 with the message shown verbatim.
-                self._send_json({"error": str(e)}, status=400)
-                return
-
-            config = load_config()
-            context_size = config.get("context_size", DEFAULT_CONTEXT_SIZE)
-
-            # Staging (and, for large files, indexing) happens on the manager's
-            # event loop: index_document is async and shares its embedding
-            # server. run_coroutine_threadsafe blocks this HTTP thread until
-            # it finishes, which is exactly the request/response we want.
-            future = asyncio.run_coroutine_threadsafe(
-                agent_manager.stage_attachment(
-                    conv_id, filename, text, context_size
-                ),
-                agent_manager.loop,
+@app.post("/api/conversations/{conv_id}/messages")
+async def post_message(conv_id: str, request: Request):
+    payload = await request.json()
+    role = payload.get('role', 'user')
+    content = payload.get('content', '')
+    
+    is_multimodal = isinstance(content, list)
+    
+    if not is_multimodal and content.strip().lower().startswith("/remember"):
+        fact = content.strip()[len("/remember"):].strip()
+        if fact:
+            content = (
+                f"{fact}\n\n"
+                "[The user asked to remember the fact above permanently. "
+                "Store it in your wiki with update_wiki_page, copying the "
+                "fact FAITHFULLY — the page content must state exactly the "
+                "fact above, never something invented. Add it to the "
+                "existing page it fits best (read the page first and keep "
+                "its still-valid content), or create a new page if none "
+                "fits. Then confirm in one short line where you stored it.]"
             )
-            result = future.result()
-            logger.info(f"<<< [API POST ATTACH] {result}")
-            self._send_json(result)
 
-        except Exception as e:
-            logger.error("!!! [API POST ATTACH ERROR] Exception occurred:")
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
-        finally:
-            if tmp_path:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-
-    def _send_json(self, obj, status=200):
-        """Serialize a dict as a JSON response (small helper for the attach
-        endpoint's success/error replies)."""
-        body = json.dumps(obj).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def handle_delete_conversation(self):
-        logger.info(f"\n>>> [API DELETE] {self.path}")
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) == 3:  # DELETE /api/conversations/<id>
-                conv_id = parts[2]
-                run_async(delete_conversation(conv_id))
-                logger.info(f"<<< [API DELETE] Deleted conversation UUID: {conv_id}")
-                body = json.dumps({"success": True}).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+    attachments, index_notes = agent_manager.take_pending(conv_id)
+    if attachments or index_notes:
+        from llampaca.attachments import build_attachment_block
+        blocks = [build_attachment_block(n, t) for n, t in attachments]
+        blocks.extend(index_notes)
+        if is_multimodal:
+            blocks_str = "\n\n".join(blocks)
+            if content and content[0].get("type") == "text":
+                content[0]["text"] = blocks_str + "\n\n" + content[0].get("text", "")
             else:
-                logger.info("<<< [API DELETE] Invalid path structure")
-                self.send_error(400, "Bad Request")
-        except Exception as e:
-            logger.error("!!! [API DELETE ERROR] Exception occurred:")
-            traceback.print_exc()
-            self.send_error(500, str(e))
+                content.insert(0, {"type": "text", "text": blocks_str})
+        else:
+            content = "\n\n".join(blocks + [content])
 
-    # WebKit (Safari and the pywebview WKWebView backend) buffers a streamed
-    # fetch() response body and does not hand small chunks to the JS
-    # ReadableStream reader until roughly ~1 KB has accumulated. Chrome/Blink
-    # delivers each chunk immediately. That buffering deadlocks the tool
-    # confirmation flow: an isolated `tool_confirm_request` event that is not
-    # followed by more streamed bytes stays trapped in WebKit's buffer, so the
-    # UI never shows the prompt and the server blocks forever waiting for a
-    # confirmation the user can't give. (The FIRST confirmation usually works
-    # because enough model text streamed just before it to flush the buffer;
-    # a SECOND back-to-back tool call often has little text in between, so it
-    # hangs — exactly the reported symptom.) Padding every event up to this
-    # size with an ignored SSE comment line guarantees each event on its own
-    # exceeds the threshold and is delivered instantly.
-    # 65536 is used to guarantee flushing of all browser network buffers (Safari and some WebKit variants buffer up to 64KB of streaming responses).
-    _SSE_MIN_CHUNK_BYTES = 65536
+    content_for_db = json.dumps(content) if is_multimodal else content
+    user_msg_id = run_async(add_message(conv_id, role, content_for_db))
 
-    def emit_sse(self, kind, data):
-        """Helper to send event stream chunks to the frontend."""
-        try:
+    conv_data = run_async(get_conversation(conv_id))
+    if not conv_data:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    config = load_config()
+    server_port = config.get("server_port", 8080)
+
+    async def sse_generator():
+        def _format_sse(kind, data):
             event_data = json.dumps({"kind": kind, "data": data})
             body = f"data: {event_data}\n"
-            # Pad to _SSE_MIN_CHUNK_BYTES with an SSE comment line (starts with
-            # ':'). The frontend parser only reads lines beginning with
-            # "data: ", so the padding is inert; native EventSource would treat
-            # it as a comment too. The trailing blank line terminates the event.
-            pad_needed = self._SSE_MIN_CHUNK_BYTES - len(body.encode('utf-8')) - 3
+            pad_needed = 512 - len(body.encode('utf-8')) - 3
             if pad_needed > 0:
                 body += ":" + (" " * pad_needed) + "\n"
-            body += "\n"
-            payload = body.encode('utf-8')
-            chunk_size = f"{len(payload):X}\r\n".encode('utf-8')
-            self.wfile.write(chunk_size + payload + b"\r\n")
-            self.wfile.flush()
-        except Exception:
-            pass
+            return body + "\n"
 
-    def end_sse(self):
-        """Helper to send the final zero chunk."""
-        try:
-            self.wfile.write(b"0\r\n\r\n")
-            self.wfile.flush()
-        except Exception:
-            pass
+        if not is_server_running(port=server_port):
+            warn_msg = (
+                f"Il server dei modelli (llama-server) non è attivo sulla porta {server_port}. "
+                "Avvialo nel tuo terminale con 'llampaca run' per parlare con l'agente."
+            )
+            assistant_msg_id = run_async(add_message(conv_id, "assistant", warn_msg))
+            yield _format_sse("text", warn_msg)
+            yield _format_sse("done", {'assistant_message_id': assistant_msg_id})
+            return
 
-    def handle_get_settings(self):
+        q = queue.Queue()
+        agent_manager.process_message(conv_id, content, user_msg_id, conv_data, config, q)
+        
+        import asyncio
         try:
-            config = load_config()
-            body = json.dumps(config).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    # ------------------------------------------------------------------ #
-    # Personal wiki ("Profilo") — view/edit the same ~/.llampaca/wiki     #
-    # pages the model reads/writes and the CLI's /remember stores.        #
-    # ------------------------------------------------------------------ #
-    def handle_get_wiki(self):
-        """GET /api/wiki -> list of {name, description};
-        GET /api/wiki/<name> -> {name, content} for one page."""
-        from urllib.parse import unquote
-        from llampaca import wiki
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) == 3:  # /api/wiki/<name>
-                name = unquote(parts[2])
+            while True:
                 try:
-                    content = wiki.read_page(name)
-                except FileNotFoundError:
-                    self._send_json({"error": "Pagina non trovata"}, status=404)
-                    return
-                self._send_json({"name": wiki.slugify(name), "content": content})
-            else:  # /api/wiki
-                pages = [
-                    {"name": name, "description": desc}
-                    for name, desc in wiki.list_pages()
-                ]
-                # max_chars lets the editor warn before the write would be
-                # rejected server-side (same cap the model's tool obeys).
-                self._send_json({"pages": pages, "max_chars": wiki.MAX_PAGE_CHARS})
-        except Exception as e:
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
+                    msg = q.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.05)
+                    continue
+                    
+                msg_type = msg[0]
+                if msg_type == "event":
+                    kind = msg[1]
+                    data = msg[2]
+                    yield _format_sse(kind, data)
+                elif msg_type == "done":
+                    data = msg[1]
+                    yield _format_sse("done", data)
+                elif msg_type == "error":
+                    err_msg = msg[1]
+                    yield _format_sse("error", err_msg)
+                elif msg_type == "close":
+                    break
+        except asyncio.CancelledError:
+            logger.info("Client disconnected, cancelling agent...")
+            agent_manager.cancel_current()
+            raise
+                
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no"
+    }
+    return StreamingResponse(sse_generator(), media_type="text/event-stream", headers=headers)
 
-    def handle_post_wiki(self):
-        """POST /api/wiki with {name, content} -> create/overwrite a page.
-        Returns {name} with the slugified name actually written."""
-        from llampaca import wiki
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
-            name = (payload.get("name") or "").strip()
-            content = payload.get("content", "")
-            if not name:
-                self._send_json({"error": "Il nome della pagina è obbligatorio."}, status=400)
-                return
-            try:
-                # write_page enforces the same rules as the model's tool:
-                # non-empty content and the whole-page size cap.
-                slug = wiki.write_page(name, content)
-            except ValueError as e:
-                self._send_json({"error": str(e)}, status=400)
-                return
-            self._send_json({"name": slug})
-        except Exception as e:
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
+# --- USER CONFIRMATION ---
+class ConfirmPayload(BaseModel):
+    message_id: str
+    action: str
 
-    def handle_delete_wiki(self):
-        """DELETE /api/wiki/<name> -> remove a page file. Deleting is a user
-        action (the model can only write), which is exactly what this is."""
-        from urllib.parse import unquote
-        from llampaca import wiki
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) != 3:
-                self.send_error(400, "Bad Request")
-                return
-            name = unquote(parts[2])
-            path = wiki.page_path(name)  # slugified, inside WIKI_DIR
-            if path.is_file():
-                path.unlink()
-            self._send_json({"success": True, "name": wiki.slugify(name)})
-        except Exception as e:
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
+@app.post("/api/confirm")
+async def confirm_action(payload: ConfirmPayload):
+    agent_manager.resolve_pending(payload.message_id, "confirm", payload.action)
+    return {"status": "ok"}
 
-    # ------------------------------------------------------------------ #
-    # Markdown Skills ("Skills .md") — view/edit/import ~/.llampaca/skills #
-    # ------------------------------------------------------------------ #
-    def handle_get_skills(self):
-        """GET /api/skills -> list of all skills with metadata;
-        GET /api/skills/<name> -> {slug, name, content} for one skill."""
-        from urllib.parse import unquote
-        from llampaca import skills
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) == 3:  # /api/skills/<name>
-                name = unquote(parts[2])
-                try:
-                    content = skills.read_skill(name)
-                except FileNotFoundError:
-                    self._send_json({"error": "Skill non trovata"}, status=404)
-                    return
-                self._send_json({"slug": skills.slugify(name), "content": content})
-            else:  # /api/skills
-                skill_list = skills.list_skills()
-                self._send_json({"skills": skill_list, "max_chars": skills.MAX_SKILL_CHARS})
-        except Exception as e:
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
+@app.post("/api/cancel")
+async def cancel_action(payload: ConfirmPayload):
+    agent_manager.resolve_pending(payload.message_id, "cancel", payload.action)
+    return {"status": "ok"}
 
-    def handle_post_skills(self):
-        """POST /api/skills with {name, content, url} -> create, overwrite or import a skill.
-        Returns {slug} with the slugified name written."""
-        from llampaca import skills
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
-            name = (payload.get("name") or "").strip()
-            content = payload.get("content", "")
-            url = (payload.get("url") or "").strip()
+# --- OPEN FILE ---
+class OpenFilePayload(BaseModel):
+    path: str
 
-            if url and not content.strip():
-                import urllib.request
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    content = resp.read().decode('utf-8', errors='replace')
-                if not name:
-                    name = url.split('/')[-1].replace('.md', '')
+@app.post("/api/open-file")
+async def open_file(payload: OpenFilePayload):
+    import subprocess, sys
+    path = payload.path
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        if sys.platform == 'darwin':
+            subprocess.run(['open', path], check=True)
+        elif sys.platform == 'win32':
+            os.startfile(path)
+        else:
+            subprocess.run(['xdg-open', path], check=True)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            if not name:
-                self._send_json({"error": "Il nome della skill è obbligatorio."}, status=400)
-                return
 
-            try:
-                slug = skills.write_skill(name, content)
-            except ValueError as e:
-                self._send_json({"error": str(e)}, status=400)
-                return
-            self._send_json({"slug": slug, "success": True})
-        except Exception as e:
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
+# --- SETTINGS ---
+@app.get("/api/settings")
+async def get_settings():
+    return load_config()
 
-    def handle_delete_skills(self):
-        """DELETE /api/skills/<name> -> remove a skill file."""
-        from urllib.parse import unquote
-        from llampaca import skills
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) != 3:
-                self.send_error(400, "Bad Request")
-                return
-            name = unquote(parts[2])
-            deleted = skills.delete_skill(name)
-            self._send_json({"success": deleted, "slug": skills.slugify(name)})
-        except Exception as e:
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
+class SettingsPayload(BaseModel):
+    server_port: int
+    context_size: int
+    threads: int
+    gpu_layers: int
 
-    def handle_post_settings(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-            
-            config = load_config()
-            need_restart = False
-            
-            # Map keys and check differences
-            if "server_port" in payload and payload["server_port"] != config.get("server_port"):
-                config["server_port"] = int(payload["server_port"])
-                need_restart = True
-            if "context_size" in payload and payload["context_size"] != config.get("context_size"):
-                config["context_size"] = int(payload["context_size"])
-                need_restart = True
-            if "n_threads" in payload and payload["n_threads"] != config.get("n_threads"):
-                config["n_threads"] = int(payload["n_threads"])
-                need_restart = True
-            if "gpu_layers" in payload and payload["gpu_layers"] != config.get("gpu_layers"):
-                config["gpu_layers"] = int(payload["gpu_layers"])
-                need_restart = True
+@app.post("/api/settings")
+async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTasks):
+    config = load_config()
+    old_port = config.get("server_port")
+    
+    config["server_port"] = payload.server_port
+    config["context_size"] = payload.context_size
+    config["threads"] = payload.threads
+    config["gpu_layers"] = payload.gpu_layers
+    save_config(config)
 
-            # The embedder's GPU offload is independent from the chat model's:
-            # it drives a SEPARATE, lazily-started llama-server, so changing it
-            # must NOT restart the chat server (that would interrupt the
-            # conversation for a setting the chat server ignores). We only
-            # persist it and drop any already-built EmbeddingService, so the
-            # next RAG/attach rebuilds the embedding server with the new value.
-            embedding_gpu_changed = False
-            if "embedding_gpu_layers" in payload and payload["embedding_gpu_layers"] != config.get("embedding_gpu_layers"):
-                config["embedding_gpu_layers"] = int(payload["embedding_gpu_layers"])
-                embedding_gpu_changed = True
+    def restart_task():
+        restart_via_agent_manager(
+            port=payload.server_port,
+            context_size=payload.context_size,
+            n_threads=payload.threads,
+            gpu_layers=payload.gpu_layers
+        )
 
-            # Thinking on/off is applied per request (the Agent reads it from
-            # the config on every turn), so it needs no restart: the very next
-            # message uses the new value. Driven from the chat composer, where
-            # it is a per-turn decision rather than a configuration.
-            if "no_think" in payload:
-                config["no_think"] = bool(payload["no_think"])
+    background_tasks.add_task(restart_task)
+    return {"status": "ok", "message": "Settings saved. Restarting server in background..."}
 
-            from llampaca.config import save_config
-            save_config(config)
+# --- MODELS ---
 
-            # The manager caches the config it was started with; without this
-            # the Agent would keep reading the old value until the next launch.
-            if agent_manager.config is not None:
-                agent_manager.config = config
 
-            # No cache re-priming when no_think changes: measured against
-            # llama-server, the toggle only alters the tail of the rendered
-            # prompt (the assistant's generation prefix), not the system block,
-            # so the warmed prefix stays valid — 13 tokens to compute after a
-            # switch versus 2271 from cold. Re-priming would have stalled the
-            # next message by ~8 s for nothing.
-
-            if embedding_gpu_changed:
-                try:
-                    if agent_manager.embedding_service is not None:
-                        agent_manager.embedding_service.stop()
-                        agent_manager.embedding_service = None
-                    logger.info("[GUI Server] Embedding GPU layers changed; embedding service reset.")
-                except Exception as e:
-                    logger.info(f"[GUI Server] Could not reset embedding service: {e}")
-            
-            if need_restart:
-                logger.info(f"[GUI Server] Config changed. Restarting model server...")
-                from llampaca.gui.restart_bridge import restart_via_agent_manager
-                success = restart_via_agent_manager(
-                    agent_manager,
-                    port=config.get("server_port"),
-                    context_size=config.get("context_size"),
-                    n_threads=config.get("n_threads"),
-                    gpu_layers=config.get("gpu_layers")
-                )
-                if not success:
-                    raise Exception("Impossibile riavviare il server dei modelli.")
-            
-            body = json.dumps({"status": "ok", "config": config}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_get_models(self):
+@app.get("/api/models")
+def get_models():
         try:
             from llampaca.config import MODELS_DIR, MODEL_PRESETS, load_config
             from llampaca.engine.downloader import active_downloads, downloads_lock
@@ -1025,197 +444,216 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 
             models_list.sort(key=sort_key)
             
-            body = json.dumps(models_list).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            
+            
+            
+            
+            
+            return models_list
         except Exception as e:
             traceback.print_exc()
-            self.send_error(500, str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
-    def handle_post_models_download(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-            
-            repo_id = payload.get("repo_id")
-            filename = payload.get("filename")
-            input_val = payload.get("input_val")
-            
-            if input_val:
-                parsed_repo, parsed_file = parse_hf_input(input_val)
-                if parsed_repo and parsed_file:
-                    repo_id = parsed_repo
-                    filename = parsed_file
-                    
-            if not repo_id or not filename:
-                raise Exception("Impossibile identificare repository HF o nome file. Usa il formato 'utente/repo/nomefile.gguf'.")
-                
-            mmproj_filename = payload.get("mmproj_filename")
-                
-            # Start background download
-            from llampaca.engine.downloader import download_hf_model_async
-            download_hf_model_async(repo_id, filename)
-            
-            if mmproj_filename:
-                # Accodiamo anche il file projector, salvandolo con prefisso mmproj- 
-                # (anche se dovrebbe già chiamarsi mmproj-...) per poterlo trovare facilmente
-                download_hf_model_async(repo_id, mmproj_filename)
-                
-                # Salviamo un file JSON di metadati per collegare il modello al suo projector
-                from llampaca.config import MODELS_DIR
-                metadata_path = MODELS_DIR / f"{filename}.json"
-                MODELS_DIR.mkdir(parents=True, exist_ok=True)
-                with open(metadata_path, 'w', encoding='utf-8') as f:
-                    json.dump({"mmproj": mmproj_filename}, f)
-            
-            body = json.dumps({"status": "download_started", "repo_id": repo_id, "filename": filename, "mmproj_filename": mmproj_filename}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(400, str(e))
+    
 
-
-    def handle_get_models_search(self, original_path):
-        try:
-            import urllib.parse
-            query_str = ""
-            if "?" in original_path:
-                query_str = original_path.split("?", 1)[1]
-            
-            params = urllib.parse.parse_qs(query_str)
-            search_query = params.get("q", [""])[0].strip()
-            page = int(params.get("page", ["1"])[0].strip())
-            
-            limit = 8
-            results = search_hf_models(query=search_query, page=page, limit=limit)
-            has_next = len(results) == limit
-            
-            response_data = {
-                "models": results,
-                "pagination": {
-                    "currentPage": page,
-                    "hasNextPage": has_next
-                }
+@app.get("/api/models/search")
+def search_models(q: str = "", page: int = 1):
+    try:
+        limit = 8
+        results = search_hf_models(query=q, page=page, limit=limit)
+        has_next = len(results) == limit
+        
+        return {
+            "models": results,
+            "pagination": {
+                "currentPage": page,
+                "hasNextPage": has_next
             }
-            
-            body = json.dumps(response_data).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
-    def handle_get_mcp(self):
+class DefaultModelPayload(BaseModel):
+    model_name: str
+    kind: Optional[str] = "chat"
+
+@app.post("/api/models/default")
+def set_default_model(payload: DefaultModelPayload, background_tasks: BackgroundTasks):
+    config = load_config()
+    
+    if payload.kind == "embedding":
+        config["embedding_model"] = payload.model_name
+        save_config(config)
         try:
-            from llampaca.config import MCP_CONFIG_PATH, load_mcp_config
-            if MCP_CONFIG_PATH.exists():
-                try:
-                    mtime = MCP_CONFIG_PATH.stat().st_mtime
-                    if mtime > agent_manager.mcp_config_mtime:
-                        agent_manager.mcp_config_mtime = mtime
-                        import asyncio
-                        fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
-                        fut.result(timeout=60.0)
-                except Exception as e:
-                    logger.error(f"Error checking/reloading MCP config on get: {e}")
-
-            mcp_config = load_mcp_config()
-            servers = mcp_config.get("mcp_servers", {})
-            
-            result_list = []
-            for name, cfg in servers.items():
-                connected = False
-                tools_count = 0
-                if agent_manager.mcp_manager and name in agent_manager.mcp_manager.sessions:
-                    connected = True
-                    tools_count = sum(1 for t in agent_manager.registry.names() if t.startswith(f"{name}__"))
-                
-                result_list.append({
-                    "name": name,
-                    "command": cfg.get("command"),
-                    "args": cfg.get("args", []),
-                    "env": cfg.get("env", {}),
-                    "connected": connected,
-                    "toolsCount": tools_count
-                })
-                
-            body = json.dumps(result_list).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            if agent_manager.embedding_service is not None:
+                agent_manager.embedding_service.stop()
+                agent_manager.embedding_service = None
         except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+            logger.info(f"[GUI Server] Could not reset embedding service: {e}")
+        logger.info(f"[GUI Server] Default embedding model changed to {payload.model_name}.")
+        return {"status": "ok", "embedding_model": payload.model_name}
+        
+    elif payload.kind == "image":
+        config["image_model"] = payload.model_name
+        save_config(config)
+        logger.info(f"[GUI Server] Default image model changed to {payload.model_name}.")
+        return {"status": "ok", "image_model": payload.model_name}
+        
+    else:
+        config["default_model"] = payload.model_name
+        save_config(config)
+        
+        def restart_task():
+            restart_via_agent_manager(
+                model_name=payload.model_name,
+                port=config.get("server_port", 8080),
+                context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
+                n_threads=config.get("n_threads", 6),
+                gpu_layers=config.get("gpu_layers", -1)
+            )
+        background_tasks.add_task(restart_task)
+        logger.info(f"[GUI Server] Default model changed to {payload.model_name}. Restarting llama-server in background...")
+        return {"status": "ok", "default_model": payload.model_name}
 
-    def handle_get_mcp_schema(self, original_path):
+
+
+class DownloadModelPayload(BaseModel):
+    repo_id: Optional[str] = None
+    filename: Optional[str] = None
+    input_val: Optional[str] = None
+    mmproj_filename: Optional[str] = None
+
+@app.post("/api/models/download")
+def download_model(payload: DownloadModelPayload):
+    try:
+        repo_id = payload.repo_id
+        filename = payload.filename
+        input_val = payload.input_val
+        
+        if input_val:
+            parsed_repo, parsed_file = parse_hf_input(input_val)
+            if parsed_repo and parsed_file:
+                repo_id = parsed_repo
+                filename = parsed_file
+                
+        if not repo_id or not filename:
+            raise HTTPException(status_code=400, detail="Impossibile identificare repository HF o nome file.")
+            
+        mmproj_filename = payload.mmproj_filename
+            
+        from llampaca.engine.downloader import download_hf_model_async
+        download_hf_model_async(repo_id, filename)
+        
+        if mmproj_filename:
+            download_hf_model_async(repo_id, mmproj_filename)
+            from llampaca.config import MODELS_DIR
+            metadata_path = MODELS_DIR / f"{filename}.json"
+            MODELS_DIR.mkdir(parents=True, exist_ok=True)
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump({"mmproj": mmproj_filename}, f)
+        
+        return {"status": "download_started", "repo_id": repo_id, "filename": filename, "mmproj_filename": mmproj_filename}
+        
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/models/{model_name}")
+def delete_model(model_name: str):
+    import urllib.parse
+    model_name = urllib.parse.unquote(model_name)
+    
+    config = load_config()
+    default_model = config.get("default_model", "")
+    embedding_model = config.get("embedding_model", "")
+
+    preset_file = None
+    if default_model in MODEL_PRESETS:
+        preset_file = MODEL_PRESETS[default_model]["file"]
+    embedding_preset_file = None
+    if embedding_model in MODEL_PRESETS:
+        embedding_preset_file = MODEL_PRESETS[embedding_model]["file"]
+
+    if model_name in (default_model, preset_file):
+        raise HTTPException(status_code=400, detail="Non è possibile eliminare il modello di chat attualmente attivo/predefinito.")
+    if model_name in (embedding_model, embedding_preset_file):
+        raise HTTPException(status_code=400, detail="Non è possibile eliminare il modello di embedding attualmente predefinito.")
+
+    file_path = Path(MODELS_DIR) / model_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    metadata_path = Path(MODELS_DIR) / f"{model_name}.json"
+    if metadata_path.exists():
         try:
-            import urllib.parse
-            import requests
-            
-            query_str = ""
-            if "?" in original_path:
-                query_str = original_path.split("?", 1)[1]
-                
-            params = urllib.parse.parse_qs(query_str)
-            name = params.get("name", [""])[0].strip()
-            
-            if not name:
-                raise Exception("Parametro 'name' obbligatorio.")
-                
-            url = f"https://api.smithery.ai/servers/{name}"
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            config_schema = {"type": "object", "properties": {}}
-            connections = data.get("connections", [])
-            if connections:
-                config_schema = connections[0].get("configSchema", config_schema)
-                
-            body = json.dumps(config_schema).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+                mmproj_filename = meta.get("mmproj")
+                if mmproj_filename:
+                    mmproj_path = Path(MODELS_DIR) / mmproj_filename
+                    if mmproj_path.exists():
+                        mmproj_path.unlink()
+        except Exception:
+            pass
+        try:
+            metadata_path.unlink()
+        except Exception:
+            pass
+
+    file_path.unlink()
+    return {"status": "ok"}
+
+# --- MCP ---
+
+
+@app.get("/api/mcp")
+def get_mcp():
+    from llampaca.config import MCP_CONFIG_PATH, load_mcp_config
+    if MCP_CONFIG_PATH.exists():
+        try:
+            mtime = MCP_CONFIG_PATH.stat().st_mtime
+            if mtime > getattr(agent_manager, 'mcp_config_mtime', 0):
+                agent_manager.mcp_config_mtime = mtime
+                import asyncio
+                fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
+                fut.result(timeout=60.0)
         except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+            logger.error(f"Error checking/reloading MCP config on get: {e}")
 
-    def handle_get_mcp_search(self, original_path):
-        try:
-            import urllib.parse
-            import requests
-            
-            query_str = ""
-            if "?" in original_path:
-                query_str = original_path.split("?", 1)[1]
-                
-            params = urllib.parse.parse_qs(query_str)
-            search_query = params.get("q", [""])[0].strip()
-            page = params.get("page", ["1"])[0].strip()
+    mcp_config = load_mcp_config()
+    servers = mcp_config.get("mcp_servers", {})
+    
+    result_list = []
+    for name, cfg in servers.items():
+        connected = False
+        tools_count = 0
+        if getattr(agent_manager, 'mcp_manager', None) and name in agent_manager.mcp_manager.sessions:
+            connected = True
+            tools_count = sum(1 for t in agent_manager.registry.names() if t.startswith(f"{name}__"))
+        
+        result_list.append({
+            "name": name,
+            "command": cfg.get("command"),
+            "args": cfg.get("args", []),
+            "env": cfg.get("env", {}),
+            "connected": connected,
+            "toolsCount": tools_count
+        })
+    return result_list
 
-            url = f"https://api.smithery.ai/servers?pageSize=12&page={page}"
-            if search_query:
-                url += f"&q={urllib.parse.quote(search_query)}"
-                
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+@app.get("/api/mcp/search")
+def search_mcp(q: str = "", page: str = "1"):
+    import requests
+    import urllib.parse
+    try:
+        url = f"https://api.smithery.ai/servers?pageSize=12&page={page}"
+        if q:
+            url += f"&q={urllib.parse.quote(q)}"
             
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
             servers = data.get("servers", [])
             mapped_servers = []
             for s in servers:
@@ -1226,681 +664,334 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "repository": {"url": s.get("homepage") or f"https://smithery.ai/server/{s.get('qualifiedName')}"},
                     "environmentVariablesJsonSchema": {"type": "object", "properties": {}}
                 })
-            
-            response_data = {
-                "servers" : mapped_servers,
-                "pagination": data.get("pagination", {"currentPage":1, "totalPages":1})
+            return {
+                "servers": mapped_servers,
+                "pagination": data.get("pagination", {"currentPage": 1, "totalPages": 1})
             }
+        return {"servers": [], "pagination": {"currentPage": 1, "totalPages": 1}}
+    except Exception as e:
+        logger.error(f"MCP search error: {e}")
+        return {"servers": [], "pagination": {"currentPage": 1, "totalPages": 1}}
 
-            body = json.dumps(response_data).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+@app.get("/api/mcp/config-schema")
+def mcp_config_schema(name: str = ""):
+    import requests
+    if not name:
+        raise HTTPException(status_code=400, detail="Parametro 'name' obbligatorio.")
+    try:
+        url = f"https://api.smithery.ai/servers/{name}"
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        
+        config_schema = {"type": "object", "properties": {}}
+        connections = data.get("connections", [])
+        if connections:
+            config_schema = connections[0].get("configSchema", config_schema)
+        return config_schema
+    except Exception as e:
+        logger.error(f"Error inspecting MCP: {e}")
+        return {}
 
-    def handle_post_mcp_install(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-            
-            name = payload.get("name")
-            command = payload.get("command")
-            args = payload.get("args", [])
-            env = payload.get("env", {})
-            
-            if not name or not command:
-                raise Exception("Parametri 'name' e 'command' obbligatori.")
-                
-            from llampaca.config import load_mcp_config, save_mcp_config
-            mcp_config = load_mcp_config()
-            mcp_config["mcp_servers"][name] = {
-                "command": command,
-                "args": args,
-                "env": env
-            }
+class InstallMcpPayload(BaseModel):
+    name: str
+    command: str
+    args: Optional[List[str]] = []
+    env: Optional[Dict[str, str]] = {}
+
+@app.post("/api/mcp/install")
+def install_mcp(payload: InstallMcpPayload):
+    if not payload.name or not payload.command:
+        raise HTTPException(status_code=400, detail="Parametri 'name' e 'command' obbligatori.")
+    try:
+        from llampaca.config import load_mcp_config, save_mcp_config
+        mcp_config = load_mcp_config()
+        if "mcp_servers" not in mcp_config:
+            mcp_config["mcp_servers"] = {}
+        mcp_config["mcp_servers"][payload.name] = {
+            "command": payload.command,
+            "args": payload.args,
+            "env": payload.env
+        }
+        save_mcp_config(mcp_config)
+        
+        import asyncio
+        fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
+        fut.result(timeout=60.0)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/mcp/uninstall/{package_id}")
+def uninstall_mcp(package_id: str):
+    import urllib.parse
+    name = urllib.parse.unquote(package_id)
+    try:
+        from llampaca.config import load_mcp_config, save_mcp_config
+        mcp_config = load_mcp_config()
+        if name in mcp_config.get("mcp_servers", {}):
+            del mcp_config["mcp_servers"][name]
             save_mcp_config(mcp_config)
             
-            # Reload MCP manager thread-safely
-            import asyncio
-            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
-            fut.result(timeout=60.0)
-            
-            body = json.dumps({"success": True}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+        import asyncio
+        fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
+        fut.result(timeout=60.0)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    def handle_delete_mcp(self):
+# --- TOOLS ---
+
+@app.get("/api/tools")
+def get_tools():
+    import inspect
+    from llampaca.tools import build_default_registry
+
+    # Prefer the live registry (includes MCP tools) over a fresh one
+    reg = getattr(agent_manager, "registry", None)
+    if reg is None:
+        reg = build_default_registry()
+
+    results = []
+    for name, tool in reg._tools.items():
+        is_mcp = False
+        mcp_server = ""
+        display_name = name
+        if "__" in name:
+            is_mcp = True
+            parts = name.split("__", 1)
+            mcp_server = parts[0]
+            display_name = parts[1]
+
+        is_custom = False
+        source_code = ""
+        file_path = ""
         try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) < 4:
-                raise Exception("Nome server MCP non specificato.")
-            import urllib.parse
-            name = urllib.parse.unquote(parts[3])
-            
-            from llampaca.config import load_mcp_config, save_mcp_config
-            mcp_config = load_mcp_config()
-            if name in mcp_config.get("mcp_servers", {}):
-                del mcp_config["mcp_servers"][name]
-                save_mcp_config(mcp_config)
-                
-            # Reload MCP manager thread-safely
-            import asyncio
-            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
-            fut.result(timeout=60.0)
-            
-            body = json.dumps({"success": True}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+            file_path = inspect.getsourcefile(tool.func) or ""
+            if "custom_tools" in file_path:
+                is_custom = True
+                source_code = inspect.getsource(tool.func)
+        except Exception:
+            pass
 
-    def handle_post_models_default(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-            model_name = payload.get("model_name")
-            # "kind" tells us WHICH default to change: the chat model
-            # (default_model) or the embedding model (embedding_model). It
-            # defaults to "chat" so older frontends keep working unchanged.
-            kind = payload.get("kind", "chat")
+        results.append({
+            "name": name,
+            "display_name": display_name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+            "requires_confirmation": tool.requires_confirmation,
+            "is_custom": is_custom,
+            "is_mcp": is_mcp,
+            "mcp_server": mcp_server,
+            "file_path": file_path,
+            "source_code": source_code
+        })
 
-            if not model_name:
-                raise Exception("model_name non specificato.")
+    # Sort: custom first, then built-in, then MCP, alphabetically
+    def sort_key(t):
+        if t["is_custom"]:
+            return (0, t["name"])
+        elif t["is_mcp"]:
+            return (2, t["mcp_server"], t["name"])
+        else:
+            return (1, t["name"])
 
-            from llampaca.config import save_config
-            config = load_config()
+    results.sort(key=sort_key)
+    return results
 
-            if kind == "embedding":
-                # Embedding default: only persist it. The embedding llama-server
-                # is started lazily per chat session (see EmbeddingService), so
-                # there is no long-lived chat server to restart here — the new
-                # embedder is picked up the next time embeddings are needed.
-                config["embedding_model"] = model_name
-                save_config(config)
-                # Drop any already-constructed EmbeddingService so the next
-                # RAG/attach operation rebuilds it against the new model instead
-                # of the stale one resolved at construction time.
-                try:
-                    if agent_manager.embedding_service is not None:
-                        agent_manager.embedding_service.stop()
-                        agent_manager.embedding_service = None
-                except Exception as e:
-                    logger.info(f"[GUI Server] Could not reset embedding service: {e}")
-                logger.info(f"[GUI Server] Default embedding model changed to {model_name}.")
-                body = json.dumps({"status": "ok", "embedding_model": model_name}).encode('utf-8')
-            elif kind == "image":
-                config["image_model"] = model_name
-                save_config(config)
-                logger.info(f"[GUI Server] Default image model changed to {model_name}.")
-                body = json.dumps({"status": "ok", "image_model": model_name}).encode('utf-8')
-            else:
-                config["default_model"] = model_name
-                save_config(config)
+class CustomToolPayload(BaseModel):
+    name: str
+    code: str
 
-                logger.info(f"[GUI Server] Default model changed to {model_name}. Restarting llama-server...")
-                from llampaca.gui.restart_bridge import restart_via_agent_manager
-                success = restart_via_agent_manager(agent_manager, model_name=model_name)
-                if not success:
-                    raise Exception("Impossibile caricare il nuovo modello.")
+@app.post("/api/tools/custom")
+def post_custom_tool(payload: CustomToolPayload):
+    import ast
+    name = payload.name.strip()
+    code = payload.code
+    requires_confirmation = False  # default
 
-                body = json.dumps({"status": "ok", "default_model": model_name}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+    if not name:
+        raise HTTPException(status_code=400, detail="Il nome dello strumento è obbligatorio.")
+    if not re.match("^[a-zA-Z0-9_]+$", name):
+        raise HTTPException(status_code=400, detail="Nome non valido. Usa solo lettere, numeri e underscore.")
 
-    def handle_delete_model(self):
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) < 3:
-                raise Exception("Nome modello non specificato.")
-            
-            model_filename = "/".join(parts[2:])
-            import urllib.parse
-            model_filename = urllib.parse.unquote(model_filename)
-            
-            config = load_config()
-            default_model = config.get("default_model", "")
-            embedding_model = config.get("embedding_model", "")
+    # Ensure the primary function in code is named `name`
+    if re.search(r'^\s*def\s+[a-zA-Z0-9_]+', code, flags=re.MULTILINE):
+        code = re.sub(r'^\s*def\s+[a-zA-Z0-9_]+', f'def {name}', code, count=1, flags=re.MULTILINE)
 
-            from llampaca.config import MODEL_PRESETS
-            # Resolve both active defaults (chat and embedding) to their GGUF
-            # filenames so we can block deletion whether the config stores a
-            # preset name or a raw filename.
-            preset_file = None
-            if default_model in MODEL_PRESETS:
-                preset_file = MODEL_PRESETS[default_model]["file"]
-            embedding_preset_file = None
-            if embedding_model in MODEL_PRESETS:
-                embedding_preset_file = MODEL_PRESETS[embedding_model]["file"]
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as se:
+        raise HTTPException(status_code=400, detail=f"Errore di sintassi in Python: {se.msg} alla riga {se.lineno}")
 
-            if model_filename in (default_model, preset_file):
-                raise Exception("Non è possibile eliminare il modello di chat attualmente attivo/predefinito.")
-            if model_filename in (embedding_model, embedding_preset_file):
-                raise Exception("Non è possibile eliminare il modello di embedding attualmente predefinito.")
-                
-            from llampaca.config import MODELS_DIR
-            model_path = MODELS_DIR / model_filename
-            if not model_path.exists():
-                raise Exception("Modello non trovato su disco.")
-                
-            # Eliminazione a cascata: controlliamo se esiste un file json associato e un projector
-            metadata_path = MODELS_DIR / f"{model_filename}.json"
-            if metadata_path.exists():
-                try:
-                    with open(metadata_path, 'r', encoding='utf-8') as f:
-                        meta = json.load(f)
-                        mmproj_filename = meta.get("mmproj")
-                        if mmproj_filename:
-                            mmproj_path = MODELS_DIR / mmproj_filename
-                            if mmproj_path.exists():
-                                mmproj_path.unlink()
-                                logger.info(f"[GUI Server] Deleted associated projector: {mmproj_filename}")
-                except Exception as e:
-                    logger.info(f"Failed to read/delete projector metadata during cascade delete: {e}")
-                
-                try:
-                    metadata_path.unlink()
-                    logger.info(f"[GUI Server] Deleted metadata file: {metadata_path.name}")
-                except Exception as e:
-                    pass
-                
-            model_path.unlink()
-            logger.info(f"[GUI Server] Deleted model file: {model_filename}")
-            
-            body = json.dumps({"success": True}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+    # Strip existing requires_confirmation lines
+    cleaned_code = re.sub(r'\n[a-zA-Z0-9_]+\.requires_confirmation\s*=\s*(True|False)\s*', '', code)
+    tree_cleaned = ast.parse(cleaned_code)
 
-    def handle_get_tools(self):
-        try:
-            if agent_manager.registry is None:
-                body = json.dumps([]).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
+    func_names = [
+        node.name for node in tree_cleaned.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    ]
+    if not func_names:
+        raise HTTPException(status_code=400, detail="Il codice deve contenere almeno una funzione pubblica.")
 
-            import inspect
-            results = []
-            for name, tool in agent_manager.registry._tools.items():
-                is_mcp = False
-                mcp_server = ""
-                display_name = name
-                if "__" in name:
-                    is_mcp = True
-                    parts = name.split("__", 1)
-                    mcp_server = parts[0]
-                    display_name = parts[1]
+    flag_lines = "".join(f"\n{fn}.requires_confirmation = {requires_confirmation}\n" for fn in func_names)
+    code_to_write = cleaned_code.rstrip() + "\n" + flag_lines
 
-                is_custom = False
-                source_code = ""
-                file_path = ""
-                try:
-                    file_path = inspect.getsourcefile(tool.func) or ""
-                    if "custom_tools" in file_path:
-                        is_custom = True
-                        source_code = inspect.getsource(tool.func)
-                except Exception:
-                    pass
+    from llampaca.config import LLAMPACA_DIR
+    custom_dir = LLAMPACA_DIR / "custom_tools"
+    custom_dir.mkdir(parents=True, exist_ok=True)
+    file_path = custom_dir / f"{name}.py"
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(code_to_write)
 
-                results.append({
-                    "name": name,
-                    "display_name": display_name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                    "requires_confirmation": tool.requires_confirmation,
-                    "is_custom": is_custom,
-                    "is_mcp": is_mcp,
-                    "mcp_server": mcp_server,
-                    "file_path": file_path,
-                    "source_code": source_code
-                })
+    # Reload registry
+    import asyncio
+    fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_registry(), agent_manager.loop)
+    fut.result(timeout=60.0)
+    return {"status": "ok"}
 
-            # Sort tools: custom first, then built-in, then MCP, alphabetically
-            def sort_key(t):
-                if t["is_custom"]:
-                    return (0, t["name"])
-                elif t["is_mcp"]:
-                    return (2, t["mcp_server"], t["name"])
-                else:
-                    return (1, t["name"])
+@app.delete("/api/tools/custom/{tool_name}")
+def delete_custom_tool(tool_name: str):
+    import urllib.parse, ast
+    name = urllib.parse.unquote(tool_name).strip()
 
-            results.sort(key=sort_key)
+    from llampaca.config import LLAMPACA_DIR
+    custom_dir = LLAMPACA_DIR / "custom_tools"
 
-            body = json.dumps(results).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+    # 1. Direct file stem match
+    file_path = custom_dir / f"{name}.py"
+    if file_path.exists():
+        file_path.unlink()
 
-    def handle_post_tools_custom(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-            
-            name = payload.get("name", "").strip()
-            code = payload.get("code", "")
-            requires_confirmation = bool(payload.get("requires_confirmation", False))
-
-            if not name:
-                raise Exception("Il nome dello strumento è obbligatorio.")
-            
-            import re
-            if not re.match("^[a-zA-Z0-9_]+$", name):
-                raise Exception("Nome non valido. Usa solo lettere, numeri e underscore.")
-
-            # Ensure the primary function in code is named `name`
-            if re.search(r'^\s*def\s+[a-zA-Z0-9_]+', code, flags=re.MULTILINE):
-                code = re.sub(r'^\s*def\s+[a-zA-Z0-9_]+', f'def {name}', code, count=1, flags=re.MULTILINE)
-
-            # Validate syntax using ast and extract top-level function names only
-            import ast
+    # 2. Search for any .py file containing function `name`
+    if custom_dir.exists():
+        for py_file in list(custom_dir.glob("*.py")):
             try:
-                tree = ast.parse(code)
-            except SyntaxError as se:
-                raise Exception(f"Errore di sintassi in Python: {se.msg} alla riga {se.lineno}")
+                with open(py_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                tree = ast.parse(content)
+                funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+                if name in funcs or py_file.stem == name:
+                    py_file.unlink()
+            except Exception:
+                pass
 
-            # Strip existing requires_confirmation lines to prevent duplicate accumulation
-            cleaned_code = re.sub(r'\n[a-zA-Z0-9_]+\.requires_confirmation\s*=\s*(True|False)\s*', '', code)
-            tree_cleaned = ast.parse(cleaned_code)
+    # Evict cached modules
+    import sys as _sys
+    modules_to_del = [m for m in _sys.modules if m.startswith("llampaca_custom_")]
+    for m in modules_to_del:
+        if name in m or f"llampaca_custom_{name}" == m:
+            del _sys.modules[m]
 
-            # Find all TOP-LEVEL function definitions (ignore nested inner functions)
-            func_names = [
-                node.name for node in tree_cleaned.body
-                if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
-            ]
-            if not func_names:
-                raise Exception("Il codice deve contenere almeno una funzione pubblica (def nome_funzione(...):).")
+    # Reload registry
+    import asyncio
+    fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_registry(), agent_manager.loop)
+    fut.result(timeout=60.0)
+    return {"status": "ok"}
 
-            # Append requires_confirmation flag for each top-level public function
-            flag_lines = "".join(f"\n{fn}.requires_confirmation = {requires_confirmation}\n" for fn in func_names)
-            code_to_write = cleaned_code.rstrip() + "\n" + flag_lines
+# --- WIKI ---
+from llampaca import wiki
 
-            from llampaca.config import LLAMPACA_DIR
-            custom_dir = LLAMPACA_DIR / "custom_tools"
-            custom_dir.mkdir(parents=True, exist_ok=True)
+@app.get("/api/wiki")
+async def get_wiki_pages():
+    try:
+        pages = [{"name": name, "description": desc} for name, desc in wiki.list_pages()]
+        return {"pages": pages}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            file_path = custom_dir / f"{name}.py"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(code_to_write)
+@app.get("/api/wiki/{page_name}")
+async def get_wiki_page(page_name: str):
+    import urllib.parse
+    name = urllib.parse.unquote(page_name)
+    try:
+        content = wiki.read_page(name)
+        return {"name": name, "content": content}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Page non trovata")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            # Reload registry thread-safely
-            import asyncio
-            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_registry(), agent_manager.loop)
-            fut.result(timeout=60.0)
+class WikiPagePayload(BaseModel):
+    name: str
+    content: str
 
-            body = json.dumps({"success": True}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(400, str(e))
+@app.post("/api/wiki")
+async def post_wiki_page(payload: WikiPagePayload):
+    try:
+        wiki.write_page(payload.name, payload.content)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    def handle_delete_tools_custom(self):
-        try:
-            parts = self.path.strip('/').split('/')
-            if len(parts) < 4:
-                raise Exception("Nome dello strumento non specificato.")
-            
-            import urllib.parse
-            name = urllib.parse.unquote(parts[3]).strip()
+@app.delete("/api/wiki/{page_name}")
+async def delete_wiki_page(page_name: str):
+    import urllib.parse
+    name = urllib.parse.unquote(page_name)
+    try:
+        path = wiki.page_path(name)
+        if path.is_file():
+            path.unlink()
+            return {"status": "ok", "name": wiki.slugify(name)}
+        else:
+            raise HTTPException(status_code=404, detail="Page not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            from llampaca.config import LLAMPACA_DIR
-            custom_dir = LLAMPACA_DIR / "custom_tools"
-            
-            # 1. Direct file stem match
-            file_path = custom_dir / f"{name}.py"
-            if file_path.exists():
-                file_path.unlink()
+# --- SKILLS ---
+from llampaca import skills
 
-            # 2. Search for any .py file in custom_tools containing function `name`
-            if custom_dir.exists():
-                for py_file in list(custom_dir.glob("*.py")):
-                    try:
-                        with open(py_file, "r", encoding="utf-8") as f:
-                            content = f.read()
-                        import ast
-                        tree = ast.parse(content)
-                        funcs = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
-                        if name in funcs or py_file.stem == name:
-                            py_file.unlink()
-                    except Exception:
-                        pass
+@app.get("/api/skills")
+def get_skills_list():
+    try:
+        skills_list = skills.list_skills()
+        return {"skills": skills_list, "max_chars": getattr(skills, 'MAX_SKILL_CHARS', 5000)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            # Evict cached modules from sys.modules
-            import sys
-            modules_to_del = [m for m in sys.modules if m.startswith("llampaca_custom_")]
-            for m in modules_to_del:
-                if name in m or f"llampaca_custom_{name}" == m:
-                    del sys.modules[m]
+@app.get("/api/skills/{skill_name}")
+def get_skill(skill_name: str):
+    import urllib.parse
+    name = urllib.parse.unquote(skill_name)
+    try:
+        content = skills.read_skill(name)
+        return {"slug": skills.slugify(name), "content": content}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Skill non trovata")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            # Reload registry thread-safely
-            import asyncio
-            fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_registry(), agent_manager.loop)
-            fut.result(timeout=60.0)
+class SkillPayload(BaseModel):
+    name: str
+    content: str
 
-            body = json.dumps({"success": True}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
+@app.post("/api/skills")
+async def post_skill(payload: SkillPayload):
+    try:
+        skills.write_skill(payload.name, payload.content)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    def handle_get_clients_status(self):
-        try:
-            paths = _get_client_config_paths()
-            cmd = _resolve_llampaca_command()
-            
-            # Check Claude Desktop
-            claude_cfg = paths["claude_desktop"]
-            claude_installed = claude_cfg.parent.exists() if claude_cfg else False
-            claude_mcp = False
-            if claude_cfg and claude_cfg.exists():
-                try:
-                    with open(claude_cfg, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    claude_mcp = "llampaca" in data.get("mcpServers", {})
-                except Exception:
-                    pass
+@app.delete("/api/skills/{skill_name}")
+async def delete_skill_route(skill_name: str):
+    try:
+        if skills.delete_skill(skill_name):
+            return {"status": "ok"}
+        else:
+            raise HTTPException(status_code=404, detail="Skill not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            # Check VS Code
-            vscode_installed = any(p.parent.exists() for p in paths["vscode"])
-            vscode_mcp = False
-            vscode_active_path = None
-            for p in paths["vscode"]:
-                if p.exists():
-                    vscode_active_path = str(p)
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        if "llampaca" in data.get("mcpServers", {}) or "llampaca" in data.get("servers", {}):
-                            vscode_mcp = True
-                            break
-                    except Exception:
-                        pass
-
-            # Check Continue.dev
-            cont_cfg = paths["continue"]
-            cont_installed = cont_cfg.parent.exists()
-            cont_connected = False
-            if cont_cfg.exists():
-                try:
-                    with open(cont_cfg, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    if "127.0.0.1" in content or "localhost" in content or "Llampaca" in content:
-                        cont_connected = True
-                except Exception:
-                    pass
-
-            res = {
-                "llampaca_command": cmd,
-                "vscode": {
-                    "installed": vscode_installed,
-                    "mcp_connected": vscode_mcp,
-                    "target_path": vscode_active_path or str(paths["vscode"][0])
-                },
-                "claude_desktop": {
-                    "installed": claude_installed,
-                    "mcp_connected": claude_mcp,
-                    "target_path": str(claude_cfg) if claude_cfg else ""
-                },
-                "continue": {
-                    "installed": cont_installed,
-                    "connected": cont_connected,
-                    "target_path": str(cont_cfg)
-                }
-            }
-            body = json.dumps(res).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_post_clients_mcp_setup(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
-
-            target = payload.get("target")  # "vscode" or "claude_desktop"
-            action = payload.get("action", "install")  # "install" or "remove"
-
-            paths = _get_client_config_paths()
-            cmd = _resolve_llampaca_command()
-
-            target_files = []
-            if target == "vscode":
-                target_files = paths["vscode"]
-            elif target == "claude_desktop":
-                if paths["claude_desktop"]:
-                    target_files = [paths["claude_desktop"]]
-
-            if not target_files:
-                raise Exception(f"Target '{target}' non valido o non supportato su questo OS.")
-
-            updated_any = False
-            for file_path in target_files:
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                data = {}
-                if file_path.exists():
-                    try:
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception:
-                        data = {}
-                
-                mcp_key = "mcpServers"
-                if mcp_key not in data or not isinstance(data[mcp_key], dict):
-                    data[mcp_key] = {}
-
-                if action == "install":
-                    data[mcp_key]["llampaca"] = {
-                        "command": cmd,
-                        "args": ["mcp"]
-                    }
-                else:
-                    data[mcp_key].pop("llampaca", None)
-
-                with open(file_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-                updated_any = True
-
-            body = json.dumps({"success": True, "updated": updated_any}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(400, str(e))
-
-    def handle_get_clients_snippets(self):
-        try:
-            config = load_config()
-            port = config.get("server_port", 8080)
-            active_model = config.get("default_model", "qwen3.5-4b-instruct")
-            cmd = _resolve_llampaca_command()
-            base_url = f"http://127.0.0.1:{port}/v1"
-
-            snippets = {
-                "endpoint_url": base_url,
-                "active_model": active_model,
-                "llampaca_cmd": cmd,
-                "continue": f"""name: Llampaca Config
-version: 1.0.0
-schema: v1
-
-models:
-  - name: Llampaca Local
-    provider: openai
-    model: {active_model}
-    apiBase: {base_url}
-    roles:
-      - chat
-      - edit
-      - apply
-      - autocomplete""",
-                "cline_roo": json.dumps({
-                    "apiProvider": "openai-compatible",
-                    "openAiBaseUrl": base_url,
-                    "openAiModelId": active_model,
-                    "openAiApiKey": "not-needed"
-                }, indent=2),
-                "mcp": json.dumps({
-                    "mcpServers": {
-                        "llampaca": {
-                            "command": cmd,
-                            "args": ["mcp"]
-                        }
-                    }
-                }, indent=2),
-                "python": f"""from openai import OpenAI
-
-client = OpenAI(
-    base_url="{base_url}",
-    api_key="not-needed"
-)
-
-response = client.chat.completions.create(
-    model="{active_model}",
-    messages=[{{"role": "user", "content": "Ciao!"}}]
-)
-logger.info(response.choices[0].message.content)"""
-            }
-
-            body = json.dumps(snippets).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_get_media(self, original_path):
-        """Serves local media files (e.g., generated images in LlampacaDocs) to the webview UI."""
-        try:
-            import urllib.parse
-            import mimetypes
-            query_str = ""
-            if "?" in original_path:
-                query_str = original_path.split("?", 1)[1]
-            params = urllib.parse.parse_qs(query_str)
-            raw_path = params.get("path", [""])[0]
-            if not raw_path:
-                self.send_error(400, "Missing path parameter")
-                return
-
-            raw_path = urllib.parse.unquote(raw_path)
-            if raw_path.startswith("file://"):
-                raw_path = raw_path[7:]
-
-            file_path = Path(raw_path).expanduser().resolve()
-            if not file_path.exists() or not file_path.is_file():
-                self.send_error(404, "File not found")
-                return
-
-            mime_type, _ = mimetypes.guess_type(str(file_path))
-            if not mime_type:
-                mime_type = "image/png" if file_path.suffix.lower() == ".png" else "application/octet-stream"
-
-            file_size = file_path.stat().st_size
-            self.send_response(200)
-            self.send_header('Content-Type', mime_type)
-            self.send_header('Content-Length', str(file_size))
-            self.send_header('Cache-Control', 'public, max-age=86400')
-            self.end_headers()
-
-            with open(file_path, "rb") as f:
-                import shutil
-                shutil.copyfileobj(f, self.wfile)
-        except Exception as e:
-            traceback.print_exc()
-            self.send_error(500, str(e))
-
-    def handle_post_open_file(self):
-        """Opens a local file or reveals it in OS File Manager (Finder / Explorer)."""
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            payload = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
-            raw_path = (payload.get("path") or "").strip()
-            if not raw_path:
-                self._send_json({"error": "Missing path parameter"}, status=400)
-                return
-
-            import urllib.parse
-            raw_path = urllib.parse.unquote(raw_path)
-            if raw_path.startswith("file://"):
-                raw_path = raw_path[7:]
-
-            if "?path=" in raw_path:
-                raw_path = raw_path.split("?path=", 1)[1]
-                raw_path = urllib.parse.unquote(raw_path)
-
-            file_path = Path(raw_path).expanduser().resolve()
-            if not file_path.exists():
-                self._send_json({"error": f"File non trovato: {file_path}"}, status=404)
-                return
-
-            import subprocess, sys
-            if sys.platform == 'darwin':
-                subprocess.run(['open', '-R', str(file_path)])
-            elif sys.platform == 'win32':
-                subprocess.run(['explorer', '/select,', str(file_path)])
-            else:
-                subprocess.run(['xdg-open', str(file_path.parent)])
-
-            self._send_json({"success": True})
-        except Exception as e:
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, status=500)
-
+# --- HELPER FUNCTIONS ---
+import sys as _sys
 
 def _get_client_config_paths():
     home = Path.home()
-    system = sys.platform
+    system = _sys.platform
 
     claude_path = None
     if system == 'darwin':
@@ -1955,7 +1046,7 @@ def _get_client_config_paths():
     }
 
 def _resolve_llampaca_command():
-    venv_bin = Path(sys.executable).parent / "llampaca"
+    venv_bin = Path(_sys.executable).parent / "llampaca"
     if venv_bin.exists():
         return str(venv_bin)
     import shutil
@@ -1964,34 +1055,107 @@ def _resolve_llampaca_command():
         return which_cmd
     return "llampaca"
 
+# --- CLIENTS/MCP SETUP ---
+@app.get("/api/clients/status")
+async def clients_status():
+
+    paths = _get_client_config_paths()
+    res = []
+    for client, cp in paths.items():
+        res.append({
+            "client": client,
+            "installed": cp is not None and os.path.exists(cp),
+            "config_path": str(cp) if cp else None
+        })
+    return {"clients": res}
+
+class McpSetupPayload(BaseModel):
+    client: str
+
+@app.post("/api/clients/mcp/setup")
+async def clients_mcp_setup(payload: McpSetupPayload):
+    import subprocess
+    cmd = _resolve_llampaca_command(['mcp', 'setup', payload.client])
+    try:
+        subprocess.run(cmd, check=True)
+        return {"status": "ok"}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=400, detail=f"Setup failed: {e}")
+
+@app.get("/api/clients/snippets")
+async def clients_snippets():
+    import subprocess
+    cmd = _resolve_llampaca_command(['mcp', 'setup', 'snippet'])
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        return {"snippet": res.stdout}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- MEDIA ---
+@app.get("/api/media/{path:path}")
+async def get_media(path: str):
+    abs_path = "/" + path
+    if not os.path.exists(abs_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    import mimetypes
+    mime_type, _ = mimetypes.guess_type(abs_path)
+    if not mime_type:
+        mime_type = 'application/octet-stream'
+        
+    return FileResponse(abs_path, media_type=mime_type)
+
+
+# --- STATIC FILES AND FALLBACK ROUTE ---
+from fastapi.responses import HTMLResponse
+import mimetypes
+
+# Fallback for Vue Router / SPA: catch all non-API routes and return index.html
+@app.get("/{full_path:path}")
+async def serve_spa_or_static(full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API route not found")
+        
+    frontend_dir = os.path.dirname(__file__)
+    file_path = os.path.join(frontend_dir, full_path) if full_path else os.path.join(frontend_dir, "index.html")
+
+    if os.path.exists(file_path) and not os.path.isdir(file_path):
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if not mime_type:
+            mime_type = 'application/octet-stream'
+        return FileResponse(file_path, media_type=mime_type)
+        
+    # SPA fallback
+    index_path = os.path.join(frontend_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path, media_type="text/html")
+        
+    return HTMLResponse("<html><body><h1>Llampaca GUI Error</h1><p>Frontend files not found.</p></body></html>", status_code=404)
+
+
+
 def parse_hf_input(input_str: str):
     """
     Parses a Hugging Face input string into (repo_id, filename).
-    Supports:
-    1. Full URL: https://huggingface.co/repo_user/repo_name/resolve/main/filename.gguf
-    2. Short identifier: repo_user/repo_name/filename.gguf
     """
     input_str = input_str.strip()
     if not input_str:
         return None, None
         
-    # Case 1: Full URL
-    if "huggingface.co" in input_str:
-        parts = input_str.split("huggingface.co/")[-1].split("/")
-        if len(parts) >= 5:
-            # Reconstruct repo_id from the first two parts
-            repo_id = f"{parts[0]}/{parts[1]}"
-            filename = parts[-1]
-            # Strip query params from filename if any
-            filename = filename.split("?")[0]
-            return repo_id, filename
-            
-    # Case 2: Short identifier
-    parts = input_str.split("/")
-    if len(parts) >= 3:
-        repo_id = f"{parts[0]}/{parts[1]}"
-        filename = parts[-1]
-        return repo_id, filename
+    # Match URL pattern
+    url_pattern = r"https?://huggingface\.co/([^/]+)/([^/]+)/(?:resolve|blob)/[^/]+/(.+)"
+    match = re.match(url_pattern, input_str)
+    if match:
+        repo_user, repo_name, filename = match.groups()
+        return f"{repo_user}/{repo_name}", filename
+        
+    # Match short identifier pattern
+    short_pattern = r"([^/]+)/([^/]+)/(.+)"
+    match = re.match(short_pattern, input_str)
+    if match:
+        repo_user, repo_name, filename = match.groups()
+        return f"{repo_user}/{repo_name}", filename
         
     return None, None
 

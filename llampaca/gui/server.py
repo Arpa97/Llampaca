@@ -1,5 +1,3 @@
-import http.server
-import socketserver
 import threading
 import socket
 import sys
@@ -21,7 +19,7 @@ from llampaca.engine.db import (
 )
 from llampaca.config import load_config, DEFAULT_CONTEXT_SIZE
 from llampaca.gui.agent_manager import agent_manager
-from llampaca.gui.routes import QuietSimpleHTTPRequestHandler, _get_client_config_paths, _resolve_llampaca_command, parse_hf_input, search_hf_models
+
 import logging
 import logging
 logger = logging.getLogger(__name__)
@@ -40,41 +38,43 @@ def start_http_server(directory, port):
     config = load_config()
     agent_manager.start(config)
     
-    class Handler(QuietSimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, directory=str(directory), **kwargs)
-
-    class ThreadedServer(socketserver.ThreadingTCPServer):
-        def server_bind(self):
-            import socket
-            try:
-                self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except Exception:
-                pass
-            super().server_bind()
-
-        def get_request(self):
-            import socket
-            sock, addr = super().get_request()
-            try:
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except Exception:
-                pass
-            return sock, addr
-
-        def handle_error(self, request, client_address):
-            import sys, socket
-            exc_type, exc_val = sys.exc_info()[:2]
-            if exc_type and issubclass(exc_type, (ConnectionResetError, BrokenPipeError, socket.error)):
-                return
-            super().handle_error(request, client_address)
-
-    server = ThreadedServer(('127.0.0.1', port), Handler)
-    server.daemon_threads = True
-    thread = threading.Thread(target=server.serve_forever)
+    import uvicorn
+    from llampaca.gui.routes import app
+    
+    config_uv = uvicorn.Config(
+        app, 
+        host="127.0.0.1", 
+        port=port, 
+        log_level="error",
+        ws_ping_interval=None,
+        ws_ping_timeout=None
+    )
+    server = uvicorn.Server(config_uv)
+    
+    thread = threading.Thread(target=server.run)
     thread.daemon = True
     thread.start()
-    return server
+    
+    # Wait for uvicorn to actually start listening
+    import time, socket
+    started = False
+    for _ in range(50):
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=0.1):
+                started = True
+                break
+        except OSError:
+            time.sleep(0.1)
+    
+    class ServerWrapper:
+        def __init__(self, srv):
+            self.srv = srv
+        def shutdown(self):
+            self.srv.should_exit = True
+        def server_close(self):
+            pass
+            
+    return ServerWrapper(server)
 
 def start_gui_window():
     """Start the background HTTP server and launch the pywebview standalone native window."""

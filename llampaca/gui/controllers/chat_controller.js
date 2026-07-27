@@ -57,8 +57,10 @@ export function useChatController() {
             activeMessages.value = [];
             return;
         }
-        // If a message is actively streaming, don't overwrite activeMessages with stale fetch
-        if (isStreaming.value) return;
+        // Se l'utente cambia conversazione durante una generazione, interrompiamo quella attiva
+        if (isStreaming.value) {
+            stopGeneration();
+        }
         try {
             const detail = await model.getConversation(newVal);
             if (!isStreaming.value) {
