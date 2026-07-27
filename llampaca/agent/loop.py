@@ -50,15 +50,17 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 from llampaca.engine.client import LlamaClient
 from llampaca.tools.registry import ToolRegistry
 
+from llampaca.agent.context import estimate_tokens, trim_history_to_budget
+from llampaca.agent.prompts import build_base_system_prompt, build_system_prompt_content, DEFAULT_SYSTEM_PROMPT
+from llampaca.agent.executor import execute_with_confirmation, extract_tool_call, clean_tool_call_text, DECLINED_MARKER
+
 # Safety cap: maximum model→tools→model round-trips for a single user
 # message. Prevents a confused model from looping on tool calls forever.
 MAX_ITERATIONS = 10
 
-DECLINED_MARKER = "[DECLINED]"
 
 # Minimum number of recent messages (turns) that are guaranteed to remain
 # in the active context window and never get trimmed/summarized.
-MIN_ACTIVE_WINDOW = 6
 
 # --- Context budget management -----------------------------------------
 # The conversation history grows forever, but the model's context window is
@@ -74,8 +76,6 @@ MIN_ACTIVE_WINDOW = 6
 # re-computation of the prompt. Trimming down to a *lower* watermark in one
 # go means the prefix then stays stable for many turns (cache hits) before
 # the next trim, instead of invalidating the cache on every single turn.
-CONTEXT_HIGH_WATERMARK = 0.80  # trim when the history exceeds this fraction
-CONTEXT_LOW_WATERMARK = 0.60   # ...and cut it down to this fraction
 
 # Rough tokens-per-character ratio used for budget estimates (the 20%
 # headroom above the high watermark absorbs the estimation error). The
@@ -87,29 +87,6 @@ from llampaca.config import CHARS_PER_TOKEN, DEFAULT_CONTEXT_SIZE
 
 # Fixed per-message overhead, in tokens: every message costs a few extra
 # tokens for its role marker and the chat template's framing around it.
-MESSAGE_OVERHEAD_TOKENS = 4
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are Llampaca, a helpful local AI personal assistant running entirely "
-    "on the user's machine. You can use the available tools to generate images, read and write "
-    "files in the user's workspace, run shell commands, search the web, and "
-    "fetch web pages. "
-    "CRITICAL RULE FOR IMAGE GENERATION: Whenever the user asks to generate, create, draw, or render an image, picture, visual, or illustration, you MUST IMMEDIATELY call the 'generate_image' tool on the FIRST turn. Never describe or pretend to generate an image in plain text without calling the 'generate_image' tool! "
-    "CRITICAL RULE FOR SKILLS: If the user's request matches any Available Markdown Skill listed below (such as creating/editing Word .docx files using the 'docx' skill, etc.), you MUST call read_skill_page('<skill_slug>') FIRST to read the complete workflow and instructions before calling file or shell tools! "
-    "When the user asks about current events or facts that may "
-    "have changed since your training, or anything you are unsure of or do "
-    "not know, use web_search rather than guessing, and cite what you found. "
-    "You cannot see individual characters in text and you cannot do reliable "
-    "arithmetic in your head. For anything that must be exact — counting "
-    "characters, letters, words or lines, reversing or sorting text, and "
-    "arithmetic — do not guess: use run_shell_command to compute the answer, "
-    "then report the computed result. "
-    "If the user asks about his identity, read the right page with the profile with 'read_wiki_page'. "
-    "If the user asks you to update his identity or personal information, update the right page with the profile "
-    "using 'update_wiki_page' tool. Do not delete information unless explicitly asked by the user. "
-    "Use tools when they help you answer accurately; answer directly when you "
-    "don't need them. Be concise."
-)
 
 
 class Agent:
@@ -194,21 +171,7 @@ class Agent:
         # they guess the date (and e.g. build web searches around the wrong
         # year). Appending today's date to the system prompt fixes that for
         # free. Applied to custom prompts too, since the problem is the same.
-        base_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        today = datetime.now().strftime("%A, %d %B %Y")
-        year = datetime.now().year
-        # The tool-free part of the system prompt, kept on the instance so
-        # the full prompt can be REBUILT whenever the tool set or the tool
-        # mode changes mid-session (refresh_tools, _switch_to_prompt_mode).
-        # Rebuilding from this base — instead of appending to messages[0] —
-        # keeps those operations idempotent: no duplicated tool sections.
-        self._base_system_prompt = (
-            f"{base_prompt} "
-            f"Today's date is {today}. The current year is {year}. "
-            f"La data di oggi è: {today}. L'anno corrente è {year}. "
-            f"When searching the web, ALWAYS include the current year ({year}) in the query "
-            f"if the user's question refers to recent or current events."
-        )
+        self._base_system_prompt = build_base_system_prompt(system_prompt)
 
         # Skip the reasoning phase on every request of this session. The CLI
         # sets the equivalent on the server at launch (--no-think); this is the
@@ -270,7 +233,12 @@ class Agent:
             # mid-turn can overflow the window too. Trimming is cheap and
             # synchronous; the summary of what was dropped is generated
             # later, off this turn's critical path (summarize_pending).
-            self._trim_history()
+            dropped, removed = trim_history_to_budget(self.messages, self.context_size, self.tools_enabled, self.native_tools, self.registry)
+            if removed:
+                for msg in removed:
+                    if msg.get("id") is not None:
+                        self._pending_summary_last_id = msg["id"]
+                self._pending_summary_turns.extend(m for m in removed if m["role"] in ("user", "assistant"))
 
             prompt_mode = self.tools_enabled and not self.native_tools
             tools = (
@@ -407,7 +375,7 @@ class Agent:
                 text = assistant_message.get("content") or ""
                 # Only text that stayed JSON-looking to the end (still
                 # buffered) can be a tool call; flushed prose is an answer.
-                call = (self._extract_tool_call(text) if buffering else None) or self._extract_tool_call(accumulated_reasoning)
+                call = (extract_tool_call(text, self.registry) if buffering else None) or extract_tool_call(accumulated_reasoning, self.registry)
 
                 # The model's literal reply goes into the history either way,
                 # so it can see its own (attempted) call next round.
@@ -422,7 +390,7 @@ class Agent:
 
                 name, arguments_json = call
                 yield ("tool_call", {"name": name, "arguments": arguments_json})
-                result = await self._execute_with_confirmation(name, arguments_json)
+                result = await execute_with_confirmation(self.registry, self.confirm, name, arguments_json)
                 yield ("tool_result", {"name": name, "result": result})
                 # Templates without tool support reject the "tool" role, so
                 # the result is fed back as a clearly-labeled user message.
@@ -445,7 +413,7 @@ class Agent:
             print(f"  [DEBUG native] accumulated_reasoning (first 100): {accumulated_reasoning[:100]!r}", flush=True)
             if not tool_calls:
                 text_content = assistant_message.get("content") or ""
-                fallback = self._extract_tool_call(text_content) or self._extract_tool_call(accumulated_reasoning)
+                fallback = extract_tool_call(text_content, self.registry) or extract_tool_call(accumulated_reasoning, self.registry)
                 print(f"  [DEBUG native] fallback result: {fallback}", flush=True)
                 if fallback:
                     name, arguments_json = fallback
@@ -461,13 +429,13 @@ class Agent:
                     # Sincronizza il messaggio assistente nella cronologia salvando il tool_calls sintetico
                     # e pulendo la chiamata grezza dal contenuto di testo
                     assistant_message["tool_calls"] = tool_calls
-                    assistant_message["content"] = self._clean_tool_call_text(text_content)
+                    assistant_message["content"] = clean_tool_call_text(text_content)
                 else:
                     # If content is empty but reasoning contains the actual answer
                     # (Qwen with reasoning enabled sometimes puts everything in
                     # the thinking stream), promote the cleaned reasoning to content.
                     if not (assistant_message.get("content") or "").strip() and accumulated_reasoning.strip():
-                        cleaned = self._clean_tool_call_text(accumulated_reasoning)
+                        cleaned = clean_tool_call_text(accumulated_reasoning)
                         if cleaned:
                             assistant_message["content"] = cleaned
                             yield ("text", cleaned)
@@ -486,7 +454,7 @@ class Agent:
                 arguments_json = tool_call["function"]["arguments"]
                 yield ("tool_call", {"name": name, "arguments": arguments_json})
 
-                result = await self._execute_with_confirmation(name, arguments_json)
+                result = await execute_with_confirmation(self.registry, self.confirm, name, arguments_json)
                 yield ("tool_result", {"name": name, "result": result})
 
                 if name == "generate_image" and ("![" in result or "/api/media" in result or "file://" in result):
@@ -518,109 +486,8 @@ class Agent:
     # Context budget helpers
     # ------------------------------------------------------------------
 
-    def _estimate_tokens(self) -> int:
-        """
-        Estimate how many tokens the next request will occupy in the model's
-        context window: the full message history plus, in native tool mode,
-        the tool definitions the chat template renders into the prompt.
-
-        Uses the chars/4 heuristic (see CHARS_PER_TOKEN) — cheap and close
-        enough for watermark decisions; no server round-trip needed.
-        """
-        total = 0
-        for message in self.messages:
-            content = message.get("content") or ""
-            total += len(content) // CHARS_PER_TOKEN + MESSAGE_OVERHEAD_TOKENS
-            # Assistant messages can carry structured tool calls (native
-            # mode); their JSON is rendered into the prompt too.
-            if message.get("tool_calls"):
-                total += len(json.dumps(message["tool_calls"])) // CHARS_PER_TOKEN
-        # In native mode the tool definitions travel with every request and
-        # the template renders them into the prompt. (In prompt-based mode
-        # they are already inside the system prompt, counted above.)
-        if self.tools_enabled and self.native_tools:
-            total += (
-                len(json.dumps(self.registry.definitions())) // CHARS_PER_TOKEN
-            )
-        return total
-
     def context_usage(self) -> Tuple[int, int]:
-        """
-        Report the estimated context occupancy for UI display.
-
-        Returns:
-            (estimated_used_tokens, context_size) — the caller can derive a
-            percentage from these. The estimate is heuristic (chars/4), so
-            it should be presented as approximate.
-        """
-        return self._estimate_tokens(), self.context_size
-
-    def _trim_history(self) -> int:
-        """
-        Drop the oldest conversation turns when the history approaches the
-        context limit, so llama-server never truncates the prompt itself
-        (which would eat the system prompt first — fatal in prompt-based
-        tool mode, where it carries the tool instructions).
-
-        Hysteresis: trimming only starts above CONTEXT_HIGH_WATERMARK, but
-        then cuts all the way down to CONTEXT_LOW_WATERMARK. This trades one
-        big prompt-cache invalidation every N turns for stable cache hits in
-        between (see the watermark constants for the full rationale).
-
-        Never dropped: the system prompt (messages[0]), the most recent messages
-        guaranteed by MIN_ACTIVE_WINDOW, and the current input.
-
-        The removed chat turns are QUEUED for summarization, not summarized
-        here: this method runs on the turn's critical path (right before the
-        main request), while summarization is a whole LLM generation — see
-        summarize_pending() for how and when the queue is drained.
-
-        Returns:
-            The number of messages dropped (0 when under the watermark).
-        """
-        high_budget = int(self.context_size * CONTEXT_HIGH_WATERMARK)
-        if self._estimate_tokens() <= high_budget:
-            return 0
-
-        low_budget = int(self.context_size * CONTEXT_LOW_WATERMARK)
-        dropped = 0
-        removed_messages = []
-
-        # messages[0] is system prompt; the last MIN_ACTIVE_WINDOW messages are untouchable
-        # to ensure recent conversation context remains intact.
-        while len(self.messages) > (1 + MIN_ACTIVE_WINDOW) and self._estimate_tokens() > low_budget:
-            removed = self.messages.pop(1)
-            removed_messages.append(removed)
-            dropped += 1
-            # Native mode: a "tool" result message is only valid while the
-            # assistant message carrying the matching tool_call is present.
-            # Dropping the call but keeping the result would make the server
-            # reject the request, so orphaned results go with it.
-            if removed.get("tool_calls"):
-                while (
-                    len(self.messages) > (1 + MIN_ACTIVE_WINDOW)
-                    and self.messages[1].get("role") == "tool"
-                ):
-                    orphaned = self.messages.pop(1)
-                    removed_messages.append(orphaned)
-                    dropped += 1
-
-        if not removed_messages:
-            return 0
-
-        # Track the last database ID in the removed chunk: it becomes the
-        # conversation's last_summarized_message_id once the summary that
-        # covers these turns is persisted.
-        for msg in removed_messages:
-            if msg.get("id") is not None:
-                self._pending_summary_last_id = msg["id"]
-
-        # Only user/assistant turns carry conversational content worth
-        # summarizing; tool results are transient plumbing.
-        self._pending_summary_turns.extend(
-            m for m in removed_messages if m["role"] in ("user", "assistant")
-        )
-        return dropped
+        return estimate_tokens(self.messages, self.tools_enabled, self.native_tools, self.registry), self.context_size
 
     @property
     def has_pending_summary(self) -> bool:
@@ -708,37 +575,8 @@ class Agent:
     # Prompt-based tool mode helpers
     # ------------------------------------------------------------------
 
-    def _tool_instructions(self) -> str:
-        """
-        Build the system-prompt section that teaches a template-less model
-        how to call tools: the definitions as JSON schemas, plus the exact
-        reply format we can parse back out of its text.
-        """
-        definitions = [d["function"] for d in self.registry.definitions()]
-        return (
-            "You have access to the following tools, described as JSON schemas:\n"
-            + json.dumps(definitions)
-            + "\n\nTo use a tool, reply with ONLY a single JSON object in this "
-            'exact format and nothing else:\n{"name": "<tool_name>", '
-            '"arguments": {<parameters>}}\n'
-            "You will receive the tool result in the next message; then answer "
-            "the user (or call another tool). Never invent or assume tool "
-            "results: if you need one, emit the JSON and wait."
-        )
-
     def _system_prompt_content(self) -> str:
-        """
-        The full system prompt for the CURRENT tool mode and tool set:
-        the dated base prompt plus, in prompt-based mode only, the tool
-        instructions (in native mode the tools travel as a request
-        parameter instead). Single source of truth for messages[0] —
-        __init__, refresh_tools() and _switch_to_prompt_mode() all build
-        it from here, so mode/tool changes can never stack duplicates.
-        """
-        content = self._base_system_prompt
-        if self.tools_enabled and not self.native_tools:
-            content += "\n\n" + self._tool_instructions()
-        return content
+        return build_system_prompt_content(self._base_system_prompt, self.tools_enabled, self.native_tools, self.registry)
 
     def refresh_tools(self) -> None:
         """
@@ -772,147 +610,10 @@ class Agent:
         self.native_tools = False
         self.messages[0]["content"] = self._system_prompt_content()
 
-    def _extract_tool_call(self, text: str) -> Optional[Tuple[str, str]]:
-        """
-        Try to parse a prompt-mode tool call out of the model's reply text.
-
-        Accepts the JSON object bare, inside a ```json fence, or surrounded
-        by stray whitespace/text. Returns (tool_name, arguments_json) only if
-        the JSON is valid AND names a registered tool with a dict of
-        arguments — anything else is treated as a normal text answer.
-        """
-        stripped = text.strip()
-        candidates = []
-
-        # XML tag format used by Qwen models: <tool_call> { ... } </tool_call> or <tool_call> { ... }
-        xml_tag = re.search(r"<tool_call>\s*(\{.*?\})(?:\s*</tool_call>|\s*$)", stripped, re.S)
-        if xml_tag:
-            candidates.append(xml_tag.group(1))
-
-        # Fenced block: ```json { ... } ```
-        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.S)
-        if fence:
-            candidates.append(fence.group(1))
-        # Bare object, possibly with stray text around it: widest {...} slice
-        first, last = stripped.find("{"), stripped.rfind("}")
-        if first != -1 and last > first:
-            candidates.append(stripped[first:last + 1])
-
-        for candidate in candidates:
-            try:
-                # strict=False accepts literal control characters (newlines,
-                # tabs) inside JSON strings. Spec-wise they should be escaped
-                # as \n, but prompt-mode models (e.g. Gemma) routinely emit
-                # them raw in multi-line arguments — which is exactly the
-                # common case for edit_file/write_file content.
-                obj = json.loads(candidate, strict=False)
-            except json.JSONDecodeError:
-                continue
-            if (
-                isinstance(obj, dict)
-                and isinstance(obj.get("name"), str)
-                and self.registry.get(obj["name"]) is not None
-                and isinstance(obj.get("arguments", {}), dict)
-            ):
-                return obj["name"], json.dumps(obj.get("arguments", {}))
-        return None
-
-    @staticmethod
-    def _clean_tool_call_text(text: Optional[str]) -> Optional[str]:
-        """Strip raw XML <tool_call> tags or fenced JSON tool calls from assistant text content."""
-        if not text:
-            return None
-        cleaned = re.sub(r"<tool_call>\s*\{.*?\}\s*</tool_call>", "", text, flags=re.S)
-        cleaned = re.sub(r"<tool_call>.*", "", cleaned, flags=re.S)
-        cleaned = re.sub(r"```(?:json)?\s*\{\s*\"name\"\s*:.*?\s*\}\s*```", "", cleaned, flags=re.S)
-        cleaned = cleaned.strip()
-        return cleaned if cleaned else None
-
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
 
-    async def _execute_with_confirmation(self, name: str, arguments_json: str) -> str:
-        """
-        Execute a tool, honoring the confirmation flag.
-
-        Tools flagged requires_confirmation are only run if the injected
-        confirm callback approves. A denial is reported to the model as the
-        tool result, so it can adapt (e.g. propose an alternative) instead
-        of retrying blindly.
-
-        The confirm callback may be either sync (e.g. click.confirm from the
-        CLI) or async (e.g. a future GUI/HTTP front-end), so it is awaited
-        only when it is actually a coroutine function.
-        """
-        tool = self.registry.get(name)
-
-        if tool is not None and tool.requires_confirmation:
-            if self.confirm is None:
-                return (
-                    f"Tool '{name}' requires user confirmation, but no "
-                    "confirmation mechanism is available. Action not executed."
-                )
-            prompt = self._format_confirmation(name, arguments_json)
-
-            try:
-                sig = inspect.signature(self.confirm)
-                num_params = len(sig.parameters)
-            except Exception:
-                num_params = 1
-
-            if inspect.iscoroutinefunction(self.confirm):
-                if num_params >= 3:
-                    confirmed = await self.confirm(prompt, name, arguments_json)
-                else:
-                    confirmed = await self.confirm(prompt)
-            else:
-                if num_params >= 3:
-                    confirmed = self.confirm(prompt, name, arguments_json)
-                else:
-                    confirmed = self.confirm(prompt)
-
-            if not confirmed:
-                return f"{DECLINED_MARKER} L'utente ha rifiutato l'autorizzazione per eseguire l'operazione '{name}'."
-
-        return await self.registry.execute(name, arguments_json)
-
-    @staticmethod
-    def _format_confirmation(name: str, arguments_json: str) -> str:
-        """
-        Render a tool call as human-readable text for the confirmation prompt.
-
-        The raw arguments arrive as a JSON string, so a shell command reaches
-        us escaped and on a single line (\\n, \\", ...). The user is being
-        asked to vet code before it runs on their machine, so it must be shown
-        exactly as it will execute: this decodes the JSON and prints each
-        argument verbatim, preserving newlines and quoting.
-
-        Returns UI-agnostic plain text — the CLI styles it, a future GUI can
-        render it differently. Falls back to the raw JSON if it can't be
-        parsed, so the user never sees *less* than what will run.
-        """
-        try:
-            args = json.loads(arguments_json, strict=False)
-        except (json.JSONDecodeError, TypeError):
-            return f"The agent wants to run tool '{name}' with arguments: {arguments_json}"
-
-        if not isinstance(args, dict) or not args:
-            return f"The agent wants to run tool '{name}' with arguments: {arguments_json}"
-
-        lines = [f"The agent wants to run tool '{name}':"]
-        for key, value in args.items():
-            text = value if isinstance(value, str) else json.dumps(value)
-            if "\n" in text:
-                # Multi-line values (scripts, file contents) get their own
-                # indented block so the user can read every line.
-                indented = "\n".join(f"    | {ln}" for ln in text.split("\n"))
-                lines.append(f"  {key}:\n{indented}")
-            else:
-                lines.append(f"  {key}: {text}")
-        return "\n".join(lines)
-
-    @staticmethod
     def _describe_error(exc: Exception) -> str:
         """
         Turn a raw client/server exception into a helpful, user-facing message.

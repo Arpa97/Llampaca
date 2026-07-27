@@ -12,6 +12,7 @@ from llampaca.config import (
     DEFAULT_CONTEXT_SIZE,
     EMBEDDING_CONTEXT_SIZE,
 )
+from llampaca.engine import state
 
 def is_port_in_use(port: int) -> bool:
     """Check if a port is already open on localhost."""
@@ -91,16 +92,6 @@ def cleanup_orphans():
             pid_file.unlink()
         except OSError:
             pass
-
-_active_server = None
-
-def get_active_server():
-    global _active_server
-    return _active_server
-
-def set_active_server(server):
-    global _active_server
-    _active_server = server
 
 class LlamaServer:
     def __init__(self, model_path: Path, port: int = None, context_size: int = None,
@@ -379,8 +370,7 @@ class LlamaServer:
                             self.pid_file_path.write_text(str(self.process.pid))
                         except OSError:
                             pass
-                        global _active_server
-                        _active_server = self
+                        state.set_chat_server(self)
                         return True
             except requests.RequestException:
                 pass
@@ -428,6 +418,9 @@ class LlamaServer:
                     self.pid_file_path.unlink()
             except OSError:
                 pass
+            
+            if state.get_chat_server() is self:
+                state.set_chat_server(None)
 
     def __del__(self):
         # Destructor to ensure process is stopped if object is garbage collected
@@ -437,36 +430,13 @@ class LlamaServer:
 
 def restart_active_server(model_name: str = None, port: int = None, context_size: int = None, n_threads: int = None, gpu_layers: int = None) -> bool:
     """
-    Restart the llama-server. If the GUI event loop is running, we delegate
-    the restart to the main AgentManager loop task to avoid AnyIO cancel scope conflicts.
-    Otherwise, we fall back to a direct local restart.
+    Restart the llama-server.
     """
-    try:
-        from llampaca.gui.server import agent_manager
-    except ImportError:
-        agent_manager = None
-
-    if agent_manager and agent_manager.loop and agent_manager.loop.is_running():
-        import concurrent.futures
-        fut = concurrent.futures.Future()
-        params = {
-            "model_name": model_name,
-            "port": port,
-            "context_size": context_size,
-            "n_threads": n_threads,
-            "gpu_layers": gpu_layers
-        }
-        def put():
-            agent_manager.request_queue.put_nowait(("restart_server", params, fut))
-        agent_manager.loop.call_soon_threadsafe(put)
-        return fut.result(timeout=65)
-
     import asyncio
     return asyncio.run(_restart_active_server_fallback(model_name, port, context_size, n_threads, gpu_layers))
 
 
 async def _restart_active_server_fallback(model_name: str = None, port: int = None, context_size: int = None, n_threads: int = None, gpu_layers: int = None) -> bool:
-    global _active_server
     import traceback
     
     config = load_config()
@@ -489,12 +459,13 @@ async def _restart_active_server_fallback(model_name: str = None, port: int = No
         return False
 
     # 2. Stop current server if running
-    if _active_server:
-        print(f"[Server Restart] Stopping active server on port {_active_server.port}...")
-        _active_server.stop()
+    active_server = state.get_chat_server()
+    if active_server:
+        print(f"[Server Restart] Stopping active server on port {active_server.port}...")
+        active_server.stop()
         # Give a small pause to release port
         time.sleep(0.5)
-        _active_server = None
+        state.set_chat_server(None)
 
     # 3. Resolve parameters
     resolved_port = port or config.get("server_port", 8080)
@@ -514,7 +485,7 @@ async def _restart_active_server_fallback(model_name: str = None, port: int = No
     # 5. Start new server
     success = await new_server.start()
     if success:
-        _active_server = new_server
+        state.set_chat_server(new_server)
         # Update LlamaClient port dynamically in GUI agent manager if running
         try:
             from llampaca.gui.server import agent_manager
