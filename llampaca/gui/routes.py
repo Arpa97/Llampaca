@@ -27,9 +27,9 @@ import uuid
 import shutil
 import time
 import re
-from llampaca.gui.agent_manager import agent_manager, run_async
+from llampaca.gui.agent_manager import agent_manager, run_async, is_server_running
 from llampaca.gui.restart_bridge import restart_via_agent_manager
-from llampaca.config import MODELS_DIR, MODEL_PRESETS, save_config, get_app_dir
+from llampaca.config import MODELS_DIR, MODEL_PRESETS, save_config
 import logging
 logger = logging.getLogger(__name__)
 class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):

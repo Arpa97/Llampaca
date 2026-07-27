@@ -102,10 +102,10 @@ class Tool:
     description: str
     func: Callable
     parameters: dict = field(default_factory=dict)
-    # When True, the agent loop asks the user for confirmation before
     # executing (used for destructive/dangerous tools like shell commands
     # and file writes).
     requires_confirmation: bool = False
+    compressible: bool = False
 
     def to_openai_format(self) -> dict:
         """Return the tool definition in the OpenAI 'tools' request format."""
@@ -141,6 +141,7 @@ class ToolRegistry:
         name: str = None,
         description: str = None,
         requires_confirmation: bool = False,
+        compressible: bool = False,
     ) -> Tool:
         """
         Register a Python function as a tool.
@@ -156,6 +157,7 @@ class ToolRegistry:
             name: Tool name shown to the model (defaults to the function name).
             description: Override for the docstring description.
             requires_confirmation: Ask the user before executing this tool.
+            compressible: If true, long output can be summarized.
         """
         tool_name = name or func.__name__
         doc_description, param_docs = _parse_docstring(func.__doc__)
@@ -186,6 +188,7 @@ class ToolRegistry:
                 "required": required,
             },
             requires_confirmation=requires_confirmation,
+            compressible=compressible,
         )
         self._tools[tool_name] = tool
         return tool

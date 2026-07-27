@@ -52,7 +52,7 @@ from llampaca.tools.registry import ToolRegistry
 
 from llampaca.agent.context import estimate_tokens, trim_history_to_budget
 from llampaca.agent.prompts import build_base_system_prompt, build_system_prompt
-from llampaca.agent.executor import execute_with_confirmation, extract_tool_call, clean_tool_call_text, DECLINED_MARKER
+from llampaca.agent.executor import execute_with_confirmation, extract_tool_call, clean_tool_call_text, DECLINED_MARKER, compress_tool_result
 
 # Safety cap: maximum model→tools→model round-trips for a single user
 # message. Prevents a confused model from looping on tool calls forever.
@@ -394,6 +394,10 @@ class Agent:
                 name, arguments_json = call
                 yield ("tool_call", {"name": name, "arguments": arguments_json})
                 result = await execute_with_confirmation(self.registry, self.confirm, name, arguments_json)
+                
+                tool = self.registry.get(name)
+                if tool and getattr(tool, "compressible", False):
+                    result = await compress_tool_result(result, self.client)
                 yield ("tool_result", {"name": name, "result": result})
                 # Templates without tool support reject the "tool" role, so
                 # the result is fed back as a clearly-labeled user message.
@@ -458,6 +462,10 @@ class Agent:
                 yield ("tool_call", {"name": name, "arguments": arguments_json})
 
                 result = await execute_with_confirmation(self.registry, self.confirm, name, arguments_json)
+                
+                tool = self.registry.get(name)
+                if tool and getattr(tool, "compressible", False):
+                    result = await compress_tool_result(result, self.client)
                 yield ("tool_result", {"name": name, "result": result})
 
                 if name == "generate_image" and ("![" in result or "/api/media" in result or "file://" in result):
@@ -586,7 +594,7 @@ class Agent:
         return build_system_prompt(
             base_prompt=self._base_system_prompt,
             wiki_index=wiki.render_index(),
-            skills_index=skills.render_index(),
+            skills_index=skills.render_skills_index(),
             tool_definitions=tool_defs,
             summary=self.summary or "",
             context_size=self.context_size

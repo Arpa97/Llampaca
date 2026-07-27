@@ -20,7 +20,7 @@ from llampaca.engine.downloader import download_llama_binaries, download_hf_mode
 from llampaca.engine.server import LlamaServer, is_port_in_use
 from llampaca.engine.client import LlamaClient
 from llampaca.agent import Agent
-from llampaca.agent.loop import DEFAULT_SYSTEM_PROMPT
+from llampaca.agent.prompts import DEFAULT_SYSTEM_PROMPT
 from llampaca.tools import build_default_registry
 from llampaca import wiki
 from llampaca import skills
@@ -414,8 +414,8 @@ def run_gui(model_name, port, ctx, threads, gpu):
         start_gui_window()
     finally:
         click.echo("Shutting down llama-server...")
-        from llampaca.engine.server import get_active_server
-        active = get_active_server()
+        from llampaca.engine.state import get_chat_server
+        active = get_chat_server()
         if active:
             active.stop()
         else:

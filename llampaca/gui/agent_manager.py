@@ -396,7 +396,8 @@ class AgentManager:
             return
         try:
             import time
-            from llampaca.agent.loop import Agent, DEFAULT_SYSTEM_PROMPT
+            from llampaca.agent.loop import Agent
+            from llampaca.agent.prompts import DEFAULT_SYSTEM_PROMPT
             from llampaca import wiki, skills
 
             # Built with the same calls as _process_message_coro. The cache is
@@ -674,7 +675,8 @@ class AgentManager:
         
     async def _process_message_coro(self, conv_id, content, user_msg_id, conv_data, config, result_queue):
         try:
-            from llampaca.agent.loop import Agent, DEFAULT_SYSTEM_PROMPT
+            from llampaca.agent.loop import Agent
+            from llampaca.agent.prompts import DEFAULT_SYSTEM_PROMPT
             from llampaca import wiki
 
             last_tool_call = {}

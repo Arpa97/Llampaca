@@ -215,7 +215,7 @@ class LlamaServer:
             "--port", str(self.port),
             "-c", str(self.context_size),
             "-t", str(self.n_threads),
-        ]
+        ])
 
         if self.embedding:
             cmd.extend([
@@ -442,10 +442,7 @@ class LlamaServer:
             if state.get_chat_server() is self:
                 state.set_chat_server(None)
 
-    def __del__(self):
-        # Destructor to ensure process is stopped if object is garbage collected
-        if hasattr(self, "process") and self.process:
-            self.stop()
+
 
 
 def restart_active_server(model_name: str = None, port: int = None, context_size: int = None, n_threads: int = None, gpu_layers: int = None) -> bool:

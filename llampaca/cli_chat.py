@@ -20,7 +20,7 @@ from llampaca.engine.downloader import download_llama_binaries, download_hf_mode
 from llampaca.engine.server import LlamaServer, is_port_in_use
 from llampaca.engine.client import LlamaClient
 from llampaca.agent import Agent
-from llampaca.agent.loop import DEFAULT_SYSTEM_PROMPT
+from llampaca.agent.prompts import DEFAULT_SYSTEM_PROMPT
 from llampaca.tools import build_default_registry
 from llampaca import wiki
 from llampaca import skills

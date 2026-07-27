@@ -17,7 +17,7 @@ from llampaca.tools.image import register_image_tools
 # search_documents is exported but deliberately NOT part of
 # build_default_registry: it is registered dynamically, only for sessions
 # whose conversation has indexed attachments (see tools/documents.py).
-from llampaca.tools.documents import register_document_tools, make_query_embedder
+from llampaca.tools.documents import register_document_tools
 
 
 def register_custom_tools(registry) -> None:
