@@ -5,8 +5,8 @@ from llampaca.config import CHARS_PER_TOKEN
 
 MESSAGE_OVERHEAD_TOKENS = 4
 MIN_ACTIVE_WINDOW = 6
-CONTEXT_HIGH_WATERMARK = 0.80
-CONTEXT_LOW_WATERMARK = 0.60
+CONTEXT_TRIM_THRESHOLD = 0.70
+GENERATION_RESERVE = 0.15
 
 def estimate_tokens(
     messages: List[Dict[str, Any]],
@@ -37,11 +37,11 @@ def trim_history_to_budget(
     Returns:
         (dropped_count, removed_messages)
     """
-    high_budget = int(context_size * CONTEXT_HIGH_WATERMARK)
+    high_budget = int(context_size * CONTEXT_TRIM_THRESHOLD)
     if estimate_tokens(messages, tools_enabled, native_tools, registry) <= high_budget:
         return 0, []
 
-    low_budget = int(context_size * CONTEXT_LOW_WATERMARK)
+    low_budget = int(context_size * (CONTEXT_TRIM_THRESHOLD - GENERATION_RESERVE))
     dropped = 0
     removed_messages = []
 

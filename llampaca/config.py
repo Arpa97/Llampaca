@@ -1,6 +1,10 @@
 import os
+import sys
 import json
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Rough tokens-per-character ratio used for budget estimates everywhere in
 # the codebase (agent history trimming, attachment budgets, RAG chunk
@@ -142,6 +146,10 @@ DEFAULT_CONFIG = {
     "context_size": DEFAULT_CONTEXT_SIZE,
     "n_threads": max(1, os.cpu_count() - 2 if os.cpu_count() else 4),
     "gpu_layers": -1,  # -1 means auto (enable metal/cuda if supported)
+    "kv_cache_quant_k": "q8_0",
+    "kv_cache_quant_v": "q8_0",
+    "draft_model": "",           # preset name or GGUF filename
+    "draft_model_gpu_layers": -1,
     "mcp_servers": {},
     # Embedding (RAG) settings. embedding_model may be a preset name or a
     # GGUF filename in MODELS_DIR, same resolution rules as default_model.
@@ -211,7 +219,11 @@ def load_config() -> dict:
         if updated:
             save_config(config)
         return config
-    except Exception:
+    except json.JSONDecodeError as e:
+        logger.error("Config file %s is corrupted: %s. Using defaults.", CONFIG_PATH, e)
+        return DEFAULT_CONFIG.copy()
+    except OSError as e:
+        logger.error("Cannot read config file %s: %s. Using defaults.", CONFIG_PATH, e)
         return DEFAULT_CONFIG.copy()
 
 def save_config(config: dict):

@@ -25,11 +25,13 @@ from llampaca.tools import build_default_registry
 from llampaca import wiki
 from llampaca import skills
 
+from llampaca.logutil import setup_logging
 from llampaca.cli_utils import format_size
 from llampaca.cli_chat import async_run_chat
 @click.group()
 def main():
     """Llampaca - Run your local AI agents and assistants for free."""
+    setup_logging(console=True)
     ensure_dirs()
 
 @main.command()
@@ -766,3 +768,19 @@ def generate_image_cmd(prompt, output, quality):
 
 if __name__ == "__main__":
     main()
+
+@main.group()
+def config():
+    """Manage application configuration."""
+    pass
+
+@config.command(name="set-kv-cache")
+@click.option("--k", default="q8_0", help="Key cache quant: f16, q8_0, q5_0, q4_0")
+@click.option("--v", default="q8_0", help="Value cache quant: f16, q8_0, q5_0, q4_0")
+def set_kv_cache(k, v):
+    """Set the Key-Value cache quantization."""
+    cfg = load_config()
+    cfg["kv_cache_quant_k"] = k
+    cfg["kv_cache_quant_v"] = v
+    save_config(cfg)
+    click.echo(f"KV cache set to K={k}, V={v}. Restart the server to apply.")

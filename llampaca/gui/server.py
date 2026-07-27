@@ -22,6 +22,10 @@ from llampaca.engine.db import (
 from llampaca.config import load_config, DEFAULT_CONTEXT_SIZE
 from llampaca.gui.agent_manager import agent_manager
 from llampaca.gui.routes import QuietSimpleHTTPRequestHandler, _get_client_config_paths, _resolve_llampaca_command, parse_hf_input, search_hf_models
+import logging
+import logging
+logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 def find_free_port(start_port=8090):
     port = start_port
     while True:
@@ -76,6 +80,10 @@ def start_gui_window():
     """Start the background HTTP server and launch the pywebview standalone native window."""
     import sys
     import os
+    from llampaca.logutil import setup_logging
+    from llampaca.config import LLAMPACA_DIR
+    from pathlib import Path
+    setup_logging(console=True, log_dir=Path(LLAMPACA_DIR) / "logs")
     
     # macOS runtime hack: override Application Menu Name in menu bar
     if sys.platform == 'darwin':
@@ -93,8 +101,8 @@ def start_gui_window():
     try:
         import webview
     except ImportError:
-        print("Error: 'pywebview' is not installed.")
-        print("Please install it running: pip install pywebview")
+        logger.error("Error: 'pywebview' is not installed.")
+        logger.info("Please install it running: pip install pywebview")
         sys.exit(1)
 
     gui_dir = Path(__file__).parent.resolve()
@@ -169,8 +177,8 @@ def start_gui_window():
     port = find_free_port()
     server = start_http_server(gui_dir, port)
 
-    print(f"GUI HTTP Server running locally at http://127.0.0.1:{port}", flush=True)
-    print("Opening native window...", flush=True)
+    logger.info(f"GUI HTTP Server running locally at http://127.0.0.1:{port}")
+    logger.info("Opening native window...")
 
     try:
         # Per-launch cache-buster on the window URL. pywebview's WebKit
@@ -195,16 +203,20 @@ def start_gui_window():
         debug = os.environ.get("LLAMPACA_DEBUG", "").strip() in ("1", "true", "yes")
         webview.start(func=_set_app_icon, debug=debug)
     finally:
-        print("Window closed. Stopping HTTP server...", flush=True)
+        logger.info("Window closed. Stopping HTTP server...")
         server.shutdown()
         server.server_close()
         agent_manager.stop()
 
 def start_api_server(port=8090):
     """Start the Llampaca HTTP API server in the foreground (blocking)."""
+    from llampaca.logutil import setup_logging
+    from llampaca.config import LLAMPACA_DIR
+    from pathlib import Path
+    setup_logging(console=True, log_dir=Path(LLAMPACA_DIR) / "logs")
     gui_dir = Path(__file__).parent.resolve()
     server = start_http_server(gui_dir, port)
-    print(f"Llampaca HTTP API Server running locally at http://127.0.0.1:{port}", flush=True)
+    logger.info(f"Llampaca HTTP API Server running locally at http://127.0.0.1:{port}")
     try:
         import time
         while True:
@@ -212,7 +224,7 @@ def start_api_server(port=8090):
     except KeyboardInterrupt:
         pass
     finally:
-        print("Stopping HTTP server...", flush=True)
+        logger.info("Stopping HTTP server...")
         server.shutdown()
         server.server_close()
         agent_manager.stop()

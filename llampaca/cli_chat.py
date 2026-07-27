@@ -184,7 +184,7 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
     # --no-tools: the index describes tools the model would not have.
     system_prompt = None
     if registry is not None:
-        system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+        system_prompt = DEFAULT_SYSTEM_PROMPT
         # The Markdown skills index (slug + short description of each
         # installed skill) also rides in the system prompt so the model
         # knows which skills exist and can pull the full instructions with
@@ -244,7 +244,8 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
             return
         register_document_tools(
             registry,
-            embed_query=embedding_service.query_embedder(),
+            embed_client=embedding_service._client,
+            query_prefix=embedding_service.query_prefix,
             conversation_id=active_conversation_id,
         )
         agent.refresh_tools()

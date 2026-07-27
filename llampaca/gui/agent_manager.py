@@ -37,6 +37,8 @@ def run_async(coro):
         return asyncio.run(coro)
 
 import re
+import logging
+logger = logging.getLogger(__name__)
 
 # Matches an injected attachment block (build_attachment_block output) or a
 # RAG index note, so the user's own words can be recovered from a merged
@@ -163,7 +165,7 @@ class AgentManager:
                             self.mcp_config_mtime = mtime
                             await self._reload_mcp_manager_internal()
                     except Exception as e:
-                        print(f"[AgentManager] Error checking/reloading MCP config on message: {e}", flush=True)
+                        logger.error(f"[AgentManager] Error checking/reloading MCP config on message: {e}")
 
                 # If the startup cache warm-up is still in flight, wait for it
                 # instead of racing it: both talk to the same llama-server, and
@@ -179,7 +181,7 @@ class AgentManager:
                 try:
                     await self.current_task
                 except asyncio.CancelledError:
-                    print("[AgentManager] Message processing task was cancelled.", flush=True)
+                    logger.info("[AgentManager] Message processing task was cancelled.")
                 finally:
                     self.current_task = None
         finally:
@@ -187,7 +189,7 @@ class AgentManager:
                 try:
                     await asyncio.wait_for(self.mcp_manager.stop(), timeout=1.0)
                 except Exception as e:
-                    print(f"Error stopping MCP: {e}", flush=True)
+                    logger.error(f"Error stopping MCP: {e}")
 
     async def _restart_server_internal(self, params: dict) -> bool:
         if self._mcp_reload_lock is None:
@@ -196,7 +198,7 @@ class AgentManager:
             import time
             # 1. Stop current MCP sessions (if any)
             if self.mcp_manager:
-                print("[AgentManager] Stopping active MCP manager in main task...", flush=True)
+                logger.info("[AgentManager] Stopping active MCP manager in main task...")
                 await self.mcp_manager.stop()
                 self.mcp_manager = None
                 
@@ -205,7 +207,7 @@ class AgentManager:
             from llampaca.engine import state
             active_server = state.get_chat_server()
             if active_server:
-                print(f"[AgentManager] Stopping active llama-server on port {active_server.port}...", flush=True)
+                logger.info(f"[AgentManager] Stopping active llama-server on port {active_server.port}...")
                 active_server.stop()
                 time.sleep(0.5)
                 state.set_chat_server(None)
@@ -223,7 +225,7 @@ class AgentManager:
                         model_path = MODELS_DIR / preset_file
                         
             if not model_path.exists():
-                print(f"[AgentManager] Error: Model '{model_name}' could not be resolved.")
+                logger.error(f"[AgentManager] Error: Model '{model_name}' could not be resolved.")
                 return False
 
             resolved_port = params.get("port") or config.get("server_port", 8080)
@@ -281,11 +283,11 @@ class AgentManager:
         async with self._mcp_reload_lock:
             # 1. Stop current MCP sessions (if any)
             if self.mcp_manager:
-                print("[AgentManager] Reloading registry: stopping active MCP manager...", flush=True)
+                logger.info("[AgentManager] Reloading registry: stopping active MCP manager...")
                 try:
                     await self.mcp_manager.stop()
                 except Exception as e:
-                    print(f"Error stopping MCP on registry reload: {e}", flush=True)
+                    logger.error(f"Error stopping MCP on registry reload: {e}")
                 self.mcp_manager = None
 
             # 2. Re-build default registry (which loads built-in + custom tools)
@@ -301,7 +303,7 @@ class AgentManager:
                 from llampaca.engine.mcp_client import McpClientManager
                 self.mcp_manager = McpClientManager(mcp_servers_config)
                 await self.mcp_manager.start(self.registry)
-            print("[AgentManager] Registry and MCP reloaded.", flush=True)
+            logger.info("[AgentManager] Registry and MCP reloaded.")
 
     async def _reload_mcp_manager_internal(self):
         if self._mcp_reload_lock is None:
@@ -309,11 +311,11 @@ class AgentManager:
         async with self._mcp_reload_lock:
             # 1. Stop current MCP sessions (if any)
             if self.mcp_manager:
-                print("[AgentManager] Reloading MCP: stopping active manager...", flush=True)
+                logger.info("[AgentManager] Reloading MCP: stopping active manager...")
                 try:
                     await self.mcp_manager.stop()
                 except Exception as e:
-                    print(f"Error stopping MCP on reload: {e}", flush=True)
+                    logger.error(f"Error stopping MCP on reload: {e}")
                 self.mcp_manager = None
                 
             # 2. Clear old MCP tools (tools with '__' prefix) from registry
@@ -330,7 +332,7 @@ class AgentManager:
                 from llampaca.engine.mcp_client import McpClientManager
                 self.mcp_manager = McpClientManager(mcp_servers_config)
                 await self.mcp_manager.start(self.registry)
-            print("[AgentManager] Reloading MCP: new sessions started and registered.", flush=True)
+            logger.info("[AgentManager] Reloading MCP: new sessions started and registered.")
 
     def start(self, config):
         self.config = config
@@ -400,7 +402,7 @@ class AgentManager:
             # Built with the same calls as _process_message_coro. The cache is
             # keyed on the exact token sequence, so a hand-written copy of the
             # prompt would silently drift and waste the whole warm-up.
-            system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+            system_prompt = DEFAULT_SYSTEM_PROMPT
             skills_idx = skills.render_skills_index()
             if skills_idx:
                 system_prompt += "\n\n" + skills_idx
@@ -449,16 +451,16 @@ class AgentManager:
             elapsed = time.time() - t0
 
             if "error" in timings:
-                print(f"[AgentManager] Prompt cache warm-up skipped: {timings['error']}", flush=True)
+                logger.info(f"[AgentManager] Prompt cache warm-up skipped: {timings['error']}")
             else:
-                print(
+                logger.info(
                     f"[AgentManager] Prompt cache warmed: "
                     f"{timings.get('prompt_n', '?')} tokens in {elapsed:.1f}s "
                     f"— the first message no longer pays for them.",
                     flush=True,
                 )
         except Exception as e:
-            print(f"[AgentManager] Prompt cache warm-up failed (harmless): {e}", flush=True)
+            logger.info(f"[AgentManager] Prompt cache warm-up failed (harmless): {e}")
 
     def stop(self):
         # Stop active llama-server if any
@@ -466,11 +468,11 @@ class AgentManager:
             from llampaca.engine import state
             active = state.get_chat_server()
             if active:
-                print("[AgentManager] Stopping active llama-server on shutdown...", flush=True)
+                logger.info("[AgentManager] Stopping active llama-server on shutdown...")
                 active.stop()
                 state.set_chat_server(None)
         except Exception as e:
-            print(f"Error stopping active llama-server on shutdown: {e}", flush=True)
+            logger.error(f"Error stopping active llama-server on shutdown: {e}")
 
         # Stop the embedding llama-server too, if a large attachment ever
         # started it (idempotent no-op otherwise).
@@ -478,7 +480,7 @@ class AgentManager:
             if self.embedding_service is not None:
                 self.embedding_service.stop()
         except Exception as e:
-            print(f"Error stopping embedding server on shutdown: {e}", flush=True)
+            logger.error(f"Error stopping embedding server on shutdown: {e}")
 
         if self.thread.is_alive() and self.request_queue:
             # 1. Cancel active processing task
@@ -518,7 +520,7 @@ class AgentManager:
             await asyncio.wait_for(event.wait(), timeout=300.0)
             return self.pending_confirmations.get(confirm_id, {}).get("result", False)
         except (asyncio.TimeoutError, asyncio.CancelledError):
-            print(f"[confirm_tool] Conferma per '{name}' (id: {confirm_id}) annullata o scaduta.", flush=True)
+            logger.info(f"[confirm_tool] Conferma per '{name}' (id: {confirm_id}) annullata o scaduta.")
             result_queue.put(("event", "tool_confirm_cancel", {"confirm_id": confirm_id}))
             return False
         finally:
@@ -706,7 +708,7 @@ class AgentManager:
             from llampaca import skills
             system_prompt = None
             if self.registry is not None:
-                system_prompt = DEFAULT_SYSTEM_PROMPT + "\n\n" + wiki.render_index()
+                system_prompt = DEFAULT_SYSTEM_PROMPT
                 skills_idx = skills.render_skills_index()
                 if skills_idx:
                     system_prompt += "\n\n" + skills_idx
@@ -737,7 +739,7 @@ class AgentManager:
 
             response_content = ""
             reasoning_content = ""
-            print(f"\n[Agent Session] Processing message for conversation {conv_id}...", flush=True)
+            logger.info(f"\n[Agent Session] Processing message for conversation {conv_id}...")
 
             import time as _time
             turn_started = _time.monotonic()
@@ -767,7 +769,7 @@ class AgentManager:
                     )
 
             turn_seconds = _time.monotonic() - turn_started
-            print("\n[Agent Session] Completed.", flush=True)
+            logger.info("\n[Agent Session] Completed.")
             if not response_content and reasoning_content:
                 # Clean any raw <tool_call> tags that may remain from
                 # iterations where the model tried to call unregistered tools
@@ -832,7 +834,7 @@ class AgentManager:
                             await update_conversation_title(conv_id, new_title)
                             result_queue.put(("event", "title_updated", {"title": new_title}))
                     except Exception as e:
-                        print(f"Error auto-titling: {e}")
+                        logger.error(f"Error auto-titling: {e}")
             else:
                 result_queue.put(("done", {}))
 
@@ -843,7 +845,7 @@ class AgentManager:
             # still closes the SSE queue. Partial output is intentionally not
             # persisted: a cancelled turn leaves the user message but no saved
             # answer, which is the expected "aborted" outcome.
-            print("[Agent Session] Cancelled by user.", flush=True)
+            logger.info("[Agent Session] Cancelled by user.")
             result_queue.put(("event", "cancelled", {}))
             raise
         except Exception as e:

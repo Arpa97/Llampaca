@@ -101,3 +101,15 @@ def clean_tool_call_text(text: Optional[str]) -> Optional[str]:
     cleaned = re.sub(r"```(?:json)?\s*\{\s*\"name\"\s*:.*?\s*\}\s*```", "", cleaned, flags=re.S)
     cleaned = cleaned.strip()
     return cleaned if cleaned else None
+
+async def compress_tool_result(result: str, client: Any) -> str:
+    if len(result) <= 1000:
+        return result
+    messages = [
+        {"role": "system", "content": "Summarize the following tool output into 3-5 bullet points. Keep file paths, numbers, and errors verbatim."},
+        {"role": "user", "content": result[:4000]},
+    ]
+    summary = ""
+    async for chunk in client.chat_stream(messages, max_tokens=200):
+        summary += chunk
+    return f"[Compressed tool output]\n{summary}\n\n[Full output was {len(result)} chars]"

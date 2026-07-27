@@ -13,6 +13,8 @@ from llampaca.config import (
     EMBEDDING_CONTEXT_SIZE,
 )
 from llampaca.engine import state
+import logging
+logger = logging.getLogger(__name__)
 
 def is_port_in_use(port: int) -> bool:
     """Check if a port is already open on localhost."""
@@ -84,7 +86,7 @@ def cleanup_orphans():
             continue
 
         if is_pid_running(pid):
-            print(f"Found orphaned llama-server process (PID {pid}), killing it...")
+            logger.info(f"Found orphaned llama-server process (PID {pid}), killing it...")
             kill_pid(pid)
 
         # Remove the stale PID file regardless
@@ -170,7 +172,7 @@ class LlamaServer:
                         if mmproj_full.exists():
                             self.mmproj_path = mmproj_full
             except Exception as e:
-                print(f"Failed to read model metadata from {metadata_path}: {e}")
+                logger.error(f"Failed to read model metadata from {metadata_path}: {e}")
         self.log_file_path = LOGS_DIR / f"{prefix}-{self.port}.log"
         self.pid_file_path = LOGS_DIR / f"{prefix}-{self.port}.pid"
         from llampaca.engine import db
@@ -192,6 +194,24 @@ class LlamaServer:
         cmd = [
             str(self.binary_path),
             "-m", str(self.model_path),
+        ]
+        
+        config = load_config()
+        draft_model = config.get("draft_model", "")
+        if draft_model and not self.embedding:
+            from llampaca.config import MODELS_DIR
+            draft_path = MODELS_DIR / draft_model
+            if not draft_path.exists():
+                draft_path = Path(draft_model)
+            if draft_path.exists():
+                cmd.extend(["-md", str(draft_path)])
+                draft_ngl = config.get("draft_model_gpu_layers", -1)
+                if draft_ngl == -1:
+                    draft_ngl = 99
+                if draft_ngl > 0:
+                    cmd.extend(["-ngld", str(draft_ngl)])
+
+        cmd.extend([
             "--port", str(self.port),
             "-c", str(self.context_size),
             "-t", str(self.n_threads),
@@ -240,8 +260,8 @@ class LlamaServer:
                 # Quantize Key-Value cache to 8-bit (q8_0) to halve its
                 # VRAM/RAM footprint, preventing memory paging/swapping and
                 # keeping generation speeds fast as the context fills.
-                "-ctk", "q8_0",
-                "-ctv", "q8_0",
+                "-ctk", load_config().get("kv_cache_quant_k", "q8_0"),
+                "-ctv", load_config().get("kv_cache_quant_v", "q8_0"),
             ])
             if self.no_think:
                 # Render the chat template with thinking disabled (e.g.
@@ -279,12 +299,12 @@ class LlamaServer:
         Returns True if the server started successfully and is healthy, False otherwise.
         """
         if not self.is_binary_available():
-            print(f"Error: llama-server binary not found at {self.binary_path}.")
-            print("Please run 'llampaca init' to download it first.")
+            logger.error(f"Error: llama-server binary not found at {self.binary_path}.")
+            logger.info("Please run 'llampaca init' to download it first.")
             return False
 
         if not self.model_path.exists():
-            print(f"Error: Model file not found at {self.model_path}.")
+            logger.error(f"Error: Model file not found at {self.model_path}.")
             return False
 
         # Kill any orphaned llama-server processes from previous sessions.
@@ -303,11 +323,11 @@ class LlamaServer:
             attempts += 1
             
         if attempts >= max_attempts:
-            print(f"Error: Could not find an available port in the range {original_port} to {original_port + max_attempts - 1}.")
+            logger.error(f"Error: Could not find an available port in the range {original_port} to {original_port + max_attempts - 1}.")
             return False
             
         if self.port != original_port:
-            print(f"Port {original_port} is already in use. Automatically switched to port {self.port}.")
+            logger.info(f"Port {original_port} is already in use. Automatically switched to port {self.port}.")
             # Update log and PID file paths with the resolved port
             self.log_file_path = LOGS_DIR / f"{self._file_prefix}-{self.port}.log"
             self.pid_file_path = LOGS_DIR / f"{self._file_prefix}-{self.port}.pid"
@@ -315,13 +335,13 @@ class LlamaServer:
         # Build the role-specific command line (chat vs embedding)
         cmd = self._build_command()
 
-        print(f"Starting llama-server on port {self.port}...")
-        print(f"Command: {' '.join(cmd)}")
-        print(f"Logging outputs to: {self.log_file_path}")
+        logger.info(f"Starting llama-server on port {self.port}...")
+        logger.info(f"Command: {' '.join(cmd)}")
+        logger.info(f"Logging outputs to: {self.log_file_path}")
         
         await self.db.init_db()
-        print(f"Database path: {self.db.db_path}")
-        print(f"Database OK!")
+        logger.info(f"Database path: {self.db.db_path}")
+        logger.info(f"Database OK!")
 
         # Ensure logs directory exists
         self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -348,12 +368,12 @@ class LlamaServer:
         start_time = time.time()
         health_url = f"http://127.0.0.1:{self.port}/health"
         
-        print("Waiting for server to initialize (this can take a few seconds)...")
+        logger.info("Waiting for server to initialize (this can take a few seconds)...")
         while time.time() - start_time < timeout_seconds:
             # Check if subprocess died early
             if self.process.poll() is not None:
-                print(f"Error: llama-server process terminated immediately with exit code {self.process.returncode}.")
-                print(f"Check the log file at {self.log_file_path} for errors.")
+                logger.error(f"Error: llama-server process terminated immediately with exit code {self.process.returncode}.")
+                logger.info(f"Check the log file at {self.log_file_path} for errors.")
                 log_file.close()
                 return False
                 
@@ -363,7 +383,7 @@ class LlamaServer:
                     data = response.json()
                     # llama-server health check returns {"status": "ok"} or similar
                     if data.get("status") in ["ok", "healthy"] or "status" in data:
-                        print(f"llama-server is up and running on port {self.port}!")
+                        logger.info(f"llama-server is up and running on port {self.port}!")
                         log_file.close()
                         # Write PID to file so future sessions can clean up if we crash
                         try:
@@ -377,8 +397,8 @@ class LlamaServer:
                 
             time.sleep(0.5)
 
-        print(f"Error: llama-server failed to initialize within {timeout_seconds} seconds.")
-        print(f"Check the log file at {self.log_file_path} for details.")
+        logger.error(f"Error: llama-server failed to initialize within {timeout_seconds} seconds.")
+        logger.info(f"Check the log file at {self.log_file_path} for details.")
         self.stop()
         log_file.close()
         return False
@@ -388,7 +408,7 @@ class LlamaServer:
         if not self.process:
             return
 
-        print("Shutting down llama-server...")
+        logger.info("Shutting down llama-server...")
         try:
             # Try soft termination
             if sys.platform == "win32":
@@ -403,13 +423,13 @@ class LlamaServer:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 # Force kill if still running
-                print("Force killing process...")
+                logger.info("Force killing process...")
                 self.process.kill()
                 self.process.wait()
         except ProcessLookupError:
             pass
         except Exception as e:
-            print(f"Error terminating server: {e}")
+            logger.error(f"Error terminating server: {e}")
         finally:
             self.process = None
             # Remove PID file on clean shutdown
@@ -455,13 +475,13 @@ async def _restart_active_server_fallback(model_name: str = None, port: int = No
                 model_path = MODELS_DIR / preset_file
                 
     if not model_path.exists():
-        print(f"[Server Restart] Error: Model '{model_name}' could not be resolved.")
+        logger.error(f"[Server Restart] Error: Model '{model_name}' could not be resolved.")
         return False
 
     # 2. Stop current server if running
     active_server = state.get_chat_server()
     if active_server:
-        print(f"[Server Restart] Stopping active server on port {active_server.port}...")
+        logger.info(f"[Server Restart] Stopping active server on port {active_server.port}...")
         active_server.stop()
         # Give a small pause to release port
         time.sleep(0.5)
@@ -506,7 +526,7 @@ async def _restart_active_server_fallback(model_name: str = None, port: int = No
                     agent_manager.mcp_manager = McpClientManager(mcp_servers_config)
                     await agent_manager.mcp_manager.start(agent_manager.registry)
         except Exception as e:
-            print(f"[Server Restart] Error updating agent_manager: {e}")
+            logger.error(f"[Server Restart] Error updating agent_manager: {e}")
             traceback.print_exc()
 
     return success

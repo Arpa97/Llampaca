@@ -60,3 +60,60 @@ def build_system_prompt_content(
         content += "\n\n" + tool_instructions(registry)
     return content
 
+
+def build_system_prompt(
+    base_prompt: str,
+    wiki_index: str,
+    skills_index: str,
+    tool_definitions: list,
+    summary: str = "",
+    context_size: int = 8192,
+    chars_per_token: int = 4,
+) -> str:
+    """
+    Assemble the system prompt, enforcing a budget so it never exceeds
+    40% of the context window.
+    """
+    max_chars = int(context_size * chars_per_token * 0.40)
+
+    parts = [base_prompt]
+    if summary:
+        parts.append(f"Conversation summary: {summary}")
+    if wiki_index:
+        parts.append(wiki_index)
+    if skills_index:
+        parts.append(skills_index)
+
+    full = "\n\n".join(parts)
+
+    if len(full) > max_chars:
+        # Truncate wiki first (it's the largest variable)
+        wiki_lines = wiki_index.splitlines()
+        while len(full) > max_chars and len(wiki_lines) > 5:
+            wiki_lines = wiki_lines[:-1]
+            parts = [base_prompt]
+            if summary:
+                parts.append(f"Conversation summary: {summary}")
+            parts.append("\n".join(wiki_lines) + "\n... (wiki truncated)")
+            if skills_index:
+                parts.append(skills_index)
+            full = "\n\n".join(parts)
+            
+    # Append tools if needed
+    if tool_definitions:
+        parts.append(tool_instructions_from_defs(tool_definitions))
+        full = "\n\n".join(parts)
+
+    return full
+
+def tool_instructions_from_defs(definitions: list) -> str:
+    return (
+        "You have access to the following tools, described as JSON schemas:\n"
+        + json.dumps(definitions)
+        + "\n\nTo use a tool, reply with ONLY a single JSON object in this "
+        'exact format and nothing else:\n{"name": "<tool_name>", '
+        '"arguments": {<parameters>}}\n'
+        "You will receive the tool result in the next message; then answer "
+        "the user (or call another tool). Never invent or assume tool "
+        "results: if you need one, emit the JSON and wait."
+    )

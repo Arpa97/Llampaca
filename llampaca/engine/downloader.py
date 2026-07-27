@@ -158,9 +158,9 @@ def download_llama_binaries() -> bool:
     Returns True if successful, False otherwise.
     """
     os_name, arch, gpu_type = get_platform_details()
-    print(f"Detecting system: OS={os_name}, Architecture={arch}, GPU={gpu_type}")
+    logger.info(f"Detecting system: OS={os_name}, Architecture={arch}, GPU={gpu_type}")
     
-    print("Fetching latest llama.cpp release metadata from GitHub...")
+    logger.info("Fetching latest llama.cpp release metadata from GitHub...")
     try:
         # Use headers to avoid rate limits where possible
         headers = {"Accept": "application/vnd.github+json"}
@@ -168,21 +168,21 @@ def download_llama_binaries() -> bool:
         r.raise_for_status()
         release_data = r.json()
     except Exception as e:
-        print(f"Error fetching release metadata from GitHub: {e}")
+        logger.error(f"Error fetching release metadata from GitHub: {e}")
         return False
         
     assets = release_data.get("assets", [])
     asset = find_matching_asset(assets, os_name, arch, gpu_type)
     
     if not asset:
-        print("Could not find a precompiled binary asset matching your platform on GitHub.")
-        print("Please check your internet connection or install llama.cpp manually.")
+        logger.error("Could not find a precompiled binary asset matching your platform on GitHub.")
+        logger.info("Please check your internet connection or install llama.cpp manually.")
         return False
         
     download_url = asset["browser_download_url"]
     asset_name = asset["name"]
-    print(f"Found matching asset: {asset_name}")
-    print(f"Downloading from: {download_url}")
+    logger.info(f"Found matching asset: {asset_name}")
+    logger.info(f"Downloading from: {download_url}")
     
     # Create temp directory
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -190,10 +190,10 @@ def download_llama_binaries() -> bool:
         try:
             download_file(download_url, temp_zip)
         except Exception as e:
-            print(f"Failed to download asset: {e}")
+            logger.error(f"Failed to download asset: {e}")
             return False
             
-        print("Extracting binaries...")
+        logger.info("Extracting binaries...")
         extract_dir = Path(tmpdir) / "extracted"
         extract_dir.mkdir()
         
@@ -206,7 +206,7 @@ def download_llama_binaries() -> bool:
                 with zipfile.ZipFile(temp_zip, "r") as zip_ref:
                     zip_ref.extractall(extract_dir)
         except Exception as e:
-            print(f"Failed to extract archive file: {e}")
+            logger.error(f"Failed to extract archive file: {e}")
             return False
             
         # Search recursively for the directory containing llama-server
@@ -221,7 +221,7 @@ def download_llama_binaries() -> bool:
                 break
                 
         if not server_dir:
-            print("Could not find 'llama-server' executable in the downloaded archive.")
+            logger.error("Could not find 'llama-server' executable in the downloaded archive.")
             return False
             
         # Ensure bin dir exists
@@ -246,9 +246,9 @@ def download_llama_binaries() -> bool:
                     if not is_lib and not is_license:
                         os.chmod(dest_path, 0o755)
                 
-                print(f"Installed {item.name} to {dest_path}")
+                logger.info(f"Installed {item.name} to {dest_path}")
             
-    print("llama.cpp binaries and libraries installed successfully!")
+    logger.info("llama.cpp binaries and libraries installed successfully!")
     return True
 
 
@@ -264,7 +264,7 @@ def download_sd_binary():
     if target_path.exists() and os.access(target_path, os.X_OK if sys.platform != "win32" else os.F_OK):
         return True
 
-    print(f"Checking for stable-diffusion.cpp binaries for {sys.platform}...")
+    logger.info(f"Checking for stable-diffusion.cpp binaries for {sys.platform}...")
     headers = {"User-Agent": "Llampaca-App"}
 
     try:
@@ -273,7 +273,7 @@ def download_sd_binary():
         release_data = res.json()
         assets = release_data.get("assets", [])
     except Exception as e:
-        print(f"Failed to fetch GitHub release metadata for stable-diffusion.cpp: {e}")
+        logger.error(f"Failed to fetch GitHub release metadata for stable-diffusion.cpp: {e}")
         return False
 
     os_name, arch, gpu_type = get_platform_details()
@@ -287,13 +287,13 @@ def download_sd_binary():
                 break
 
     if not target_asset:
-        print("Could not find suitable stable-diffusion.cpp binary asset for this platform.")
+        logger.error("Could not find suitable stable-diffusion.cpp binary asset for this platform.")
         return False
 
     download_url = target_asset["browser_download_url"]
     asset_name = target_asset["name"]
 
-    print(f"Downloading stable-diffusion.cpp binary from {download_url}...")
+    logger.info(f"Downloading stable-diffusion.cpp binary from {download_url}...")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir_path = Path(temp_dir)
@@ -314,7 +314,7 @@ def download_sd_binary():
                         size = f.write(chunk)
                         bar.update(size)
         except Exception as e:
-            print(f"Failed to download stable-diffusion.cpp archive: {e}")
+            logger.error(f"Failed to download stable-diffusion.cpp archive: {e}")
             return False
 
         extract_dir = temp_dir_path / "extracted"
@@ -324,7 +324,7 @@ def download_sd_binary():
             with zipfile.ZipFile(temp_zip, "r") as zip_ref:
                 zip_ref.extractall(extract_dir)
         except Exception as e:
-            print(f"Failed to extract stable-diffusion.cpp zip: {e}")
+            logger.error(f"Failed to extract stable-diffusion.cpp zip: {e}")
             return False
 
         sd_executable = None
@@ -354,14 +354,16 @@ def download_sd_binary():
                 if sys.platform != "win32":
                     os.chmod(target_path, 0o755)
 
-            print(f"Installed {target_name} binary to {target_path}")
+            logger.info(f"Installed {target_name} binary to {target_path}")
             return True
         else:
-            print("Executable 'sd' not found in downloaded archive.")
+            logger.error("Executable 'sd' not found in downloaded archive.")
             return False
 
 
 import threading
+import logging
+logger = logging.getLogger(__name__)
 
 downloads_lock = threading.Lock()
 active_downloads = {}  # key: filename, value: progress info dict
@@ -392,7 +394,7 @@ def _download_hf_model_thread(repo_id: str, filename: str):
                 "status": "downloading"
             }
             
-        print(f"[Downloader] Starting background download of {filename} from {repo_id}...")
+        logger.info(f"[Downloader] Starting background download of {filename} from {repo_id}...")
         response = requests.get(url, stream=True, allow_redirects=True)
         response.raise_for_status()
         
@@ -422,10 +424,10 @@ def _download_hf_model_thread(repo_id: str, filename: str):
                 active_downloads[filename]["status"] = "completed"
                 active_downloads[filename]["progress"] = 100
                 
-        print(f"[Downloader] Background download of {filename} completed successfully.")
+        logger.info(f"[Downloader] Background download of {filename} completed successfully.")
         
     except Exception as e:
-        print(f"[Downloader] Error in background download of {filename}: {e}")
+        logger.error(f"[Downloader] Error in background download of {filename}: {e}")
         # Clean up partial files on failure if exist
         try:
             if temp_path.exists():
@@ -447,7 +449,7 @@ def download_hf_model(repo_id: str, filename: str) -> Path:
     Returns the path to the downloaded file.
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading model {filename} from HF repository {repo_id}...")
+    logger.info(f"Downloading model {filename} from HF repository {repo_id}...")
     
     # hf_hub_download handles progress bar and caching.
     # We download directly to the MODELS_DIR folder.
@@ -460,5 +462,5 @@ def download_hf_model(repo_id: str, filename: str) -> Path:
     
     # hf_hub_download returns a string path, convert it to Path
     downloaded_path = Path(local_path)
-    print(f"Model downloaded and saved to: {downloaded_path}")
+    logger.info(f"Model downloaded and saved to: {downloaded_path}")
     return downloaded_path

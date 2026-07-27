@@ -30,6 +30,8 @@ import re
 from llampaca.gui.agent_manager import agent_manager, run_async
 from llampaca.gui.restart_bridge import restart_via_agent_manager
 from llampaca.config import MODELS_DIR, MODEL_PRESETS, save_config, get_app_dir
+import logging
+logger = logging.getLogger(__name__)
 class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -153,7 +155,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             cancelled = agent_manager.cancel_current()
             self._send_json({"cancelled": cancelled})
         except Exception as e:
-            print("!!! [API POST CANCEL ERROR]", flush=True)
+            logger.error("!!! [API POST CANCEL ERROR]")
             traceback.print_exc()
             self._send_json({"error": str(e)}, status=500)
 
@@ -181,20 +183,20 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         except Exception as e:
-            print("!!! [API POST ERROR] Exception in /api/confirm:", flush=True)
+            logger.error("!!! [API POST ERROR] Exception in /api/confirm:")
             traceback.print_exc()
             self.send_error(500, str(e))
 
     def handle_get_conversations(self):
-        print(f"\n>>> [API GET] {self.path}", flush=True)
+        logger.info(f"\n>>> [API GET] {self.path}")
         try:
             parts = self.path.strip('/').split('/')
             if len(parts) == 3:  # GET /api/conversations/<id>
                 conv_id = parts[2]
-                print(f"--- [API GET] Fetching details for conversation UUID: {conv_id}", flush=True)
+                logger.info(f"--- [API GET] Fetching details for conversation UUID: {conv_id}")
                 conv = run_async(get_conversation(conv_id))
                 if conv:
-                    print(f"<<< [API GET] Found details with {len(conv.get('messages', []))} messages.", flush=True)
+                    logger.info(f"<<< [API GET] Found details with {len(conv.get('messages', []))} messages.")
                     body = json.dumps(conv).encode('utf-8')
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
@@ -202,12 +204,12 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(body)
                 else:
-                    print(f"<<< [API GET] Conversation NOT FOUND for UUID: {conv_id}", flush=True)
+                    logger.info(f"<<< [API GET] Conversation NOT FOUND for UUID: {conv_id}")
                     self.send_error(404, "Conversation not found")
             else:  # GET /api/conversations
-                print("--- [API GET] Listing all conversations...", flush=True)
+                logger.info("--- [API GET] Listing all conversations...")
                 convs = run_async(list_conversations())
-                print(f"<<< [API GET] Found {len(convs)} conversations.", flush=True)
+                logger.info(f"<<< [API GET] Found {len(convs)} conversations.")
                 body = json.dumps(convs).encode('utf-8')
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -215,12 +217,12 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
         except Exception as e:
-            print("!!! [API GET ERROR] Exception occurred during fetch:", flush=True)
+            logger.error("!!! [API GET ERROR] Exception occurred during fetch:")
             traceback.print_exc()
             self.send_error(500, str(e))
 
     def handle_post_conversations(self):
-        print(f"\n>>> [API POST] {self.path}", flush=True)
+        logger.info(f"\n>>> [API POST] {self.path}")
         try:
             parts = self.path.strip('/').split('/')
             if len(parts) == 4 and parts[3] == 'messages':  # POST /api/conversations/<id>/messages
@@ -239,7 +241,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             if content_length > 0:
                 payload = json.loads(self.rfile.read(content_length).decode('utf-8'))
 
-            print(f"--- [API POST] Creating conversation with payload: {payload}", flush=True)
+            logger.info(f"--- [API POST] Creating conversation with payload: {payload}")
             config = load_config()
             default_model = config.get("default_model", "qwen3.5-4b-instruct")
 
@@ -251,7 +253,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
             # Retrieve created conversation
             conv = run_async(get_conversation(conv_id))
-            print(f"<<< [API POST] Conversation created with UUID: {conv_id}", flush=True)
+            logger.info(f"<<< [API POST] Conversation created with UUID: {conv_id}")
 
             body = json.dumps(conv).encode('utf-8')
             self.send_response(200)
@@ -260,12 +262,12 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         except Exception as e:
-            print("!!! [API POST ERROR] Exception occurred during creation:", flush=True)
+            logger.error("!!! [API POST ERROR] Exception occurred during creation:")
             traceback.print_exc()
             self.send_error(500, str(e))
 
     def handle_post_message(self, conv_id):
-        print(f"\n>>> [API POST MESSAGE] Conversation ID: {conv_id}", flush=True)
+        logger.info(f"\n>>> [API POST MESSAGE] Conversation ID: {conv_id}")
         try:
             content_length = int(self.headers.get('Content-Length', 0))
             payload = {}
@@ -277,9 +279,9 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             
             is_multimodal = isinstance(content, list)
             if is_multimodal:
-                print(f"--- [API POST MESSAGE] Content payload: Multimodal array ({len(content)} items)", flush=True)
+                logger.info(f"--- [API POST MESSAGE] Content payload: Multimodal array ({len(content)} items)")
             else:
-                print(f"--- [API POST MESSAGE] Content payload: '{content[:100]}...'", flush=True)
+                logger.info(f"--- [API POST MESSAGE] Content payload: '{content[:100]}...'")
 
             # /remember <fact>: the GUI equivalent of the CLI chat command.
             if not is_multimodal and content.strip().lower().startswith("/remember"):
@@ -315,17 +317,17 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 names = ", ".join(n for n, _ in attachments)
                 if index_notes:
                     names = f"{names + ', ' if names else ''}{len(index_notes)} indexed doc(s)"
-                print(f"--- [API POST MESSAGE] Merged attachments: {names}", flush=True)
+                logger.info(f"--- [API POST MESSAGE] Merged attachments: {names}")
 
             # 1. Add user message to DB
             content_for_db = json.dumps(content) if is_multimodal else content
             user_msg_id = run_async(add_message(conv_id, role, content_for_db))
-            print(f"--- [API POST MESSAGE] Saved user message with ID: {user_msg_id}", flush=True)
+            logger.info(f"--- [API POST MESSAGE] Saved user message with ID: {user_msg_id}")
 
             # Fetch conversation to get full history
             conv_data = run_async(get_conversation(conv_id))
             if not conv_data:
-                print("<<< [API POST MESSAGE] Conversation NOT FOUND", flush=True)
+                logger.info("<<< [API POST MESSAGE] Conversation NOT FOUND")
                 self.send_error(404, "Conversation not found")
                 return
 
@@ -348,14 +350,14 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     f"Il server dei modelli (llama-server) non è attivo sulla porta {server_port}. "
                     "Avvialo nel tuo terminale con 'llampaca run' per parlare con l'agente."
                 )
-                print(f"⚠️ [API POST MESSAGE] llama-server NOT running on port {server_port}! Sending warning to client...", flush=True)
+                logger.info(f"⚠️ [API POST MESSAGE] llama-server NOT running on port {server_port}! Sending warning to client...")
                 assistant_msg_id = run_async(add_message(conv_id, "assistant", warn_msg))
                 self.emit_sse("text", warn_msg)
                 self.emit_sse("done", {"assistant_message_id": assistant_msg_id})
                 self.end_sse()
                 return
 
-            print(f"--- [API POST MESSAGE] llama-server is ACTIVE on port {server_port}. Enqueuing to AgentManager...", flush=True)
+            logger.info(f"--- [API POST MESSAGE] llama-server is ACTIVE on port {server_port}. Enqueuing to AgentManager...")
             
             q = queue.Queue()
             agent_manager.process_message(conv_id, content, user_msg_id, conv_data, config, q)
@@ -372,13 +374,13 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         self.emit_sse("reasoning", data)
                     elif kind == "tool_call":
                         self.emit_sse("tool_call", data)
-                        print(f"\n  [tool] {data['name']}({data['arguments']})", flush=True)
+                        logger.info(f"\n  [tool] {data['name']}({data['arguments']})")
                     elif kind == "tool_result":
                         self.emit_sse("tool_result", data)
                         preview = data["result"].replace("\n", " ")
                         if len(preview) > 120:
                             preview = preview[:120] + "..."
-                        print(f"  [result] {preview}", flush=True)
+                        logger.info(f"  [result] {preview}")
                     elif kind == "tool_confirm_request":
                         self.emit_sse("tool_confirm_request", data)
                     elif kind == "tool_confirm_cancel":
@@ -393,24 +395,24 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         self.emit_sse("title_updated", data)
                     elif kind == "warning":
                         self.emit_sse("warning", data)
-                        print(f"\n  [warning] {data}", flush=True)
+                        logger.warning(f"\n  [warning] {data}")
                     elif kind == "error":
                         self.emit_sse("error", data)
-                        print(f"\n  [error] {data}", flush=True)
+                        logger.error(f"\n  [error] {data}")
                     elif kind == "cancelled":
                         self.emit_sse("cancelled", data)
-                        print("\n  [cancelled] generation stopped by user", flush=True)
+                        logger.info("\n  [cancelled] generation stopped by user")
                 elif msg_type == "done":
                     self.emit_sse("done", args[0])
                 elif msg_type == "error":
                     self.emit_sse("error", args[0])
-                    print(f"\n  [error] {args[0]}", flush=True)
+                    logger.error(f"\n  [error] {args[0]}")
                 elif msg_type == "close":
                     self.end_sse()
                     break
 
         except Exception as e:
-            print("!!! [API POST MESSAGE ERROR] Exception occurred:", flush=True)
+            logger.error("!!! [API POST MESSAGE ERROR] Exception occurred:")
             traceback.print_exc()
             try:
                 self.send_error(500, str(e))
@@ -432,7 +434,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         import os
         from urllib.parse import unquote
 
-        print(f"\n>>> [API POST ATTACH] Conversation ID: {conv_id}", flush=True)
+        logger.info(f"\n>>> [API POST ATTACH] Conversation ID: {conv_id}")
         tmp_path = None
         try:
             raw_name = self.headers.get('X-Attachment-Filename', '')
@@ -474,11 +476,11 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 agent_manager.loop,
             )
             result = future.result()
-            print(f"<<< [API POST ATTACH] {result}", flush=True)
+            logger.info(f"<<< [API POST ATTACH] {result}")
             self._send_json(result)
 
         except Exception as e:
-            print("!!! [API POST ATTACH ERROR] Exception occurred:", flush=True)
+            logger.error("!!! [API POST ATTACH ERROR] Exception occurred:")
             traceback.print_exc()
             self._send_json({"error": str(e)}, status=500)
         finally:
@@ -499,13 +501,13 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_delete_conversation(self):
-        print(f"\n>>> [API DELETE] {self.path}", flush=True)
+        logger.info(f"\n>>> [API DELETE] {self.path}")
         try:
             parts = self.path.strip('/').split('/')
             if len(parts) == 3:  # DELETE /api/conversations/<id>
                 conv_id = parts[2]
                 run_async(delete_conversation(conv_id))
-                print(f"<<< [API DELETE] Deleted conversation UUID: {conv_id}", flush=True)
+                logger.info(f"<<< [API DELETE] Deleted conversation UUID: {conv_id}")
                 body = json.dumps({"success": True}).encode('utf-8')
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -513,10 +515,10 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
             else:
-                print("<<< [API DELETE] Invalid path structure", flush=True)
+                logger.info("<<< [API DELETE] Invalid path structure")
                 self.send_error(400, "Bad Request")
         except Exception as e:
-            print("!!! [API DELETE ERROR] Exception occurred:", flush=True)
+            logger.error("!!! [API DELETE ERROR] Exception occurred:")
             traceback.print_exc()
             self.send_error(500, str(e))
 
@@ -785,12 +787,12 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     if agent_manager.embedding_service is not None:
                         agent_manager.embedding_service.stop()
                         agent_manager.embedding_service = None
-                    print("[GUI Server] Embedding GPU layers changed; embedding service reset.", flush=True)
+                    logger.info("[GUI Server] Embedding GPU layers changed; embedding service reset.")
                 except Exception as e:
-                    print(f"[GUI Server] Could not reset embedding service: {e}", flush=True)
+                    logger.info(f"[GUI Server] Could not reset embedding service: {e}")
             
             if need_restart:
-                print(f"[GUI Server] Config changed. Restarting model server...", flush=True)
+                logger.info(f"[GUI Server] Config changed. Restarting model server...")
                 from llampaca.gui.restart_bridge import restart_via_agent_manager
                 success = restart_via_agent_manager(
                     agent_manager,
@@ -1126,7 +1128,7 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         fut = asyncio.run_coroutine_threadsafe(agent_manager.reload_mcp_manager(), agent_manager.loop)
                         fut.result(timeout=60.0)
                 except Exception as e:
-                    print(f"Error checking/reloading MCP config on get: {e}", flush=True)
+                    logger.error(f"Error checking/reloading MCP config on get: {e}")
 
             mcp_config = load_mcp_config()
             servers = mcp_config.get("mcp_servers", {})
@@ -1337,19 +1339,19 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         agent_manager.embedding_service.stop()
                         agent_manager.embedding_service = None
                 except Exception as e:
-                    print(f"[GUI Server] Could not reset embedding service: {e}", flush=True)
-                print(f"[GUI Server] Default embedding model changed to {model_name}.", flush=True)
+                    logger.info(f"[GUI Server] Could not reset embedding service: {e}")
+                logger.info(f"[GUI Server] Default embedding model changed to {model_name}.")
                 body = json.dumps({"status": "ok", "embedding_model": model_name}).encode('utf-8')
             elif kind == "image":
                 config["image_model"] = model_name
                 save_config(config)
-                print(f"[GUI Server] Default image model changed to {model_name}.", flush=True)
+                logger.info(f"[GUI Server] Default image model changed to {model_name}.")
                 body = json.dumps({"status": "ok", "image_model": model_name}).encode('utf-8')
             else:
                 config["default_model"] = model_name
                 save_config(config)
 
-                print(f"[GUI Server] Default model changed to {model_name}. Restarting llama-server...", flush=True)
+                logger.info(f"[GUI Server] Default model changed to {model_name}. Restarting llama-server...")
                 from llampaca.gui.restart_bridge import restart_via_agent_manager
                 success = restart_via_agent_manager(agent_manager, model_name=model_name)
                 if not success:
@@ -1411,18 +1413,18 @@ class QuietSimpleHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                             mmproj_path = MODELS_DIR / mmproj_filename
                             if mmproj_path.exists():
                                 mmproj_path.unlink()
-                                print(f"[GUI Server] Deleted associated projector: {mmproj_filename}", flush=True)
+                                logger.info(f"[GUI Server] Deleted associated projector: {mmproj_filename}")
                 except Exception as e:
-                    print(f"Failed to read/delete projector metadata during cascade delete: {e}", flush=True)
+                    logger.info(f"Failed to read/delete projector metadata during cascade delete: {e}")
                 
                 try:
                     metadata_path.unlink()
-                    print(f"[GUI Server] Deleted metadata file: {metadata_path.name}", flush=True)
+                    logger.info(f"[GUI Server] Deleted metadata file: {metadata_path.name}")
                 except Exception as e:
                     pass
                 
             model_path.unlink()
-            print(f"[GUI Server] Deleted model file: {model_filename}", flush=True)
+            logger.info(f"[GUI Server] Deleted model file: {model_filename}")
             
             body = json.dumps({"success": True}).encode('utf-8')
             self.send_response(200)
@@ -1804,7 +1806,7 @@ response = client.chat.completions.create(
     model="{active_model}",
     messages=[{{"role": "user", "content": "Ciao!"}}]
 )
-print(response.choices[0].message.content)"""
+logger.info(response.choices[0].message.content)"""
             }
 
             body = json.dumps(snippets).encode('utf-8')
@@ -2009,7 +2011,7 @@ def search_hf_models(query: str = None, page: int = 1, limit: int = 8):
         start_idx = (page - 1) * limit
         repos = list(itertools.islice(repos_iter, start_idx, start_idx + limit))
     except Exception as e:
-        print(f"HF Search error: {e}")
+        logger.info(f"HF Search error: {e}")
         return []
         
     results = []
@@ -2049,7 +2051,7 @@ def search_hf_models(query: str = None, page: int = 1, limit: int = 8):
                     "description": f"Repository con {len(main_gguf_files)} file GGUF."
                 })
         except Exception as e:
-            print(f"Error reading model info for {repo_id}: {e}")
+            logger.error(f"Error reading model info for {repo_id}: {e}")
             
     return results
 

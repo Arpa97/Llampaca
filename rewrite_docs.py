@@ -1,4 +1,12 @@
-"""
+import sys
+
+with open("llampaca/tools/documents.py", "r") as f:
+    text = f.read()
+
+# I will replace the whole file content basically. Let's just write a new one that merges the docstring.
+
+with open("llampaca/tools/documents.py", "w") as f:
+    f.write('''"""
 The search_documents agent tool (phase 2, milestone 3).
 
 This is the ONLY model-facing piece of the RAG pipeline: when an
@@ -74,8 +82,9 @@ def register_document_tools(
             if row["page"] is not None:
                 where += f", p.{row['page']}"
             where += f" | relevance {row['score']:.2f}]"
-            blocks.append(f"{where}\n{row['text']}")
-        header = f"Top {len(results)} passages for \"{query}\":"
-        return header + "\n\n" + "\n\n".join(blocks)
+            blocks.append(f"{where}\\n{row['text']}")
+        header = f"Top {len(results)} passages for \\"{query}\\":"
+        return header + "\\n\\n" + "\\n\\n".join(blocks)
 
     registry.register(search_documents, requires_confirmation=False)
+''')

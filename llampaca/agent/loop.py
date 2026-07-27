@@ -51,7 +51,7 @@ from llampaca.engine.client import LlamaClient
 from llampaca.tools.registry import ToolRegistry
 
 from llampaca.agent.context import estimate_tokens, trim_history_to_budget
-from llampaca.agent.prompts import build_base_system_prompt, build_system_prompt_content, DEFAULT_SYSTEM_PROMPT
+from llampaca.agent.prompts import build_base_system_prompt, build_system_prompt
 from llampaca.agent.executor import execute_with_confirmation, extract_tool_call, clean_tool_call_text, DECLINED_MARKER
 
 # Safety cap: maximum model→tools→model round-trips for a single user
@@ -84,6 +84,8 @@ MAX_ITERATIONS = 10
 # re-export keeps existing `from llampaca.agent.loop import CHARS_PER_TOKEN`
 # users working.
 from llampaca.config import CHARS_PER_TOKEN, DEFAULT_CONTEXT_SIZE
+import logging
+logger = logging.getLogger(__name__)
 
 # Fixed per-message overhead, in tokens: every message costs a few extra
 # tokens for its role marker and the chat template's framing around it.
@@ -224,6 +226,7 @@ class Agent:
         summarization — the caller flushes them AFTER the turn with
         summarize_pending() (see that method for the rationale).
         """
+        self.messages[0]["content"] = self._system_prompt_content()
         self.messages.append({"role": "user", "content": user_input, "id": message_id})
         last_image_result = None
 
@@ -407,14 +410,14 @@ class Agent:
 
             # --- 2b. Native mode: structured tool_calls from the server -
             tool_calls = assistant_message.get("tool_calls")
-            print(f"\n  [DEBUG native] assistant_message keys: {list(assistant_message.keys())}", flush=True)
-            print(f"  [DEBUG native] tool_calls from server: {tool_calls is not None} ({type(tool_calls).__name__})", flush=True)
-            print(f"  [DEBUG native] content (first 100): {(assistant_message.get('content') or '')[:100]!r}", flush=True)
-            print(f"  [DEBUG native] accumulated_reasoning (first 100): {accumulated_reasoning[:100]!r}", flush=True)
+            logger.debug(f"\n  [DEBUG native] assistant_message keys: {list(assistant_message.keys())}")
+            logger.debug(f"  [DEBUG native] tool_calls from server: {tool_calls is not None} ({type(tool_calls).__name__})")
+            logger.debug(f"  [DEBUG native] content (first 100): {(assistant_message.get('content') or '')[:100]!r}")
+            logger.debug(f"  [DEBUG native] accumulated_reasoning (first 100): {accumulated_reasoning[:100]!r}")
             if not tool_calls:
                 text_content = assistant_message.get("content") or ""
                 fallback = extract_tool_call(text_content, self.registry) or extract_tool_call(accumulated_reasoning, self.registry)
-                print(f"  [DEBUG native] fallback result: {fallback}", flush=True)
+                logger.debug(f"  [DEBUG native] fallback result: {fallback}")
                 if fallback:
                     name, arguments_json = fallback
                     call_id = f"call_fallback_{len(self.messages)}"
@@ -576,7 +579,18 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _system_prompt_content(self) -> str:
-        return build_system_prompt_content(self._base_system_prompt, self.tools_enabled, self.native_tools, self.registry)
+        from llampaca import wiki, skills
+        tool_defs = []
+        if self.tools_enabled and not self.native_tools and self.registry:
+            tool_defs = [d["function"] for d in self.registry.definitions()]
+        return build_system_prompt(
+            base_prompt=self._base_system_prompt,
+            wiki_index=wiki.render_index(),
+            skills_index=skills.render_index(),
+            tool_definitions=tool_defs,
+            summary=self.summary or "",
+            context_size=self.context_size
+        )
 
     def refresh_tools(self) -> None:
         """

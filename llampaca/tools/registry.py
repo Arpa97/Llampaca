@@ -228,7 +228,7 @@ class ToolRegistry:
             if inspect.iscoroutinefunction(tool.func):
                 result = await tool.func(**arguments)
             else:
-                result = await asyncio.to_thread(tool.func, **arguments)
+                result = tool.func(**arguments)
                 if inspect.isawaitable(result):
                     result = await result
         except TypeError as e:
