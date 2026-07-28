@@ -99,7 +99,8 @@ class LlamaServer:
     def __init__(self, model_path: Path, port: int = None, context_size: int = None,
                  n_threads: int = None, gpu_layers: int = None,
                  embedding: bool = False, pooling: str = "last",
-                 no_think: bool = False):
+                 no_think: bool = False,
+                 draft_model: str = None, draft_model_gpu_layers: int = None):
         """
         Args:
             embedding: Run llama-server as an *embedding* server instead of a
@@ -140,6 +141,9 @@ class LlamaServer:
             self.context_size = context_size or config.get("context_size", DEFAULT_CONTEXT_SIZE)
         self.n_threads = n_threads or config.get("n_threads", 4)
         self.gpu_layers = gpu_layers if gpu_layers is not None else config.get("gpu_layers", -1)
+        
+        self.draft_model = draft_model if draft_model is not None else config.get("draft_model", "")
+        self.draft_model_gpu_layers = draft_model_gpu_layers if draft_model_gpu_layers is not None else config.get("draft_model_gpu_layers", -1)
 
         # Determine the binary path
         custom_binary = config.get("llama_server_path", "")
@@ -197,15 +201,14 @@ class LlamaServer:
         ]
         
         config = load_config()
-        draft_model = config.get("draft_model", "")
-        if draft_model and not self.embedding:
+        if self.draft_model and not self.embedding:
             from llampaca.config import MODELS_DIR
-            draft_path = MODELS_DIR / draft_model
+            draft_path = MODELS_DIR / self.draft_model
             if not draft_path.exists():
-                draft_path = Path(draft_model)
+                draft_path = Path(self.draft_model)
             if draft_path.exists():
                 cmd.extend(["-md", str(draft_path)])
-                draft_ngl = config.get("draft_model_gpu_layers", -1)
+                draft_ngl = self.draft_model_gpu_layers
                 if draft_ngl == -1:
                     draft_ngl = 99
                 if draft_ngl > 0:

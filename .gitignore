@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 .DS_Store
 .agents
-
+ROADMAP.*
 # C extensions
 *.so
 

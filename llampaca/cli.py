@@ -179,7 +179,9 @@ def remove_model(filename):
 @click.option("--no-tools", is_flag=True, default=False, help="Disable agent tools (plain chat mode)")
 @click.option("--no-think", is_flag=True, default=False,
               help="Disable the model's hidden 'thinking' phase (reasoning models like Qwen3): faster responses, slightly lower quality on complex tasks")
-def run(model_name, port, ctx, threads, gpu, no_tools, no_think):
+@click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
+@click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
+def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu):
     """Launch llama-server and open an interactive agent session."""
     config = load_config()
     
@@ -211,7 +213,7 @@ def run(model_name, port, ctx, threads, gpu, no_tools, no_think):
         sys.exit(1)
         
     import asyncio
-    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think))
+    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu))
 
 @main.command(name="serve")
 @click.argument("model_name", required=False)
@@ -220,7 +222,9 @@ def run(model_name, port, ctx, threads, gpu, no_tools, no_think):
 @click.option("--ctx", type=int, help="Context size")
 @click.option("--threads", type=int, help="Number of CPU threads to use")
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
-def serve(model_name, port, api_port, ctx, threads, gpu):
+@click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
+@click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
+def serve(model_name, port, api_port, ctx, threads, gpu, draft_model, draft_gpu):
     """Avvia il server Llampaca completo (llama-server + API HTTP) senza interfaccia grafica."""
     config = load_config()
     
@@ -256,7 +260,7 @@ def serve(model_name, port, api_port, ctx, threads, gpu):
     
     # 2. Instantiate and start LlamaServer
     from llampaca.engine.server import LlamaServer
-    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu)
+    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu, draft_model=draft_model, draft_model_gpu_layers=draft_gpu)
     
     click.echo(f"Starting llama-server on port {port}...")
     import asyncio
@@ -331,7 +335,9 @@ def run_mcp_server():
 @click.option("--ctx", type=int, help="Context size")
 @click.option("--threads", type=int, help="Number of CPU threads to use")
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
-def run_gui(model_name, port, ctx, threads, gpu):
+@click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
+@click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
+def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu):
     """Avvia la dashboard grafica interattiva di Llampaca ed il server dei modelli."""
     import sys
     import subprocess
@@ -415,7 +421,9 @@ def run_gui(model_name, port, ctx, threads, gpu):
                 context_size=ctx,
                 n_threads=threads,
                 gpu_layers=gpu,
-                model_name=model_name
+                model_name=model_name,
+                draft_model=draft_model,
+                draft_model_gpu_layers=draft_gpu
             )
             if success:
                 click.echo(f"llama-server is up and running on port {port}!")
