@@ -71,6 +71,13 @@ MODEL_PRESETS = {
         "default": False,
         "size_gb": 1.04
     },
+    "qwen2.5-0.5b-instruct": {
+        "repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        "file": "qwen2.5-0.5b-instruct-q8_0.gguf",
+        "description": "Qwen 2.5 0.5B Instruct - Ultra lightweight, ideal as a Draft Model for Speculative Decoding",
+        "default": False,
+        "size_gb": 0.53
+    },
     "llama3.2-3b-instruct": {
         "repo": "unsloth/Llama-3.2-3B-Instruct-GGUF",
         "file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",

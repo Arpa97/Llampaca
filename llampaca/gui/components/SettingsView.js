@@ -69,6 +69,30 @@ export default {
                                 Il KV Cache memorizza i risultati intermedi dell'attenzione. Quantizzarlo riduce drasticamente la VRAM usata quando il contesto si riempie. <strong>q8_0</strong> offre un ottimo compromesso senza perdita percepibile di qualità.
                             </div>
                         </div>
+
+                        <div class="form-group" style="margin-bottom: 24px; border-top: 1px solid var(--border-color); padding-top: 20px;">
+                            <label class="form-label">Speculative Decoding (Draft Model)</label>
+                            <select class="form-input" v-model="settings.draftModel" style="width: 100%; max-width: 320px;">
+                                <option value="">Nessuno (Disattivato)</option>
+                                <option v-for="m in availableModels" :key="m.filename" :value="m.filename">
+                                    {{ m.name }}
+                                </option>
+                            </select>
+                            <div class="form-help">
+                                Usa un modello più piccolo e veloce per prevedere i token, accelerando il modello principale. <strong>IMPORTANTE:</strong> il Draft Model DEVE avere lo stesso identico tokenizer del modello principale (es. Qwen2.5-0.5B con Qwen-4B).
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-bottom: 24px;" v-if="settings.draftModel">
+                            <label class="form-label" style="display: flex; justify-content: space-between;">
+                                <span>Accelerazione Draft Model (GPU Layers)</span>
+                                <span class="mono" style="color: var(--pacific-500); font-weight: bold;">{{ settings.draftGpuLayers === -1 ? 'Auto (Massimo)' : (settings.draftGpuLayers === 0 ? 'Solo CPU' : settings.draftGpuLayers + ' layer') }}</span>
+                            </label>
+                            <input class="form-input" type="range" min="-1" max="99" step="1" v-model.number="settings.draftGpuLayers" style="width: 100%; margin: 8px 0;" />
+                            <div class="form-help">
+                                Sposta il calcolo del Draft Model sulla GPU (Metal). Consigliato lasciarlo su <strong>-1 (Auto)</strong> se c'è memoria sufficiente.
+                            </div>
+                        </div>
                         
                         <div class="form-group" style="margin-bottom: 24px; border-top: 1px solid var(--border-color); padding-top: 20px;">
                             <label class="form-label" style="display: flex; justify-content: space-between;">

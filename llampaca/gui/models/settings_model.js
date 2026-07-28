@@ -13,7 +13,9 @@ export class SettingsModel {
             // Skip the reasoning phase of models like Qwen3. Applied per
             // request, so it takes effect on the next message with no restart.
             noThink: !!data.no_think,
-            kvCacheType: data.kv_cache_quant_k || "q8_0"
+            kvCacheType: data.kv_cache_quant_k || "q8_0",
+            draftModel: data.draft_model || "",
+            draftGpuLayers: data.draft_model_gpu_layers !== undefined ? data.draft_model_gpu_layers : -1
         };
     }
 
@@ -24,7 +26,9 @@ export class SettingsModel {
             n_threads: parseInt(newSettings.threads),
             gpu_layers: parseInt(newSettings.gpuLayers),
             embedding_gpu_layers: parseInt(newSettings.embeddingGpuLayers),
-            kv_cache_type: newSettings.kvCacheType
+            kv_cache_type: newSettings.kvCacheType,
+            draft_model: newSettings.draftModel,
+            draft_model_gpu_layers: parseInt(newSettings.draftGpuLayers)
             // no_think NON viaggia da qui: lo possiede il pulsante ⚡ in chat.
             // Inviarlo da questo form lo riporterebbe al valore letto
             // all'apertura della scheda, annullando in silenzio una scelta
@@ -44,7 +48,9 @@ export class SettingsModel {
             gpuLayers: data.config.gpu_layers,
             embeddingGpuLayers: data.config.embedding_gpu_layers,
             noThink: !!data.config.no_think,
-            kvCacheType: data.config.kv_cache_quant_k || "q8_0"
+            kvCacheType: data.config.kv_cache_quant_k || "q8_0",
+            draftModel: data.config.draft_model || "",
+            draftGpuLayers: data.config.draft_model_gpu_layers !== undefined ? data.config.draft_model_gpu_layers : -1
         };
     }
 }

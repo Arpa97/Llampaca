@@ -249,6 +249,8 @@ class SettingsPayload(BaseModel):
     embedding_gpu_layers: Optional[int] = None
     no_think: Optional[bool] = None
     kv_cache_type: Optional[str] = None
+    draft_model: Optional[str] = None
+    draft_model_gpu_layers: Optional[int] = None
 
 @app.post("/api/settings")
 async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTasks):
@@ -276,6 +278,12 @@ async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTa
         requires_restart = True
     if payload.no_think is not None:
         config["no_think"] = payload.no_think
+    if payload.draft_model is not None:
+        config["draft_model"] = payload.draft_model
+        requires_restart = True
+    if payload.draft_model_gpu_layers is not None:
+        config["draft_model_gpu_layers"] = payload.draft_model_gpu_layers
+        requires_restart = True
 
     save_config(config)
 
