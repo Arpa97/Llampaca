@@ -349,6 +349,11 @@ export function useChatController() {
         rememberMode.value = !rememberMode.value;
     };
 
+    const deepSearchMode = ref(false);
+    const toggleDeepSearch = () => {
+        deepSearchMode.value = !deepSearchMode.value;
+    };
+
     // Public: send whatever is in the input box (plus any staged files) as a
     // chat turn. If the remember flag is armed and there is text, the turn is
     // routed through the existing "/remember <fact>" path (the model stores it
@@ -368,10 +373,14 @@ export function useChatController() {
         if (rememberMode.value && text.trim()) {
             rememberMode.value = false;
             await startTurn(`/remember ${text.trim()}`, `🧠 ${text.trim()}`);
+        } else if (deepSearchMode.value && text.trim()) {
+            deepSearchMode.value = false;
+            await startTurn(`/deep-search ${text.trim()}`, `🌐 ${text.trim()}`);
         } else {
-            // Flag armed but nothing to remember (only attachments): disarm it
+            // Flag armed but nothing to remember/search (only attachments): disarm it
             // and fall back to a normal turn rather than silently swallowing it.
             if (rememberMode.value) rememberMode.value = false;
+            if (deepSearchMode.value) deepSearchMode.value = false;
             await startTurn(text, text);
         }
     };
@@ -577,6 +586,8 @@ export function useChatController() {
         toggleRemember,
         directMode,
         toggleDirect,
+        deepSearchMode,
+        toggleDeepSearch,
         stopGeneration,
         startNewConversation,
         deleteConversation,

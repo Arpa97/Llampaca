@@ -141,6 +141,17 @@ export default {
                                         @click="toggleRemember">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2z"/></svg>
                                 </button>
+                                <!-- Deep Search Flag -->
+                                <button class="icon-btn" :class="{ active: deepSearchMode }"
+                                        :title="deepSearchMode ? 'Deep Search attiva: il modello cercherà nel web prima di rispondere. Clicca per disattivare.' : 'Forza il modello a fare una ricerca web approfondita per il prossimo messaggio'"
+                                        @click="toggleDeepSearch">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <circle cx="11" cy="11" r="8"></circle>
+                                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                        <line x1="11" y1="8" x2="11" y2="14"></line>
+                                        <line x1="8" y1="11" x2="14" y2="11"></line>
+                                    </svg>
+                                </button>
                                 <!-- Risposte dirette: salta il ragionamento del
                                      modello. È una scelta per turno, non una
                                      configurazione, quindi sta qui accanto al
@@ -266,6 +277,13 @@ export default {
             return text;
         };
 
+        const collapseDeepSearch = (text) => {
+            if (!text) return text;
+            const m = text.match(/^([\s\S]*?)\s*\[The user requested a Deep Search\.[\s\S]*\]\s*$/);
+            if (m) return `🌐 ${m[1].trim()}`;
+            return text;
+        };
+
         const formatImageLinks = (text) => {
             if (!text) return text;
             if (text.includes('![') && text.includes('/api/media?path=')) return text;
@@ -294,7 +312,7 @@ export default {
                     return '';
                 }).join('\n\n');
             }
-            const clean = formatImageLinks(collapseRemember(collapseAttachments(text)));
+            const clean = formatImageLinks(collapseDeepSearch(collapseRemember(collapseAttachments(text))));
             // Use marked if available, fallback to plain text replacing newlines
             if (window.marked) {
                 return window.marked.parse(clean, { breaks: true });

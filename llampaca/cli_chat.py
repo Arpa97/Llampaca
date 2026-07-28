@@ -487,6 +487,28 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
                     "(you will be asked to confirm the write)...", fg="cyan",
                 ))
 
+            if user_input.strip().lower().startswith("/deep-search"):
+                query = user_input.strip()[len("/deep-search"):].strip()
+                if not query:
+                    click.echo("Usage: /deep-search <query to research on the web>")
+                    continue
+                if no_tools:
+                    click.echo(click.style(
+                        "  [deep-search error] Tools are disabled (--no-tools), "
+                        "so the model cannot search the web. Relaunch "
+                        "without --no-tools.", fg="red",
+                    ))
+                    continue
+                user_input = (
+                    f"{query}\n\n"
+                    "[The user requested a Deep Search. Before answering, you MUST use the "
+                    "web_search tool to perform a comprehensive and deep research on the query. "
+                    "Synthesize the findings into a highly detailed response.]"
+                )
+                click.echo(click.style(
+                    "  [deep-search] instructing the model to perform a deep web search...", fg="cyan",
+                ))
+
             # The user's own words, captured BEFORE any merge below: used
             # for auto-titling, so a conversation is never titled
             # "[Attached file: ..." after a first message with attachments.

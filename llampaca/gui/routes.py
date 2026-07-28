@@ -118,6 +118,16 @@ async def post_message(conv_id: str, request: Request):
                 "its still-valid content), or create a new page if none "
                 "fits. Then confirm in one short line where you stored it.]"
             )
+            
+    if not is_multimodal and content.strip().lower().startswith("/deep-search"):
+        query = content.strip()[len("/deep-search"):].strip()
+        if query:
+            content = (
+                f"{query}\n\n"
+                "[The user requested a Deep Search. Before answering, you MUST use the "
+                "web_search tool to perform a comprehensive and deep research on the query. "
+                "Synthesize the findings into a highly detailed response.]"
+            )
 
     attachments, index_notes = agent_manager.take_pending(conv_id)
     if attachments or index_notes:
