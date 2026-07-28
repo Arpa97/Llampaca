@@ -121,6 +121,8 @@
             height: 100vh;
             overflow: hidden;
             display: flex;
+            -webkit-user-select: none;
+            user-select: none;
         }
 
         #app {
@@ -1278,6 +1280,8 @@
             flex-direction: column;
             gap: 22px;
             background-color: var(--bg-subtle);
+            -webkit-user-select: text;
+            user-select: text;
         }
 
         /* Il trascritto ha una misura di lettura: senza limite, su un desktop

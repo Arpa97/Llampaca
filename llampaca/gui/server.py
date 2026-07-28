@@ -191,7 +191,8 @@ def start_gui_window(on_ready=None):
         width=1150,
         height=780,
         min_size=(950, 680),
-        hidden=True
+        hidden=True,
+        text_select=True
     )
     shutdown_window = webview.create_window(
         "Llampaca Shutdown",
