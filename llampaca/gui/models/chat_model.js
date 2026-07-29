@@ -29,14 +29,14 @@ export class ChatModel {
         return await r.json();
     }
 
-    async addMessage(convId, role, content, signal) {
+    async addMessage(convId, role, content, temperature, signal) {
         const response = await fetch(`/api/conversations/${convId}/messages`, {
             method: 'POST',
             headers: { 
                 'Content-Type': 'application/json',
                 'Accept': 'text/event-stream'
             },
-            body: JSON.stringify({ role, content }),
+            body: JSON.stringify({ role, content, temperature }),
             signal   // AbortSignal: lets the caller stop reading the stream
         });
         if (!response.ok) throw new Error(await response.text());

@@ -109,6 +109,7 @@ class Agent:
         context_size: int = DEFAULT_CONTEXT_SIZE,
         summary: Optional[str] = None,
         no_think: bool = False,
+        temperature: float = 0.7,
     ):
         """
         Args:
@@ -136,6 +137,8 @@ class Agent:
         self.max_iterations = max_iterations
         self.context_size = context_size
         self.summary = summary
+        self.no_think = no_think
+        self.temperature = temperature
         self.tools_enabled = registry is not None and len(registry.names()) > 0
 
         # Becomes True the first time a native-tools request succeeds. Once
@@ -283,7 +286,7 @@ class Agent:
             try:
                 async for kind, data in self.client.chat_stream_events(
                     messages_to_send, model=self.model, tools=tools,
-                    no_think=self.no_think
+                    no_think=self.no_think, temperature=self.temperature
                 ):
                     if kind == "text":
                         produced_text = True

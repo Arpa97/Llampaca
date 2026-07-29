@@ -173,7 +173,7 @@ async def post_message(conv_id: str, request: Request):
             return
 
         q = queue.Queue()
-        agent_manager.process_message(conv_id, content, user_msg_id, conv_data, config, q)
+        agent_manager.process_message(conv_id, content, user_msg_id, conv_data, config, q, params=payload)
         
         import asyncio
         try:
@@ -262,6 +262,9 @@ class SettingsPayload(BaseModel):
     draft_model: Optional[str] = None
     draft_model_gpu_layers: Optional[int] = None
     ssd_offload: Optional[bool] = None
+    speculative_mode: Optional[str] = None
+    temperature: Optional[float] = None
+    mcp_servers: Optional[dict] = None
 
 @app.post("/api/settings")
 async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTasks):
@@ -298,6 +301,11 @@ async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTa
     if payload.ssd_offload is not None:
         config["ssd_offload"] = payload.ssd_offload
         requires_restart = True
+    if payload.speculative_mode is not None:
+        config["speculative_mode"] = payload.speculative_mode
+        requires_restart = True
+    if payload.temperature is not None:
+        config["temperature"] = payload.temperature
 
     save_config(config)
 
@@ -309,7 +317,11 @@ async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTa
                 port=config.get("server_port", 8080),
                 context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
                 n_threads=config.get("n_threads", 4),
-                gpu_layers=config.get("gpu_layers", -1)
+                gpu_layers=config.get("gpu_layers", -1),
+                draft_model=config.get("draft_model", ""),
+                draft_model_gpu_layers=config.get("draft_model_gpu_layers", -1),
+                ssd_offload=config.get("ssd_offload", False),
+                speculative_mode=config.get("speculative_mode", "none")
             )
         background_tasks.add_task(restart_task)
         return {"status": "ok", "message": "Settings saved. Restarting server in background...", "config": config}
@@ -423,6 +435,7 @@ def get_models():
                 models_list.append({
                     "id": filename,
                     "name": filename,
+                    "filename": filename,
                     "preset_id": p_name,
                     "description": desc,
                     "size": size_str,
@@ -498,6 +511,7 @@ def get_models():
                 models_list.append({
                     "id": filename,
                     "name": filename,
+                    "filename": filename,
                     "preset_id": None,
                     "description": "Modello GGUF personalizzato caricato localmente.",
                     "size": size_str,
@@ -521,6 +535,7 @@ def get_models():
                     models_list.append({
                         "id": filename,
                         "name": filename,
+                        "filename": filename,
                         "preset_id": None,
                         "description": f"Download in corso da repository {dl['repo_id']}...",
                         "size": "In scaricamento",

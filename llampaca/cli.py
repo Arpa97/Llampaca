@@ -427,7 +427,8 @@ def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu, ssd_off
                 model_name=model_name,
                 draft_model=draft_model,
                 draft_model_gpu_layers=draft_gpu,
-                ssd_offload=ssd_offload
+                ssd_offload=ssd_offload,
+                speculative_mode=config.get("speculative_mode", "none")
             )
             if success:
                 click.echo(f"llama-server is up and running on port {port}!")

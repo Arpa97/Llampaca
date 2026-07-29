@@ -157,6 +157,9 @@ DEFAULT_CONFIG = {
     "kv_cache_quant_v": "q8_0",
     "draft_model": "",           # preset name or GGUF filename
     "draft_model_gpu_layers": -1,
+    "ssd_offload": False,
+    "speculative_mode": "none",
+    "temperature": 0.7,
     "mcp_servers": {},
     # Embedding (RAG) settings. embedding_model may be a preset name or a
     # GGUF filename in MODELS_DIR, same resolution rules as default_model.

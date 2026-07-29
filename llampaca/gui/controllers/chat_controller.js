@@ -10,6 +10,7 @@ export function useChatController() {
     const userInput = ref('');
     const messagesContainer = ref(null);
     const contextBudget = ref(null);
+    const temperature = ref(0.7);
     const pendingConfirmations = ref([]);
     const currentConfirmation = computed(() => pendingConfirmations.value.length ? pendingConfirmations.value[0] : null);
     // Files uploaded for the next message but not yet sent. Each entry:
@@ -39,6 +40,12 @@ export function useChatController() {
         } catch (err) {
             console.error("Errore caricamento conversazioni:", err);
         }
+        try {
+            const settings = await (await fetch('/api/settings')).json();
+            if (settings.temperature !== undefined) {
+                temperature.value = settings.temperature;
+            }
+        } catch (err) { }
     };
 
     // Watch activeConversationId and load full history for the selected conversation
@@ -174,7 +181,7 @@ export function useChatController() {
                 }
             }
             
-            const stream = await model.addMessage(convId, 'user', payloadContent, abortController.signal);
+            const stream = await model.addMessage(convId, 'user', payloadContent, temperature.value, abortController.signal);
             const reader = stream.getReader();
             const decoder = new TextDecoder("utf-8");
             let buffer = "";
@@ -575,6 +582,7 @@ export function useChatController() {
         userInput,
         messagesContainer,
         contextBudget,
+        temperature,
         pendingConfirmations,
         currentConfirmation,
         attachments,

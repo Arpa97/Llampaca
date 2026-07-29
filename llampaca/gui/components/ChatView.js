@@ -173,8 +173,14 @@ export default {
                                 </button>
                             </div>
 
-                            <div class="composer-hint">
-                                <kbd>Invio</kbd> invia · <kbd>Maiusc</kbd>+<kbd>Invio</kbd> va a capo
+                            <div class="composer-toolbar-bottom" style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 0 4px;">
+                                <div class="temperature-control" style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-faint);">
+                                    <span title="Temperatura di generazione (0.0 = Precisa, 1.0+ = Creativa)">🌡️ Temp: {{ temperature.toFixed(1) }}</span>
+                                    <input type="range" min="0.0" max="2.0" step="0.1" v-model.number="temperature" style="width: 100px; accent-color: var(--accent-color);">
+                                </div>
+                                <div class="composer-hint">
+                                    <kbd>Invio</kbd> invia · <kbd>Maiusc</kbd>+<kbd>Invio</kbd> va a capo
+                                </div>
                             </div>
                         </div>
                     </div>

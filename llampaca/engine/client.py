@@ -55,6 +55,7 @@ class LlamaClient:
         model: str = "local-model",
         tools: Optional[List[dict]] = None,
         no_think: bool = False,
+        temperature: float = 0.7,
     ) -> Dict[str, Any]:
         """
         Pre-compute the KV cache for a prompt prefix, discarding the answer.
@@ -85,6 +86,7 @@ class LlamaClient:
             "messages": messages,
             "max_tokens": 1,
             "stream": False,
+            "temperature": temperature,
             "extra_body": {"cache_prompt": True},
         }
         # Must mirror the real requests: the toggle changes how the template
@@ -113,6 +115,7 @@ class LlamaClient:
         model: str = "local-model",
         max_tokens: Optional[int] = None,
         no_think: bool = False,
+        temperature: float = 0.7,
     ) -> AsyncGenerator[str, None]:
         """
         Stream the chat completion text chunks from llama-server (text only,
@@ -140,6 +143,7 @@ class LlamaClient:
                 "model": model,
                 "messages": messages,
                 "stream": True,
+                "temperature": temperature,
             }
             if max_tokens is not None:
                 request_kwargs["max_tokens"] = max_tokens
@@ -160,6 +164,7 @@ class LlamaClient:
         model: str = "local-model",
         tools: Optional[List[dict]] = None,
         no_think: bool = False,
+        temperature: float = 0.7,
     ) -> AsyncGenerator[Tuple[str, Any], None]:
         """
         Stream a chat completion as structured events, with tool support.
@@ -209,6 +214,7 @@ class LlamaClient:
             "model": model,
             "messages": messages,
             "stream": True,
+            "temperature": temperature,
             # llama-server extension (passed via extra_body because it is not
             # part of the OpenAI API): reuse the KV cache of the common
             # prompt prefix between requests. The agent loop re-sends the

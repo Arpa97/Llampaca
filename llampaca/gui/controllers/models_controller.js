@@ -117,7 +117,7 @@ export function useModelsController() {
         // Wait 1.5s to give the background task time to stop the old server
         await new Promise(r => setTimeout(r, 1500));
         let attempts = 0;
-        while (attempts < 60) {
+        while (attempts < 180) {
             try {
                 const res = await fetch(`/api/server/status?_t=${Date.now()}`);
                 if (res.ok) {

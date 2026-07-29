@@ -7,6 +7,7 @@ import json
 import asyncio
 import traceback
 import queue
+from typing import Any
 from pathlib import Path
 
 # Import database methods
@@ -248,6 +249,7 @@ class AgentManager:
                     draft_model=resolved_draft_model,
                     draft_model_gpu_layers=resolved_draft_gpu,
                     ssd_offload=resolved_ssd_offload,
+                    speculative_mode=params.get("speculative_mode") if params.get("speculative_mode") is not None else config.get("speculative_mode", "none"),
                     no_think=resolved_no_think
                 )
     
@@ -257,7 +259,9 @@ class AgentManager:
                     from llampaca.engine.client import LlamaClient
                     self.client = LlamaClient(port=new_server.port)
                     
-                    # Update registry context size limit
+                    params = params or {}
+            
+                    # --- Tools/Memory context setup ---limit
                     from llampaca.tools import build_default_registry
                     self.registry = build_default_registry(max_result_chars=new_server.context_size)
                     
@@ -273,7 +277,7 @@ class AgentManager:
                     # A restart means a brand-new llama-server process, so its KV
                     # cache is empty again: without this the first message after
                     # switching model or context size would pay the full prefill.
-                    asyncio.create_task(self._warm_prompt_cache())
+                    await self._warm_prompt_cache()
     
                 return success
             finally:
@@ -459,7 +463,9 @@ class AgentManager:
             t0 = time.time()
             async with self._inference_lock:
                 timings = await self.client.prime_prompt_cache(
-                    messages, model=model_name, tools=tools, no_think=no_think
+                    messages, model=model_name, tools=tools, 
+                    no_think=config.get("no_think", False),
+                    temperature=config.get("temperature", 0.7)
                 )
             elapsed = time.time() - t0
 
@@ -677,14 +683,14 @@ class AgentManager:
             return True
         return False
 
-    def process_message(self, conv_id, content, user_msg_id, conv_data, config, result_queue):
+    def process_message(self, conv_id: str, content: Any, user_msg_id: int, conv_data: dict, config: dict, result_queue: Any, params: dict = None):
         if self.request_queue:
             asyncio.run_coroutine_threadsafe(
-                self.request_queue.put((conv_id, content, user_msg_id, conv_data, config, result_queue)),
+                self.request_queue.put((conv_id, content, user_msg_id, conv_data, config, result_queue, params)),
                 self.loop
             )
         
-    async def _process_message_coro(self, conv_id, content, user_msg_id, conv_data, config, result_queue):
+    async def _process_message_coro(self, conv_id, content, user_msg_id, conv_data, config, result_queue, params=None):
         try:
             from llampaca.agent.loop import Agent
             from llampaca.agent.prompts import DEFAULT_SYSTEM_PROMPT
@@ -734,7 +740,8 @@ class AgentManager:
                 model=conv_data.get("model_name", "local-model"),
                 context_size=config.get("context_size", DEFAULT_CONTEXT_SIZE),
                 summary=conv_data.get("summary"),
-                no_think=config.get("no_think", False)
+                no_think=params.get("no_think") if params and params.get("no_think") is not None else config.get("no_think", False),
+                temperature=params.get("temperature") if params and params.get("temperature") is not None else config.get("temperature", 0.7)
             )
             
             last_summarized_id = conv_data.get("last_summarized_message_id")
