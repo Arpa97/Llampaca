@@ -100,7 +100,8 @@ class LlamaServer:
                  n_threads: int = None, gpu_layers: int = None,
                  embedding: bool = False, pooling: str = "last",
                  no_think: bool = False,
-                 draft_model: str = None, draft_model_gpu_layers: int = None):
+                 draft_model: str = None, draft_model_gpu_layers: int = None,
+                 ssd_offload: bool = False):
         """
         Args:
             embedding: Run llama-server as an *embedding* server instead of a
@@ -126,6 +127,7 @@ class LlamaServer:
         self.embedding = embedding
         self.pooling = pooling
         self.no_think = no_think
+        self.ssd_offload = ssd_offload
         if embedding:
             # Dedicated defaults for embedding mode: its own port range (so
             # it never races the chat server's auto-increment scan) and a
@@ -282,10 +284,20 @@ class LlamaServer:
         # Configure GPU layers
         # For llama.cpp, if gpu_layers is -1 (auto), we default to offloading
         # all layers (e.g. 99) to utilize Apple Silicon Metal or CUDA if
-        # available.
-        ngl = 99 if self.gpu_layers == -1 else self.gpu_layers
+        # available. If SSD offloading is active, we force 0 layers on auto to
+        # prevent VRAM crashes on massive models, relying on CPU/mmap instead.
+        if self.gpu_layers == -1:
+            ngl = 0 if self.ssd_offload else 99
+        else:
+            ngl = self.gpu_layers
+            
         if ngl > 0:
             cmd.extend(["-ngl", str(ngl)])
+            
+        if self.ssd_offload:
+            # Explicitly request memory mapping. llama.cpp does this by default,
+            # but we pass it anyway to ensure it's on.
+            cmd.extend(["--mmap"])
 
         if self.mmproj_path:
             cmd.extend(["--mmproj", str(self.mmproj_path)])

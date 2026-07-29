@@ -15,7 +15,8 @@ export function useSettingsController() {
         // Salta la fase di ragionamento dei modelli come Qwen3.
         noThink: false,
         draftModel: "",
-        draftGpuLayers: -1
+        draftGpuLayers: -1,
+        ssdOffload: false
     });
 
     const availableModels = ref([]);

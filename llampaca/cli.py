@@ -181,7 +181,8 @@ def remove_model(filename):
               help="Disable the model's hidden 'thinking' phase (reasoning models like Qwen3): faster responses, slightly lower quality on complex tasks")
 @click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
 @click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
-def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu):
+@click.option("--ssd-offload", is_flag=True, default=False, help="Enable SSD Offloading via mmap for massive models")
+def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu, ssd_offload):
     """Launch llama-server and open an interactive agent session."""
     config = load_config()
     
@@ -213,7 +214,7 @@ def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, dr
         sys.exit(1)
         
     import asyncio
-    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu))
+    asyncio.run(async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu, ssd_offload))
 
 @main.command(name="serve")
 @click.argument("model_name", required=False)
@@ -224,7 +225,8 @@ def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, dr
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
 @click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
 @click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
-def serve(model_name, port, api_port, ctx, threads, gpu, draft_model, draft_gpu):
+@click.option("--ssd-offload", is_flag=True, default=False, help="Enable SSD Offloading via mmap for massive models")
+def serve(model_name, port, api_port, ctx, threads, gpu, draft_model, draft_gpu, ssd_offload):
     """Avvia il server Llampaca completo (llama-server + API HTTP) senza interfaccia grafica."""
     config = load_config()
     
@@ -260,7 +262,7 @@ def serve(model_name, port, api_port, ctx, threads, gpu, draft_model, draft_gpu)
     
     # 2. Instantiate and start LlamaServer
     from llampaca.engine.server import LlamaServer
-    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu, draft_model=draft_model, draft_model_gpu_layers=draft_gpu)
+    server = LlamaServer(model_path, port=port, context_size=ctx, n_threads=threads, gpu_layers=gpu, draft_model=draft_model, draft_model_gpu_layers=draft_gpu, ssd_offload=ssd_offload)
     
     click.echo(f"Starting llama-server on port {port}...")
     import asyncio
@@ -337,7 +339,8 @@ def run_mcp_server():
 @click.option("--gpu", type=int, help="Number of GPU layers to offload (-1 for auto)")
 @click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
 @click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
-def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu):
+@click.option("--ssd-offload", is_flag=True, default=False, help="Enable SSD Offloading via mmap for massive models")
+def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu, ssd_offload):
     """Avvia la dashboard grafica interattiva di Llampaca ed il server dei modelli."""
     import sys
     import subprocess
@@ -423,7 +426,8 @@ def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu):
                 gpu_layers=gpu,
                 model_name=model_name,
                 draft_model=draft_model,
-                draft_model_gpu_layers=draft_gpu
+                draft_model_gpu_layers=draft_gpu,
+                ssd_offload=ssd_offload
             )
             if success:
                 click.echo(f"llama-server is up and running on port {port}!")

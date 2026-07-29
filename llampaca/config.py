@@ -184,7 +184,10 @@ DEFAULT_CONFIG = {
     # Default False (thinking on) to preserve existing answer quality:
     # reasoning earns its cost on multi-step tool use, and wastes it on
     # everything else. The GUI exposes it as a toggle in Settings.
-    "no_think": False
+    "no_think": False,
+    # SSD Offloading: explicitly uses --mmap and forces -ngl to 0 if set to -1 (auto)
+    # to avoid blowing up VRAM. Allows massive models to run from SSD paging to system RAM.
+    "ssd_offload": False
 }
 
 

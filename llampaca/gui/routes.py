@@ -261,6 +261,7 @@ class SettingsPayload(BaseModel):
     kv_cache_type: Optional[str] = None
     draft_model: Optional[str] = None
     draft_model_gpu_layers: Optional[int] = None
+    ssd_offload: Optional[bool] = None
 
 @app.post("/api/settings")
 async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTasks):
@@ -293,6 +294,9 @@ async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTa
         requires_restart = True
     if payload.draft_model_gpu_layers is not None:
         config["draft_model_gpu_layers"] = payload.draft_model_gpu_layers
+        requires_restart = True
+    if payload.ssd_offload is not None:
+        config["ssd_offload"] = payload.ssd_offload
         requires_restart = True
 
     save_config(config)

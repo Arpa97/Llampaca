@@ -26,7 +26,7 @@ from llampaca import wiki
 from llampaca import skills
 
 from llampaca.cli_utils import format_size
-async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think=False, draft_model=None, draft_gpu=None):
+async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think=False, draft_model=None, draft_gpu=None, ssd_offload=False):
     config = load_config()
     
     # 2. Check and choose conversation session
@@ -125,7 +125,8 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
         gpu_layers=gpu,
         no_think=no_think,
         draft_model=draft_model,
-        draft_model_gpu_layers=draft_gpu
+        draft_model_gpu_layers=draft_gpu,
+        ssd_offload=ssd_offload
     )
     
     if not await server.start():

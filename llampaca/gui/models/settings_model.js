@@ -15,7 +15,8 @@ export class SettingsModel {
             noThink: !!data.no_think,
             kvCacheType: data.kv_cache_quant_k || "q8_0",
             draftModel: data.draft_model || "",
-            draftGpuLayers: data.draft_model_gpu_layers !== undefined ? data.draft_model_gpu_layers : -1
+            draftGpuLayers: data.draft_model_gpu_layers !== undefined ? data.draft_model_gpu_layers : -1,
+            ssdOffload: !!data.ssd_offload
         };
     }
 
@@ -28,7 +29,8 @@ export class SettingsModel {
             embedding_gpu_layers: parseInt(newSettings.embeddingGpuLayers),
             kv_cache_type: newSettings.kvCacheType,
             draft_model: newSettings.draftModel,
-            draft_model_gpu_layers: parseInt(newSettings.draftGpuLayers)
+            draft_model_gpu_layers: parseInt(newSettings.draftGpuLayers),
+            ssd_offload: !!newSettings.ssdOffload
             // no_think NON viaggia da qui: lo possiede il pulsante ⚡ in chat.
             // Inviarlo da questo form lo riporterebbe al valore letto
             // all'apertura della scheda, annullando in silenzio una scelta
@@ -50,7 +52,8 @@ export class SettingsModel {
             noThink: !!data.config.no_think,
             kvCacheType: data.config.kv_cache_quant_k || "q8_0",
             draftModel: data.config.draft_model || "",
-            draftGpuLayers: data.config.draft_model_gpu_layers !== undefined ? data.config.draft_model_gpu_layers : -1
+            draftGpuLayers: data.config.draft_model_gpu_layers !== undefined ? data.config.draft_model_gpu_layers : -1,
+            ssdOffload: !!data.config.ssd_offload
         };
     }
 }

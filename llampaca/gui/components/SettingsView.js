@@ -59,6 +59,19 @@ export default {
                         </div>
 
                         <div class="form-group" style="margin-bottom: 24px;">
+                            <label class="form-label" style="display: flex; justify-content: space-between;">
+                                <span>SSD Offloading (Mmap Swapping)</span>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" v-model="settings.ssdOffload">
+                                    <span class="slider"></span>
+                                </label>
+                            </label>
+                            <div class="form-help">
+                                Permette di eseguire modelli enormi mappandoli su SSD (Memory Mapping). Se hai GPU Layers su "Auto", li forzerà a 0 per impedire crash della VRAM. Riduce drasticamente l'uso della RAM fisica, ma la velocità di generazione dipenderà dalla banda del disco.
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-bottom: 24px;">
                             <label class="form-label">Quantizzazione KV Cache</label>
                             <select class="form-input" v-model="settings.kvCacheType" style="width: 100%; max-width: 320px;">
                                 <option value="f16">Alta precisione (f16) - Consuma moltissima VRAM</option>

@@ -234,12 +234,21 @@ class AgentManager:
                 resolved_threads = params.get("n_threads") or config.get("n_threads", 4)
                 resolved_gpu = params.get("gpu_layers") if params.get("gpu_layers") is not None else config.get("gpu_layers", -1)
     
+                resolved_draft_model = params.get("draft_model") if params.get("draft_model") is not None else config.get("draft_model", "")
+                resolved_draft_gpu = params.get("draft_model_gpu_layers") if params.get("draft_model_gpu_layers") is not None else config.get("draft_model_gpu_layers", -1)
+                resolved_ssd_offload = params.get("ssd_offload") if params.get("ssd_offload") is not None else config.get("ssd_offload", False)
+                resolved_no_think = params.get("no_think") if params.get("no_think") is not None else config.get("no_think", False)
+    
                 new_server = LlamaServer(
                     model_path=model_path,
                     port=resolved_port,
                     context_size=resolved_ctx,
                     n_threads=resolved_threads,
-                    gpu_layers=resolved_gpu
+                    gpu_layers=resolved_gpu,
+                    draft_model=resolved_draft_model,
+                    draft_model_gpu_layers=resolved_draft_gpu,
+                    ssd_offload=resolved_ssd_offload,
+                    no_think=resolved_no_think
                 )
     
                 success = await new_server.start()
