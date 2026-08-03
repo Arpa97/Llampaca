@@ -182,8 +182,12 @@ def remove_model(filename):
 @click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
 @click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
 @click.option("--ssd-offload", is_flag=True, default=False, help="Enable SSD Offloading via mmap for massive models")
-def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu, ssd_offload):
+@click.option("-w", "--workspace", help="Cartella di lavoro (workspace) per la sessione.")
+def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu, ssd_offload, workspace):
     """Launch llama-server and open an interactive agent session."""
+    if workspace:
+        from llampaca.tools.filesystem import set_workspace_root
+        set_workspace_root(workspace)
     config = load_config()
     
     # 1. Resolve model path
@@ -340,8 +344,12 @@ def run_mcp_server():
 @click.option("--draft-model", help="Speculative decoding: draft model file name to accelerate generation")
 @click.option("--draft-gpu", type=int, help="Number of GPU layers for draft model (-1 for auto)")
 @click.option("--ssd-offload", is_flag=True, default=False, help="Enable SSD Offloading via mmap for massive models")
-def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu, ssd_offload):
+@click.option("-w", "--workspace", help="Cartella di lavoro (workspace) predefinita per la sessione.")
+def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu, ssd_offload, workspace):
     """Avvia la dashboard grafica interattiva di Llampaca ed il server dei modelli."""
+    if workspace:
+        from llampaca.tools.filesystem import set_workspace_root
+        set_workspace_root(workspace)
     import sys
     import subprocess
     

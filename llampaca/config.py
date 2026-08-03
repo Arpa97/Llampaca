@@ -126,10 +126,23 @@ IMAGE_PRESETS = {k: v for k, v in MODEL_PRESETS.items() if v.get("kind") == "ima
 
 
 def get_user_documents_dir() -> Path:
-    """Returns default LlampacaDocs directory in user's Documents folder."""
+    """Returns default LlampacaDocs directory in user's Documents folder, creating it if needed."""
     docs_dir = Path.home() / "Documents" / "LlampacaDocs"
     docs_dir.mkdir(parents=True, exist_ok=True)
     return docs_dir
+
+
+def resolve_workspace_dir(custom_workspace: str = None) -> Path:
+    """
+    Resolves the workspace directory for a chat or session.
+    If custom_workspace is provided and valid, expands and returns it.
+    Otherwise defaults to ~/Documents/LlampacaDocs/ (creating it if needed).
+    """
+    if custom_workspace and str(custom_workspace).strip():
+        target = Path(custom_workspace).expanduser().resolve()
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+    return get_user_documents_dir()
 
 
 def resolve_user_output_path(filename: str, custom_dir: str = None, subfolder: str = "Images") -> Path:

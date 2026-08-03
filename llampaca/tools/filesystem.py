@@ -11,7 +11,10 @@ via requires_confirmation on registration — the agent loop handles the
 actual prompt, keeping these functions UI-independent).
 """
 
+import contextvars
 from pathlib import Path
+from typing import Union
+from llampaca.config import resolve_workspace_dir
 
 # Maximum number of characters returned when reading a file. Larger files
 # are truncated by the registry anyway, but we cut early here to avoid
@@ -29,9 +32,24 @@ MAX_SEARCHABLE_FILE_BYTES = 2_000_000  # skip files bigger than ~2 MB when grepp
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv",
              ".cache", ".idea", ".vscode", "dist", "build", ".eggs"}
 
-# The sandbox root: fixed at import time to the current working directory,
-# i.e. where the user started llampaca.
-WORKSPACE_ROOT = Path.cwd().resolve()
+# Context-aware workspace storage for thread-safe/task-safe per-chat workspaces
+_active_workspace_var: contextvars.ContextVar[Path] = contextvars.ContextVar(
+    "active_workspace", default=resolve_workspace_dir()
+)
+
+
+def get_workspace_root() -> Path:
+    """Returns the active workspace directory for the current turn/chat, creating it if needed."""
+    ws = _active_workspace_var.get()
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
+
+
+def set_workspace_root(path: Union[str, Path, None]) -> Path:
+    """Set the active workspace directory for the current turn/chat context."""
+    resolved = resolve_workspace_dir(str(path) if path else None)
+    _active_workspace_var.set(resolved)
+    return resolved
 
 
 def _resolve_in_workspace(path: str) -> Path:
@@ -41,15 +59,16 @@ def _resolve_in_workspace(path: str) -> Path:
     Relative paths are resolved against the workspace root. Tilde (~) and
     absolute paths pointing inside the user home directory are expanded and allowed.
     """
+    ws = get_workspace_root()
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
-        candidate = WORKSPACE_ROOT / candidate
+        candidate = ws / candidate
     resolved = candidate.resolve()
 
     home = Path.home().resolve()
-    if not (resolved.is_relative_to(WORKSPACE_ROOT) or resolved.is_relative_to(home)):
+    if not (resolved.is_relative_to(ws) or resolved.is_relative_to(home)):
         raise PermissionError(
-            f"Path '{path}' is outside the workspace ({WORKSPACE_ROOT}) and home directory ({home}). "
+            f"Path '{path}' is outside the workspace ({ws}) and home directory ({home}). "
             "Only paths inside the workspace or home directory are allowed."
         )
     return resolved
@@ -69,65 +88,38 @@ def read_file(path: str, start_line: int = 0, max_lines: int = 0) -> str:
         max_lines: How many lines to read starting at start_line. Omit or use
             0 to read to the end of the file (still capped in size).
     """
-    resolved = _resolve_in_workspace(path)
-    if not resolved.exists():
-        return f"Error: file '{path}' does not exist."
-    if resolved.is_dir():
-        return f"Error: '{path}' is a directory. Use list_directory to inspect it."
+    full_path = _resolve_in_workspace(path)
+    if not full_path.is_file():
+        raise FileNotFoundError(f"File '{path}' does not exist.")
 
-    # errors="replace" so binary junk doesn't raise, it just shows up mangled
-    content = resolved.read_text(encoding="utf-8", errors="replace")
+    # Read UTF-8, replacing non-decodable bytes so binary garbage degrades
+    # gracefully to replacement characters instead of raising UnicodeDecodeError.
+    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read(MAX_READ_CHARS + 1)
 
-    # Fast path: whole-file read (no range requested). Preserves the exact
-    # previous behaviour, so a model that ignores the new optional parameters
-    # sees no change at all.
-    if start_line <= 0 and max_lines <= 0:
-        if len(content) > MAX_READ_CHARS:
-            # Cut on a line boundary so the model can continue cleanly from
-            # the next line instead of mid-token, and tell it where to resume.
-            head = content[:MAX_READ_CHARS].rsplit("\n", 1)[0]
-            next_line = head.count("\n") + 2  # 1-indexed line after the cut
-            return (
-                head
-                + f"\n... [truncated: file has {content.count(chr(10)) + 1} lines, "
-                f"{len(content)} characters. To continue, call read_file with "
-                f"start_line={next_line}.]"
-            )
-        return content
-
-    # --- Range read ---------------------------------------------------
     lines = content.splitlines()
     total_lines = len(lines)
 
-    # Clamp start_line into [1, total_lines]. A model that overshoots the end
-    # of the file gets a clear message rather than a confusing empty result.
-    first = max(1, start_line)
-    if first > total_lines:
-        return (
-            f"Error: start_line {start_line} is past the end of '{path}', "
-            f"which has {total_lines} lines."
-        )
+    # 1-indexed start_line: 0 or 1 both start at line 1
+    first_idx = max(0, start_line - 1) if start_line > 0 else 0
+    if first_idx >= total_lines:
+        return f"[File '{path}' has {total_lines} lines; start_line={start_line} is past the end.]"
 
-    last = total_lines if max_lines <= 0 else min(total_lines, first + max_lines - 1)
-    selected = "\n".join(lines[first - 1:last])
+    if max_lines > 0:
+        last_idx = min(total_lines, first_idx + max_lines)
+    else:
+        last_idx = total_lines
 
-    # The size cap applies to ranges too: a model can ask for 100000 lines.
-    truncated_by_size = False
-    if len(selected) > MAX_READ_CHARS:
-        selected = selected[:MAX_READ_CHARS].rsplit("\n", 1)[0]
-        last = first + selected.count("\n")  # actual last line we return
-        truncated_by_size = True
+    selected = "\n".join(lines[first_idx:last_idx])
+    header = f"=== File: {path} (lines {first_idx + 1}-{last_idx} of {total_lines}) ==="
 
-    # Header states which slice this is: without it the model has no way to
-    # map the text back to line numbers (for a follow-up edit_file or a
-    # further range read).
-    header = f"[lines {first}-{last} of {total_lines} in '{path}']"
     footer = ""
-    if last < total_lines:
-        reason = "size cap reached" if truncated_by_size else "end of requested range"
-        footer = (
-            f"\n... [{reason}: {total_lines - last} more lines in the file. "
-            f"To continue, call read_file with start_line={last + 1}.]"
+    if len(content) > MAX_READ_CHARS:
+        footer += f"\n[File '{path}' is very large; content truncated at {MAX_READ_CHARS} characters.]"
+    elif last_idx < total_lines:
+        footer += (
+            f"\n[Showing lines {first_idx + 1}-{last_idx} of {total_lines}. "
+            f"To continue, call read_file with start_line={last_idx + 1}.]"
         )
     return f"{header}\n{selected}{footer}"
 
@@ -135,43 +127,23 @@ def read_file(path: str, start_line: int = 0, max_lines: int = 0) -> str:
 def is_project_workspace() -> bool:
     """Returns True if the current workspace looks like a specific project directory,
        False if it's a global run (like Home dir or an App bundle)."""
+    ws = get_workspace_root()
     home = Path.home().resolve()
-    if WORKSPACE_ROOT == home:
-        return False
-    # If running from a Mac app bundle or root
-    if ".app/Contents" in str(WORKSPACE_ROOT) or str(WORKSPACE_ROOT) == "/":
+    if ws == home or ".app/Contents" in str(ws) or str(ws) == "/":
         return False
     return True
 
+
 def write_file(path: str, content: str) -> str:
     """
-    Write text content to a file. If running globally (not in a project) and
-    no absolute path is provided, routes to ~/Documents/LlampacaDocs/<FileType>.
-    Otherwise writes to the workspace. Overwrites if it exists.
+    Write text content to a file. Writes to the active workspace directory.
+    Overwrites the file if it already exists.
 
     Args:
-        path: Path of the file to write.
+        path: Path of the file to write (relative to workspace or absolute).
         content: The full text content to write into the file.
     """
-    original_path = Path(path).expanduser()
-    
-    if not is_project_workspace() and not original_path.is_absolute():
-        ext = original_path.suffix.lower()
-        if ext in ('.txt', '.md', '.csv', '.rtf', '.json'):
-            subfolder = "Text"
-        elif ext == '.pdf':
-            subfolder = "PDFs"
-        elif ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
-            subfolder = "Images"
-        elif ext in ('.py', '.js', '.html', '.css', '.cpp', '.c', '.java', '.go', '.rs'):
-            subfolder = "Code"
-        else:
-            subfolder = "Files"
-            
-        from llampaca.config import resolve_user_output_path
-        resolved = resolve_user_output_path(str(original_path), subfolder=subfolder)
-    else:
-        resolved = _resolve_in_workspace(path)
+    resolved = _resolve_in_workspace(path)
 
     if resolved.is_dir():
         return f"Error: '{path}' is an existing directory, cannot write a file there."

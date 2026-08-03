@@ -11,9 +11,9 @@ import logging
 from llampaca.engine.db import (
     list_conversations, get_conversation, create_conversation,
     add_message, delete_conversation, update_conversation_title,
-    update_conversation_summary
+    update_conversation_summary, update_conversation_workspace
 )
-from llampaca.config import load_config, save_config, MODELS_DIR, MODEL_PRESETS, DEFAULT_CONTEXT_SIZE
+from llampaca.config import load_config, save_config, MODELS_DIR, MODEL_PRESETS, DEFAULT_CONTEXT_SIZE, resolve_workspace_dir
 from llampaca.gui.agent_manager import agent_manager, run_async, is_server_running
 from llampaca.gui.restart_bridge import restart_via_agent_manager
 
@@ -24,12 +24,12 @@ app = FastAPI(title="Llampaca GUI API")
 # --- CONVERSATIONS ---
 @app.get("/api/conversations")
 async def get_conversations():
-    convs = run_async(list_conversations())
+    convs = await list_conversations()
     return convs
 
 @app.get("/api/conversations/{conv_id}")
 async def get_conversation_by_id(conv_id: str):
-    conv = run_async(get_conversation(conv_id))
+    conv = await get_conversation(conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
@@ -37,6 +37,7 @@ async def get_conversation_by_id(conv_id: str):
 class CreateConvPayload(BaseModel):
     title: Optional[str] = None
     system_prompt: Optional[str] = None
+    workspace_dir: Optional[str] = None
 
 @app.post("/api/conversations")
 async def create_new_conversation(payload: CreateConvPayload):
@@ -44,18 +45,104 @@ async def create_new_conversation(payload: CreateConvPayload):
     default_model = config.get("default_model", "qwen3.5-4b-instruct")
     title = payload.title if payload.title else 'New Conversation'
     
-    conv_id = run_async(create_conversation(
+    conv_id = await create_conversation(
         model_name=default_model,
-        title=title
-    ))
+        title=title,
+        workspace_dir=payload.workspace_dir
+    )
     
-    conv = run_async(get_conversation(conv_id))
+    conv = await get_conversation(conv_id)
     return conv
 
 @app.delete("/api/conversations/{conv_id}")
 async def delete_conversation_route(conv_id: str):
-    run_async(delete_conversation(conv_id))
+    await delete_conversation(conv_id)
     return {"status": "ok"}
+
+class UpdateWorkspacePayload(BaseModel):
+    workspace_dir: str
+
+@app.post("/api/conversations/{conv_id}/workspace")
+async def set_conversation_workspace(conv_id: str, payload: UpdateWorkspacePayload):
+    resolved = resolve_workspace_dir(payload.workspace_dir)
+    await update_conversation_workspace(conv_id, str(resolved))
+    return {"status": "ok", "workspace_dir": str(resolved)}
+
+@app.post("/api/workspace/browse_dialog")
+def browse_workspace_dialog():
+    """Open a native OS directory picker dialog (pywebview, osascript on macOS, powershell on Windows, zenity on Linux)."""
+    import sys, subprocess
+
+    # 1. Try pywebview native window dialog if GUI window is active
+    try:
+        import webview
+        if webview.windows and len(webview.windows) > 0:
+            res = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+            if res and len(res) > 0 and res[0]:
+                return {"status": "ok", "path": str(res[0])}
+            return {"status": "cancelled", "path": None}
+    except Exception:
+        pass
+
+    # 2. macOS native Finder folder picker via osascript
+    if sys.platform == 'darwin':
+        try:
+            cmd = ["osascript", "-e", 'POSIX path of (choose folder with prompt "Seleziona la cartella di lavoro (Workspace)")']
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if proc.returncode == 0:
+                chosen = proc.stdout.strip().rstrip('/')
+                if chosen:
+                    return {"status": "ok", "path": chosen}
+            return {"status": "cancelled", "path": None}
+        except Exception as e:
+            logger.error(f"osascript folder picker error: {e}")
+
+    # 3. Windows native folder picker via PowerShell
+    if sys.platform == 'win32':
+        try:
+            ps_cmd = (
+                "[System.Reflection.Assembly]::LoadWithPartialName('System.windows.forms') | Out-Null; "
+                "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$dialog.Description = 'Seleziona la cartella di lavoro (Workspace)'; "
+                "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath }"
+            )
+            proc = subprocess.run(["powershell", "-Command", ps_cmd], capture_output=True, text=True, timeout=120)
+            if proc.returncode == 0:
+                chosen = proc.stdout.strip()
+                if chosen:
+                    return {"status": "ok", "path": chosen}
+            return {"status": "cancelled", "path": None}
+        except Exception as e:
+            logger.error(f"PowerShell folder picker error: {e}")
+
+    # 4. Linux native folder picker via zenity
+    if sys.platform.startswith("linux"):
+        try:
+            proc = subprocess.run(["zenity", "--file-selection", "--directory", "--title=Seleziona la cartella di lavoro (Workspace)"], capture_output=True, text=True, timeout=120)
+            if proc.returncode == 0:
+                chosen = proc.stdout.strip()
+                if chosen:
+                    return {"status": "ok", "path": chosen}
+            return {"status": "cancelled", "path": None}
+        except Exception:
+            pass
+
+    # 5. Tkinter fallback if available
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected_dir = filedialog.askdirectory(title="Seleziona la cartella di lavoro (Workspace)")
+        root.destroy()
+        if selected_dir:
+            return {"status": "ok", "path": selected_dir}
+        return {"status": "cancelled", "path": None}
+    except Exception as e:
+        logger.warning(f"Tkinter not available or failed: {e}")
+
+    return {"status": "cancelled", "path": None}
 
 @app.post("/api/conversations/{conv_id}/attach")
 async def attach_file(conv_id: str, request: Request):

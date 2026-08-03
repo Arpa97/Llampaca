@@ -61,6 +61,7 @@ async def get_db_connection(db_path: Path = None):
                     model_name TEXT NOT NULL,
                     summary TEXT DEFAULT NULL,
                     last_summarized_message_id INTEGER DEFAULT NULL,
+                    workspace_dir TEXT DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -100,6 +101,9 @@ async def get_db_connection(db_path: Path = None):
             if "last_summarized_message_id" not in columns:
                 await conn.execute("ALTER TABLE conversations ADD COLUMN last_summarized_message_id INTEGER DEFAULT NULL;")
                 migration_needed = True
+            if "workspace_dir" not in columns:
+                await conn.execute("ALTER TABLE conversations ADD COLUMN workspace_dir TEXT DEFAULT NULL;")
+                migration_needed = True
             if migration_needed:
                 await conn.commit()
 
@@ -107,14 +111,6 @@ async def get_db_connection(db_path: Path = None):
             # unconditionally with IF NOT EXISTS so both fresh and pre-existing
             # databases get them — table creation is idempotent and cheap, so it
             # doubles as its own migration.
-            #
-            # documents: one row per indexed attachment, owned by a conversation
-            # (ON DELETE CASCADE: deleting a chat deletes its index — the reason
-            # these tables live in history.db in the first place).
-            # embedder_name/embedding_dim record which model produced the
-            # vectors: vectors from different embedders are not comparable, so
-            # the pipeline checks these before searching and re-indexes on
-            # mismatch instead of silently ranking garbage.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,10 +123,6 @@ async def get_db_connection(db_path: Path = None):
                     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
             """)
-            # chunks: the retrieval units. "embedding" is the raw float32 BLOB
-            # written by rag.serialize_vector; "page" is the page the chunk
-            # starts on (NULL for sources without pages); "position" preserves
-            # document order for display/debugging.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS chunks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,8 +134,6 @@ async def get_db_connection(db_path: Path = None):
                     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
                 );
             """)
-            # The only query pattern is "all chunks of the documents of one
-            # conversation": index both foreign keys.
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);"
             )
@@ -151,9 +141,6 @@ async def get_db_connection(db_path: Path = None):
                 "CREATE INDEX IF NOT EXISTS idx_documents_conversation ON documents(conversation_id);"
             )
             await conn.commit()
-            # Only a fully verified schema is remembered: a failure above
-            # closes the connection and leaves the path unmarked, so the
-            # next connection retries the initialization.
             _migrated_paths.add(str(path))
         except Exception:
             await conn.close()
@@ -176,7 +163,7 @@ async def init_db(db_path: Path = None):
     async with get_db_connection(db_path) as _:
         pass
 
-async def create_conversation(model_name: str, title: str = "New Conversation", db_path: Path = None) -> str:
+async def create_conversation(model_name: str, title: str = "New Conversation", workspace_dir: str = None, db_path: Path = None) -> str:
     """
     Create a new conversation entry in the database.
     Returns the generated conversation UUID string.
@@ -185,8 +172,8 @@ async def create_conversation(model_name: str, title: str = "New Conversation", 
     
     async with get_db_connection(db_path) as conn:
         await conn.execute(
-            "INSERT INTO conversations (id, title, model_name) VALUES (?, ?, ?);",
-            (conv_id, title, model_name)
+            "INSERT INTO conversations (id, title, model_name, workspace_dir) VALUES (?, ?, ?, ?);",
+            (conv_id, title, model_name, workspace_dir)
         )
         
     return conv_id
@@ -198,13 +185,6 @@ async def add_message(conversation_id: str, role: str, content: str, db_path: Pa
     Updates the 'updated_at' timestamp of the conversation.
     If it's the first user message and the conversation still has the default title,
     it automatically updates the title using a snippet of the message content.
-
-    Args:
-        title_snippet: Optional override for the text the auto-title is cut
-            from. Used when `content` is a merged message (attachment blocks
-            or index notes + the user's question): titling from `content`
-            would name the conversation "[Attached file: ...", so the CLI
-            passes the user's own words here instead.
     """
     async with get_db_connection(db_path) as conn:
         # Insert the message
@@ -236,8 +216,6 @@ async def add_message(conversation_id: str, role: str, content: str, db_path: Pa
                 )
                 row = await cursor.fetchone()
                 if row and row["title"] == "New Conversation":
-                    # Generate a nice, clean title from the message snippet
-                    # (or from the explicit override, see title_snippet).
                     snippet = (title_snippet or content).strip().replace("\n", " ")
                     if len(snippet) > 40:
                         snippet = snippet[:37].rstrip() + "..."
@@ -257,7 +235,7 @@ async def get_conversation(conversation_id: str, db_path: Path = None) -> dict:
     async with get_db_connection(db_path) as conn:
         # Fetch conversation metadata
         cursor = await conn.execute(
-            "SELECT id, title, model_name, summary, last_summarized_message_id, created_at, updated_at FROM conversations WHERE id = ?;",
+            "SELECT id, title, model_name, summary, last_summarized_message_id, workspace_dir, created_at, updated_at FROM conversations WHERE id = ?;",
             (conversation_id,)
         )
         conv_row = await cursor.fetchone()
@@ -293,7 +271,7 @@ async def list_conversations(db_path: Path = None) -> list:
     """
     async with get_db_connection(db_path) as conn:
         cursor = await conn.execute(
-            "SELECT id, title, model_name, summary, last_summarized_message_id, created_at, updated_at FROM conversations ORDER BY updated_at DESC;"
+            "SELECT id, title, model_name, summary, last_summarized_message_id, workspace_dir, created_at, updated_at FROM conversations ORDER BY updated_at DESC;"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -317,6 +295,16 @@ async def update_conversation_title(conversation_id: str, title: str, db_path: P
         await conn.execute(
             "UPDATE conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
             (title, conversation_id)
+        )
+
+async def update_conversation_workspace(conversation_id: str, workspace_dir: str, db_path: Path = None):
+    """
+    Update the workspace_dir of a specific conversation.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.execute(
+            "UPDATE conversations SET workspace_dir = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (workspace_dir, conversation_id)
         )
 
 async def update_conversation_summary(

@@ -28,8 +28,11 @@ def build_base_system_prompt(base_prompt: str = None) -> str:
     prompt = base_prompt or DEFAULT_SYSTEM_PROMPT
     today = datetime.now().strftime("%A, %d %B %Y")
     year = datetime.now().year
+    from llampaca.tools.filesystem import get_workspace_root
+    active_ws = get_workspace_root()
     return (
         f"{prompt} "
+        f"Active Workspace Directory: {active_ws}. "
         f"Today's date is {today}. The current year is {year}. "
         f"La data di oggi è: {today}. L'anno corrente è {year}. "
         f"When searching the web, ALWAYS include the current year ({year}) in the query "

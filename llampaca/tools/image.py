@@ -52,6 +52,9 @@ def generate_image(prompt: str, output_directory: Optional[str] = None, quality:
 
     # 3. Resolve destination file path
     filename = f"llampaca_image_{int(time.time())}.png"
+    if not output_directory:
+        from llampaca.tools.filesystem import get_workspace_root
+        output_directory = str(get_workspace_root() / "Images")
     destination_path = resolve_user_output_path(filename, custom_dir=output_directory, subfolder="Images")
 
     # 4. Generate image on-demand

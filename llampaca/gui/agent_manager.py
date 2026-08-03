@@ -720,6 +720,10 @@ class AgentManager:
         
     async def _process_message_coro(self, conv_id, content, user_msg_id, conv_data, config, result_queue, params=None):
         try:
+            from llampaca.tools.filesystem import set_workspace_root
+            conv_ws = conv_data.get("workspace_dir") if isinstance(conv_data, dict) else None
+            set_workspace_root(conv_ws)
+
             from llampaca.agent.loop import Agent
             from llampaca.agent.prompts import DEFAULT_SYSTEM_PROMPT
             from llampaca import wiki

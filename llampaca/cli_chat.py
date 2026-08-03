@@ -288,8 +288,9 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
         # "prompt-based" = definitions injected in the system prompt (models
         # like Gemma whose template has no tool support)
         mode = "native" if agent.native_tools else "prompt-based"
+        from llampaca.tools.filesystem import get_workspace_root
         click.echo(f" Tools enabled ({mode}): {', '.join(registry.names())}")
-        click.echo(f" Workspace: {Path.cwd()}")
+        click.echo(f" Workspace: {get_workspace_root()}")
     else:
         click.echo(" Tools disabled (plain chat mode)")
     click.echo(" Type '/attach <file>' to attach a document (PDF, Word, text).")
@@ -308,6 +309,7 @@ async def async_run_chat(model_path, port, ctx, threads, gpu, no_tools, no_think
         estimate_tokens,
         extract_text,
     )
+    from llampaca.tools.filesystem import get_workspace_root
 
     # Attachments staged by /attach and not yet sent. Each entry is
     # (filename, extracted_text). They are merged into the *next* user

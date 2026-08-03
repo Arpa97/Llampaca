@@ -161,6 +161,14 @@ export default {
                                         @click="toggleDirect">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                                 </button>
+                                <!-- Workspace della Chat (Icona Cartella) -->
+                                <button class="icon-btn" :class="{ active: currentChatWorkspace }"
+                                        :title="currentChatWorkspace ? ('Workspace Chat: ' + currentChatWorkspace + ' (Clicca per cambiare)') : 'Imposta la cartella di lavoro (Workspace) per questa chat'"
+                                        @click="pickChatWorkspace">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                                    </svg>
+                                </button>
                                 <textarea class="chat-input-field" ref="inputField" rows="1"
                                           v-model="userInput" :disabled="isStreaming"
                                           @input="autoGrow" @keydown.enter.exact.prevent="submit"
@@ -174,9 +182,14 @@ export default {
                             </div>
 
                             <div class="composer-toolbar-bottom" style="display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 0 4px;">
-                                <div class="temperature-control" style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-faint);">
-                                    <span title="Temperatura di generazione (0.0 = Precisa, 1.0+ = Creativa)">🌡️ Temp: {{ temperature.toFixed(1) }}</span>
-                                    <input type="range" min="0.0" max="2.0" step="0.1" v-model.number="temperature" style="width: 100px; accent-color: var(--accent-color);">
+                                <div style="display: flex; align-items: center; gap: 12px;">
+                                    <div class="temperature-control" style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-faint);">
+                                        <span title="Temperatura di generazione (0.0 = Precisa, 1.0+ = Creativa)">🌡️ Temp: {{ temperature.toFixed(1) }}</span>
+                                        <input type="range" min="0.0" max="2.0" step="0.1" v-model.number="temperature" style="width: 100px; accent-color: var(--accent-color);">
+                                    </div>
+                                    <div v-if="currentChatWorkspace" class="workspace-badge" style="font-size: 11px; color: var(--accent-color); display: flex; align-items: center; gap: 4px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="'Workspace chat: ' + currentChatWorkspace">
+                                        📁 <span style="font-weight: 500; overflow: hidden; text-overflow: ellipsis;">{{ currentChatWorkspaceShort }}</span>
+                                    </div>
                                 </div>
                                 <div class="composer-hint">
                                     <kbd>Invio</kbd> invia · <kbd>Maiusc</kbd>+<kbd>Invio</kbd> va a capo

@@ -572,6 +572,49 @@ export function useChatController() {
         }
     };
 
+    // Computed property for the active chat's workspace_dir
+    const currentChatWorkspace = computed(() => {
+        const activeConv = conversations.value.find(c => c.id === activeConversationId.value);
+        return activeConv ? (activeConv.workspace_dir || '') : '';
+    });
+
+    const currentChatWorkspaceShort = computed(() => {
+        const path = currentChatWorkspace.value;
+        if (!path) return '';
+        const parts = path.split(/[\/\\]/).filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : path;
+    });
+
+    const setChatWorkspace = async (convId, workspacePath) => {
+        try {
+            const res = await (await fetch(`/api/conversations/${convId}/workspace`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ workspace_dir: workspacePath })
+            })).json();
+            if (res && res.status === 'ok') {
+                const conv = conversations.value.find(c => c.id === convId);
+                if (conv) {
+                    conv.workspace_dir = res.workspace_dir;
+                }
+            }
+        } catch (err) {
+            console.error("Errore aggiornamento workspace conversazione:", err);
+        }
+    };
+
+    const pickChatWorkspace = async () => {
+        const convId = await ensureConversation();
+        try {
+            const res = await (await fetch('/api/workspace/browse_dialog', { method: 'POST' })).json();
+            if (res && res.status === 'ok' && res.path) {
+                await setChatWorkspace(convId, res.path);
+            }
+        } catch (err) {
+            console.error("Errore selettore cartella workspace:", err);
+        }
+    };
+
     // Load list at mount
     loadConversations();
     loadDirectMode();
@@ -588,6 +631,10 @@ export function useChatController() {
         attachments,
         isDragging,
         isStreaming,
+        currentChatWorkspace,
+        currentChatWorkspaceShort,
+        pickChatWorkspace,
+        setChatWorkspace,
         getActiveMessages: activeMessages,
         sendMessage,
         rememberMode,
