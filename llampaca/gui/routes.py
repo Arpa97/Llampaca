@@ -162,6 +162,13 @@ async def post_message(conv_id: str, request: Request):
                 body += ":" + (" " * pad_needed) + "\n"
             return body + "\n"
 
+        def _format_sse_comment():
+            # Pure SSE comment (": ..."): every consumer must ignore it, and
+            # our chat_controller.js parser only reacts to "data: " lines.
+            # Padded like the events so it reliably flushes WKWebView's
+            # withheld tail (see the keepalive loop below).
+            return ":" + (" " * 509) + "\n\n"
+
         if not is_server_running(port=server_port):
             warn_msg = (
                 f"Il server dei modelli (llama-server) non è attivo sulla porta {server_port}. "
@@ -174,16 +181,33 @@ async def post_message(conv_id: str, request: Request):
 
         q = queue.Queue()
         agent_manager.process_message(conv_id, content, user_msg_id, conv_data, config, q, params=payload)
-        
+
         import asyncio
+        import time as _time
+        # WKWebView (the pywebview GUI window) withholds the tail of a
+        # streamed fetch response (~1KB) until MORE bytes arrive on the
+        # socket: measured here, the JS reader always ran ~2 events behind
+        # the server. That is fatal for tool confirmations: the
+        # tool_confirm_request event is the LAST thing written before the
+        # server goes silent waiting for the user's answer — so it sat in
+        # CFNetwork's buffer forever, the banner never rendered, and the
+        # confirmation expired (Chrome delivers immediately, which is why
+        # the bug never reproduced there). The fix: while the queue is
+        # idle, emit a padded SSE comment (ignored by the JS parser) every
+        # 0.4s to keep pushing withheld bytes out to the page.
+        last_yield = _time.monotonic()
         try:
             while True:
                 try:
                     msg = q.get_nowait()
                 except queue.Empty:
+                    if _time.monotonic() - last_yield > 0.4:
+                        last_yield = _time.monotonic()
+                        yield _format_sse_comment()
                     await asyncio.sleep(0.05)
                     continue
-                    
+
+                last_yield = _time.monotonic()
                 msg_type = msg[0]
                 if msg_type == "event":
                     kind = msg[1]
@@ -210,19 +234,36 @@ async def post_message(conv_id: str, request: Request):
     return StreamingResponse(sse_generator(), media_type="text/event-stream", headers=headers)
 
 # --- USER CONFIRMATION ---
+# The frontend (chat_controller.js resolveConfirmation) sends the confirm_id
+# it received in the "tool_confirm_request" SSE event, plus the user's choice.
+# This payload shape MUST match that JS call — the FastAPI refactor originally
+# declared a different model (message_id/action) and called a method that did
+# not exist, so every click on the banner failed with 422 and the confirmation
+# eventually expired after 300s.
 class ConfirmPayload(BaseModel):
-    message_id: str
-    action: str
+    confirm_id: str
+    allow: bool = False
 
 @app.post("/api/confirm")
 async def confirm_action(payload: ConfirmPayload):
-    agent_manager.resolve_pending(payload.message_id, "confirm", payload.action)
-    return {"status": "ok"}
+    """Resolve a pending tool confirmation (the banner's Allow/Deny buttons).
+
+    Wakes the agent coroutine parked in AgentManager.confirm_tool(). Returns
+    "expired" when the id is unknown — e.g. the 300s timeout already fired —
+    so the frontend can tell a stale click from a successful one.
+    """
+    found = agent_manager.resolve_confirmation(payload.confirm_id, payload.allow)
+    return {"status": "ok" if found else "expired"}
 
 @app.post("/api/cancel")
-async def cancel_action(payload: ConfirmPayload):
-    agent_manager.resolve_pending(payload.message_id, "cancel", payload.action)
-    return {"status": "ok"}
+async def cancel_action():
+    """Stop the in-flight generation (the Stop button). No payload: the
+    frontend (chat_model.js cancel()) POSTs with an empty body, and there is
+    at most one active turn to cancel. Also unblocks any pending
+    confirmations (cancel_current denies them), so a turn stopped while the
+    banner was up does not linger until the confirmation timeout."""
+    cancelled = agent_manager.cancel_current()
+    return {"cancelled": cancelled}
 
 # --- OPEN FILE ---
 class OpenFilePayload(BaseModel):

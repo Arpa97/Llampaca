@@ -3,6 +3,21 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-08-03]
+
+### Fixed — GUI tool-confirmation buttons and Stop button (broken since the FastAPI refactor)
+
+Clicking "Consenti ed esegui" / "Rifiuta" on the GUI's authorization banner did nothing: the tool was never executed, the banner reappeared, and after 300 seconds the confirmation expired and the model was told the user had declined. Verified end-to-end (headless GUI + llama-server + headless Chrome): the `tool_confirm_request` SSE event reached the browser and the banner rendered correctly — the break was entirely in the resolution endpoint.
+
+- **`llampaca/gui/routes.py`** — the FastAPI refactor (`51ab08b`) rewrote `/api/confirm` with a payload model (`message_id`/`action`) that does not match what the frontend sends (`confirm_id`/`allow`), so every click failed with HTTP 422; even a matching payload would have crashed with HTTP 500 because it called `agent_manager.resolve_pending()`, a method that has never existed. The endpoint now accepts `{confirm_id, allow}` and returns `{"status": "ok"|"expired"}` so the frontend can distinguish a stale click. `/api/cancel` had the same wrong payload model while the frontend POSTs an **empty body** (so the Stop button's backend cancel also failed with 422); it now takes no payload and calls `agent_manager.cancel_current()`, restoring the pre-refactor behaviour.
+- **`llampaca/gui/agent_manager.py`** — added `resolve_confirmation(confirm_id, allow)`: the thread-safe resolution logic the pre-refactor HTTP handler used to inline (write the result and set the `asyncio.Event` via `loop.call_soon_threadsafe`, since `confirm_tool()` waits on the manager's own event loop while the HTTP request runs on another thread). Reason: routes should not reach into `pending_confirmations` internals across threads.
+
+### Fixed — confirmation banner never RENDERED in the native window (WKWebView SSE buffering)
+
+The fix above repaired the buttons, but in the real pywebview window the banner still never appeared at all (it did in Chrome). Reproduced by driving the actual WKWebView window via `evaluate_js` with the SSE reader instrumented: WKWebView/CFNetwork withholds the tail (~1KB, i.e. ~2 padded events) of a streamed fetch response until MORE bytes arrive on the socket — the JS reader consistently ran two events behind the server. `tool_confirm_request` is by construction the LAST event written before the stream goes silent (the server is waiting for the user's answer), so it and the preceding `tool_call` sat in the network buffer forever: no banner, and the confirmation expired after 300s (matching the recurring `[confirm_tool] ... annullata o scaduta` entries in the logs).
+
+- **`llampaca/gui/routes.py`** — the SSE generator now emits a padded SSE *comment* (`: ...`, ignored by every SSE consumer including our own parser, which only reacts to `data: ` lines) every 0.4s while the event queue is idle. The steady byte trickle keeps flushing WKWebView's withheld tail, so the confirmation request reaches the page within ~1s of being emitted. Verified end-to-end in the real pywebview window: banner appears, "Consenti ed esegui" resolves it, and the tool executes. Side benefit: all trailing events of a burst (e.g. `context_status`, `done`) now reach the page promptly instead of lagging one event behind.
+
 ## [2026-07-23]
 
 ### Changed — GUI Visual Redesign (palette preserved, structure unchanged)

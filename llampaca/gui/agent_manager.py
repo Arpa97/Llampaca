@@ -669,6 +669,34 @@ class AgentManager:
             conversation_id=conv_id,
         )
 
+    def resolve_confirmation(self, confirm_id: str, allow: bool) -> bool:
+        """Resolve a pending tool confirmation from the HTTP thread.
+
+        Called by POST /api/confirm when the user clicks "Consenti ed esegui"
+        or "Rifiuta" in the GUI banner. The confirmation was created by
+        confirm_tool(), which is parked on an asyncio.Event inside THIS
+        manager's event loop — so the result must be written and the event
+        set from that loop (call_soon_threadsafe), never directly from the
+        HTTP thread.
+
+        Returns True if the confirmation was still pending and has been
+        resolved, False if it was unknown or already expired (the 300s
+        timeout in confirm_tool fired, or the turn was cancelled).
+        """
+        if not confirm_id or confirm_id not in self.pending_confirmations:
+            return False
+
+        def _resolve():
+            # Re-check inside the loop: the timeout in confirm_tool may have
+            # popped the entry between our check above and this callback.
+            conf = self.pending_confirmations.get(confirm_id)
+            if conf is not None:
+                conf["result"] = allow
+                conf["event"].set()
+
+        self.loop.call_soon_threadsafe(_resolve)
+        return True
+
     def cancel_current(self) -> bool:
         """Cancel the message currently being processed, if any."""
         for cid, data in list(self.pending_confirmations.items()):
