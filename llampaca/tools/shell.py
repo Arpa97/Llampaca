@@ -29,7 +29,7 @@ def run_shell_command(command: str) -> str:
     env = os.environ.copy()
     node_modules_path = str(LLAMPACA_DIR / "node_modules")
     existing_node_path = env.get("NODE_PATH", "")
-    env["NODE_PATH"] = f"{node_modules_path}:{existing_node_path}".strip(":") if existing_node_path else node_modules_path
+    env["NODE_PATH"] = f"{node_modules_path}{os.pathsep}{existing_node_path}".strip(os.pathsep) if existing_node_path else node_modules_path
     env["NODE_OPTIONS"] = "--unhandled-rejections=strict"
 
     # Enforce isolated node_modules: redirect any direct `npm install` to ~/.llampaca

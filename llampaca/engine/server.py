@@ -16,6 +16,61 @@ from llampaca.engine import state
 import logging
 logger = logging.getLogger(__name__)
 
+def check_gpu_vram_gb() -> float:
+    """
+    Check available GPU VRAM in GB.
+    On macOS (Darwin): returns infinity (Apple Silicon Metal Unified Memory, no VRAM check required).
+    On Linux / Windows: queries nvidia-smi, rocm-smi, or wmic to find max dedicated VRAM in GB.
+    Returns 0.0 if no discrete GPU or VRAM < detection threshold is found.
+    """
+    if sys.platform == "darwin":
+        return float("inf")
+
+    # 1. Try nvidia-smi (NVIDIA CUDA GPUs on Linux / Windows)
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            stderr=subprocess.DEVNULL,
+            text=True
+        )
+        totals_mib = [float(line.strip()) for line in out.strip().splitlines() if line.strip() and line.strip().replace('.', '', 1).isdigit()]
+        if totals_mib:
+            return max(totals_mib) / 1024.0
+    except Exception:
+        pass
+
+    # 2. Try rocm-smi (AMD ROCm GPUs on Linux)
+    if sys.platform.startswith("linux"):
+        try:
+            out = subprocess.check_output(
+                ["rocm-smi", "--showmeminfo", "vram"],
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            import re
+            matches = re.findall(r"VRAM Total Memory \(B\):\s*(\d+)", out)
+            if matches:
+                return max(int(m) for m in matches) / (1024.0 ** 3)
+        except Exception:
+            pass
+
+    # 3. Try Windows WMIC for Windows GPUs
+    if sys.platform == "win32":
+        try:
+            out = subprocess.check_output(
+                ["wmic", "path", "win32_VideoController", "get", "AdapterRAM"],
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            rams = [int(line.strip()) for line in out.strip().splitlines() if line.strip().isdigit() and int(line.strip()) > 0]
+            if rams:
+                return max(rams) / (1024.0 ** 3)
+        except Exception:
+            pass
+
+    return 0.0
+
+
 def is_port_in_use(port: int) -> bool:
     """Check if a port is already open on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -317,10 +372,20 @@ class LlamaServer:
         # Configure GPU layers
         # For llama.cpp, if gpu_layers is -1 (auto), we default to offloading
         # all layers (e.g. 99) to utilize Apple Silicon Metal or CUDA if
-        # available. If SSD offloading is active, we force 0 layers on auto to
-        # prevent VRAM crashes on massive models, relying on CPU/mmap instead.
+        # available. On Linux/Windows, we verify that at least 8GB of dedicated
+        # GPU VRAM is present; if not, we fallback to CPU + RAM (gpu_layers = 0).
         if self.gpu_layers == -1:
-            ngl = 0 if self.ssd_offload else 99
+            if self.ssd_offload:
+                ngl = 0
+            elif sys.platform != "darwin":
+                vram_gb = check_gpu_vram_gb()
+                if vram_gb < 8.0:
+                    logger.info(f"[LlamaServer] Linux/Windows system without at least 8GB dedicated GPU VRAM (detected {vram_gb:.1f} GB). Running on CPU+RAM (gpu_layers=0).")
+                    ngl = 0
+                else:
+                    ngl = 99
+            else:
+                ngl = 99
         else:
             ngl = self.gpu_layers
             
