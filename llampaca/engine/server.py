@@ -42,6 +42,31 @@ def is_pid_running(pid: int) -> bool:
         except OSError:
             return False
 
+def is_llama_server_pid(pid: int) -> bool:
+    """Check if a running process with the given PID is actually a llama-server or sd-cli instance."""
+    if not is_pid_running(pid):
+        return False
+    if sys.platform == "win32":
+        try:
+            out = subprocess.check_output(
+                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine"],
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            return "llama-server" in out.lower() or "sd-cli" in out.lower()
+        except Exception:
+            return False
+    else:
+        try:
+            out = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "command="],
+                stderr=subprocess.DEVNULL,
+                text=True
+            )
+            return "llama-server" in out or "sd-cli" in out
+        except Exception:
+            return False
+
 def kill_pid(pid: int):
     """Terminate the process with the given PID."""
     if sys.platform == "win32":
@@ -85,7 +110,7 @@ def cleanup_orphans():
                 pass
             continue
 
-        if is_pid_running(pid):
+        if is_llama_server_pid(pid):
             logger.info(f"Found orphaned llama-server process (PID {pid}), killing it...")
             kill_pid(pid)
 
