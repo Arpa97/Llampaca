@@ -12,6 +12,11 @@ Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-ho
 
 - 🔧 **Zero setup** — downloads `llama-server` binaries automatically for your OS and architecture (macOS arm64/Intel, Linux, Windows)
 - 🤖 **GPU accelerated** — uses Apple Metal (`-ngl 99`) on Apple Silicon, CUDA on NVIDIA or HIP on AMD out of the box
+- ⚡ **Speculative Decoding** — accelerate text generation speeds by pairing a primary LLM with a smaller draft model (`-md` / `-ngld`)
+- 💾 **SSD Offloading** — offload large model weights using mmap memory mapping when system RAM or VRAM is limited
+- 🔍 **Deep Search** — trigger deep multi-query web research and synthesis directly in chat sessions
+- 🚀 **FastAPI Backend** — high-performance asynchronous REST API powering headless server mode and desktop GUI
+- ⏱️ **Prompt Cache Warmup** — pre-fills system prompt cache tokens (~7,600 tokens) on server startup to eliminate first-token latency
 - 🔀 **Smart port management** — automatically finds a free port if the default is in use (8080 → 8081 → ...)
 - 🧹 **Orphan-safe** — on startup, kills any leftover `llama-server` processes from crashed previous sessions
 - 📦 **Model management** — download GGUF models for text chat, embedding/RAG, and image generation from Hugging Face with a single command, or load your own
@@ -136,16 +141,20 @@ llampaca generate-image "a cute llama programmer sitting in front of a retro com
 | `llampaca integrations repo add <url>` | Add an MCP registry URL |
 | `llampaca integrations repo remove <url>` | Remove an MCP registry URL |
 
-### `llampaca run` options
+### `llampaca run`, `gui` & `serve` options
 
 | Flag | Default | Description |
 |---|---|---|
-| `--port` | `8080` | Starting port (auto-increments if occupied) |
+| `--port` | `8080` | Starting port for `llama-server` (auto-increments if occupied) |
+| `--api-port` | `8090` | Port for FastAPI REST API server (only for `llampaca serve`) |
 | `--ctx` | `8192` | Context window size in tokens |
-| `--threads` | auto | Number of CPU threads |
+| `--threads` | auto | Number of CPU threads to use |
 | `--gpu` | `-1` (auto) | GPU layers to offload (`0` = CPU only, `-1` = all layers) |
 | `--no-tools` | off | Disable agent tools (plain chat mode) |
-| `--no-think` | off | Disable the hidden "thinking" phase of reasoning models (e.g. Qwen3): faster responses, slightly lower quality on complex tasks. Only effective when the model's chat template supports the toggle |
+| `--no-think` | off | Disable the hidden "thinking" phase of reasoning models (e.g. Qwen3): faster responses, slightly lower quality on complex tasks |
+| `--draft-model` | none | Speculative decoding: GGUF filename of smaller draft model to accelerate inference |
+| `--draft-gpu` | `-1` (auto) | GPU layers to offload for the draft model |
+| `--ssd-offload` | off | Enable SSD Offloading via mmap memory mapping for massive models |
 
 ---
 
@@ -251,7 +260,7 @@ All configurations are saved cleanly in `~/.llampaca/mcp_config.json`.
 
 ## 🖥️ GUI Desktop Dashboard
 
-Llampaca includes a standalone GUI desktop application built with `pywebview` and Vue.js. It features a complete dashboard to interact with your agent and configure your local environment visually.
+Llampaca includes a standalone GUI desktop application built with `pywebview`, Vue.js, and FastAPI. It features a complete dashboard to interact with your agent and configure your local environment visually.
 
 ### How to start the GUI
 Start the dashboard with the following command:
@@ -261,17 +270,28 @@ llampaca gui
 
 You can pass execution options just like `llampaca run`:
 ```bash
-llampaca gui [model_name] [--port port] [--ctx ctx] [--threads threads] [--gpu gpu]
+llampaca gui [model_name] [--port port] [--ctx ctx] [--threads threads] [--gpu gpu] [--draft-model draft] [--draft-gpu draft_gpu] [--ssd-offload]
 ```
 
-### Key Modules
+### Key Modules & Capabilities
+
+#### 🚀 Async Startup & Splash Screen
+* Instant splash screen while `llama-server` initializes and pre-warms prompt caches in the background.
 
 #### 💬 Chat & Session Manager
 * Stream agent outputs word-by-word with markdown formatting, including live tool-call and "thinking" indicators.
+* **Deep Search toggle** — trigger deep multi-query web research directly from the chat UI header.
+* **Native Context Menu & Copy/Paste** — native right-click context menu and copy-paste support inside the webview desktop app.
 * List, load, and delete conversation history persisted in the local SQLite database.
 * **File attachments & Image previews** — attach PDF/Word/text files directly in chat and view rendered generated images inline.
 * **Stop button** — interrupt an in-progress answer at any time; the partial output is kept and the backend is cancelled cleanly.
 * **Context & speed indicator** — shows context usage and token speed in real-time.
+
+#### ⚙️ Settings & Engine Customization
+* Configure primary and draft models for Speculative Decoding.
+* Set GPU offloading layers independently for primary and draft models.
+* Toggle SSD Offloading (mmap), reasoning thinking mode (`no-think`), context window sizes, and CPU thread counts.
+* Real-time loading overlay during prompt cache warmup (~7,600 pre-filled tokens).
 
 #### 🧠 Personal Wiki & Skills Manager
 * Visual editor for persistent memory wiki pages (`~/.llampaca/wiki/`) and Markdown domain skills (`~/.llampaca/skills/`).
@@ -304,6 +324,7 @@ llampaca/
 ├── __init__.py           # Package version
 ├── __main__.py           # python -m llampaca entrypoint
 ├── cli.py                # Click-based CLI commands
+├── cli_chat.py           # Interactive terminal chat loop & slash commands (/attach, /remember, /deepsearch)
 ├── config.py             # Paths, defaults, and model presets
 ├── attachments.py        # /attach: PDF/Word/text extraction and context budgeting
 ├── packages.py           # Venv & Node package installer core
@@ -312,9 +333,9 @@ llampaca/
 ├── wiki.py               # Personal wiki core: markdown pages, slugs, prompt index
 ├── engine/
 │   ├── downloader.py     # GitHub binary + Hugging Face model downloader
-│   ├── server.py         # llama-server subprocess manager (chat + embedding modes)
+│   ├── server.py         # llama-server subprocess manager (chat, draft model, embedding)
 │   ├── client.py         # OpenAI-compatible streaming client (text, tool calls, embeddings)
-│   ├── db.py             # SQLite conversation & message storage
+│   ├── db.py             # SQLite conversation & message storage with schema migrations
 │   ├── embedding.py      # EmbeddingService: lazy embedding-server lifecycle + indexing
 │   ├── image_generator.py # Stable Diffusion (sd.cpp) engine wrapper
 │   ├── mcp_client.py     # Stdio MCP client wrapper
@@ -322,7 +343,10 @@ llampaca/
 ├── agent/
 │   └── loop.py           # Agentic execution loop (UI-independent, event-based)
 ├── gui/
-│   ├── server.py         # PyWebview desktop app backend
+│   ├── server.py         # FastAPI web server & PyWebview wrapper
+│   ├── routes.py         # FastAPI REST API endpoints (chat, models, settings, history)
+│   ├── agent_manager.py  # Async manager for server lifecycle & prompt cache pre-filling
+│   ├── splash.html       # Desktop GUI startup splash screen
 │   └── index.html        # Vue.js desktop GUI dashboard
 └── tools/
     ├── registry.py       # Tool registry: JSON schema generation from Python functions
@@ -416,9 +440,9 @@ Llampaca automatically:
 - [x] Interactive terminal chat with streaming
 - [x] Automatic port conflict resolution
 - [x] Orphaned process cleanup
-- [x] Conversation history — persistent storage of sessions via SQLite, with full CRUD API exposed by `llama-server`
+- [x] Conversation history — persistent storage of sessions via SQLite
 - [x] Agentic tool/skill execution loop (filesystem, shell, web tools with confirmation gating)
-- [x] Web search integration (DuckDuckGo, no API key)
+- [x] Web search integration (DuckDuckGo, no API key) & Deep Search
 - [x] File attachments (`/attach` — PDF/Word/text) with automatic RAG (local embeddings + `search_documents` tool)
 - [x] Personal wiki (`/remember` + `read_wiki_page`/`update_wiki_page`): persistent cross-session memory
 - [x] Local Image Generation (`sd.cpp` / Stable Diffusion GGUF integration)
@@ -426,8 +450,12 @@ Llampaca automatically:
 - [x] Custom Python Tools (`~/.llampaca/custom_tools/`)
 - [x] Package Management (isolated Python & Node.js packages)
 - [x] MCP (Model Context Protocol) integration
-- [x] GUI (desktop application packaging)
-- [ ] One-click installer (no Python required)
+- [x] GUI (desktop application packaging with pywebview & Vue.js)
+- [x] High-performance FastAPI REST API backend architecture
+- [x] Speculative Decoding with draft models (`-md` / `-ngld`)
+- [x] SSD Offloading via mmap memory mapping
+- [x] Synchronous prompt cache warmup & async GUI splash screen
+- [ ] One-click binary installer (no Python required)
 
 ---
 
