@@ -83,8 +83,14 @@ class McpClientManager:
         """Start all configured MCP servers and register their tools."""
         for name, server_cfg in self.config.items():
             try:
-                # Merge current environment with configured variables
-                merged_env = os.environ.copy()
+                # Sanitize environment: start from a minimal whitelist to prevent exposing
+                # sensitive host environment credentials (AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN, etc.)
+                base_env_keys = {
+                    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+                    "TMPDIR", "TEMP", "TMP", "SystemRoot", "SystemDrive", "APPDATA", "LOCALAPPDATA",
+                    "PROGRAMDATA", "PATHEXT", "COMSPEC", "NODE_PATH", "TERM"
+                }
+                merged_env = {k: v for k, v in os.environ.items() if k in base_env_keys}
                 if "env" in server_cfg and isinstance(server_cfg["env"], dict):
                     for k, v in server_cfg["env"].items():
                         merged_env[k] = str(v)

@@ -333,10 +333,20 @@ export default {
             }
             const clean = formatImageLinks(collapseDeepSearch(collapseRemember(collapseAttachments(text))));
             // Use marked if available, fallback to plain text replacing newlines
+            let html = clean;
             if (window.marked) {
-                return window.marked.parse(clean, { breaks: true });
+                html = window.marked.parse(clean, { breaks: true });
+            } else {
+                html = clean.replace(/\n/g, '<br>');
             }
-            return clean.replace(/\n/g, '<br>');
+
+            // Sanitize rendered HTML to prevent XSS execution from untrusted content/attachments
+            if (window.DOMPurify) {
+                return window.DOMPurify.sanitize(html, {
+                    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|file):|\/api\/media)/i
+                });
+            }
+            return html;
         };
         const formatArguments = (argsJson) => {
             try {
