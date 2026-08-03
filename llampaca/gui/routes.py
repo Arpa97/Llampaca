@@ -456,6 +456,18 @@ async def post_settings(payload: SettingsPayload, background_tasks: BackgroundTa
     
     return {"status": "ok", "message": "Settings saved.", "config": config}
 
+@app.get("/api/cli-shortcut-status")
+def get_cli_shortcut_status():
+    from llampaca.gui.cli_installer import is_cli_installed, CLI_PATH, USER_CLI_PATH
+    installed = is_cli_installed()
+    path_found = str(CLI_PATH) if CLI_PATH.exists() else (str(USER_CLI_PATH) if USER_CLI_PATH.exists() else None)
+    return {"installed": installed, "path": path_found}
+
+@app.post("/api/install-cli-shortcut")
+def install_cli_shortcut():
+    from llampaca.gui.cli_installer import install_cli_symlink
+    return install_cli_symlink()
+
 @app.get("/api/server/status")
 async def server_status():
     if getattr(agent_manager, 'is_restarting', False):

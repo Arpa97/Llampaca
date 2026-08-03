@@ -390,24 +390,18 @@ def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu, ssd_off
         if model_name in MODEL_PRESETS:
             model_name = MODEL_PRESETS[model_name]["file"]
             
-    if not model_name:
-        click.echo("Error: No default model configured, and no model specified.")
-        click.echo("Please download a model using: llampaca models download")
-        sys.exit(1)
-        
-    model_path = MODELS_DIR / model_name
-    if not model_path.exists():
-        model_path = Path(model_name)
+    has_model = False
+    if model_name:
+        model_path = MODELS_DIR / model_name
         if not model_path.exists():
-            if model_name in MODEL_PRESETS:
-                preset_file = MODEL_PRESETS[model_name]["file"]
-                model_path = MODELS_DIR / preset_file
-                
-    if not model_path.exists():
-        click.echo(f"Error: Model '{model_name}' could not be resolved to a file path.")
-        click.echo(f"Looked in {MODELS_DIR} and current working directory.")
-        sys.exit(1)
-        
+            model_path = Path(model_name)
+            if not model_path.exists():
+                if model_name in MODEL_PRESETS:
+                    preset_file = MODEL_PRESETS[model_name]["file"]
+                    model_path = MODELS_DIR / preset_file
+        if model_path.exists():
+            has_model = True
+
     # Resolve parameters
     port = port or config.get("server_port", 8080)
     ctx = ctx or config.get("context_size", DEFAULT_CONTEXT_SIZE)
@@ -416,13 +410,19 @@ def run_gui(model_name, port, ctx, threads, gpu, draft_model, draft_gpu, ssd_off
 
     # 2. Start GUI and load model asynchronously
     click.echo(f"Starting Llampaca GUI...")
-    click.echo(f"Model will initialize in the background (port {port})...")
+    if has_model:
+        click.echo(f"Model will initialize in the background (port {port})...")
+    else:
+        click.echo("No local model installed. GUI starting in model manager mode...")
     
     from llampaca.gui.agent_manager import agent_manager
-    agent_manager.is_restarting = True  # Tell the frontend that we are loading!
+    if has_model:
+        agent_manager.is_restarting = True  # Tell the frontend that we are loading!
     
     def async_startup():
         agent_manager.ready_event.wait()
+        if not has_model:
+            return
         from llampaca.gui.restart_bridge import restart_via_agent_manager
         try:
             # We use restart_via_agent_manager to do a clean initialization using the GUI's lifecycle

@@ -408,7 +408,9 @@ class AgentManager:
         Best-effort by design: any failure is logged and ignored, because a
         missed optimisation must never prevent the app from starting.
         """
-        if self.registry is None or self.client is None:
+        from llampaca.engine import state
+        if self.registry is None or self.client is None or state.get_chat_server() is None:
+            logger.info("[AgentManager] No active llama-server running. Skipping prompt cache warm-up.")
             return
         try:
             import time

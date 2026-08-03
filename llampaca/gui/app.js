@@ -84,8 +84,26 @@ createApp({
 
 
 
+        const checkModelsAndNavigate = async () => {
+            try {
+                const res = await fetch(`/api/models?_t=${Date.now()}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const installedCount = (data.installed || []).filter(m => m.kind === 'chat' || !m.kind).length;
+                if (installedCount === 0) {
+                    currentTab.value = 'models';
+                    setTimeout(() => {
+                        window.showToast("Nessun modello installato. Scarica un modello per iniziare a chattare.", "warning");
+                    }, 400);
+                }
+            } catch (e) {
+                console.error('Errore nel controllo modelli iniziali:', e);
+            }
+        };
+
         onMounted(() => {
             loadStatus();
+            checkModelsAndNavigate();
             // Listener per l'evento personalizzato 'llampaca:status-changed': reattivo e 0 polling inutili
             window.addEventListener('llampaca:status-changed', loadStatus);
         });

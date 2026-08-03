@@ -43,6 +43,8 @@ WIKI_DIR = LLAMPACA_DIR / "wiki"
 # Modular markdown skills (.md): instructions and domain workflows
 # that can be imported, downloaded, or written by the user.
 SKILLS_DIR = LLAMPACA_DIR / "skills"
+# Dedicated isolated virtualenv for Llampaca dependencies (lives in ~/.llampaca/venv)
+LLAMPACA_VENV = LLAMPACA_DIR / "venv"
 
 # Recommended model presets.
 # The "kind" field separates chat models (loaded by `llampaca run`) from
@@ -218,6 +220,17 @@ def get_preset_for_file(filename: str):
             return preset
     return None
 
+def ensure_venv():
+    """Ensure dedicated isolated virtualenv exists in ~/.llampaca/venv."""
+    if not (LLAMPACA_VENV / "bin" / "python").exists() and not (LLAMPACA_VENV / "Scripts" / "python.exe").exists():
+        try:
+            import venv
+            logger.info(f"Creating dedicated virtualenv at {LLAMPACA_VENV}...")
+            venv.create(LLAMPACA_VENV, with_pip=True)
+            logger.info("Dedicated virtualenv created successfully.")
+        except Exception as e:
+            logger.warning(f"Could not create virtualenv at {LLAMPACA_VENV}: {e}")
+
 def ensure_dirs():
     """Ensure that all necessary application directories exist."""
     LLAMPACA_DIR.mkdir(parents=True, exist_ok=True)
@@ -225,6 +238,7 @@ def ensure_dirs():
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     WIKI_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_venv()
 
 def load_config() -> dict:
     """Load configuration from the config file, creating it if it doesn't exist."""

@@ -90,6 +90,12 @@ export default {
 
             <div class="view-body view-body-pad">
                 <div class="view-stack">
+                    <!-- Welcome Banner when no chat models are installed -->
+                    <div v-if="!hasInstalledChatModels" style="background: rgba(255, 166, 48, 0.12); border: 1px solid var(--amber-glow); border-radius: var(--radius-md); padding: 16px; margin-bottom: 24px; color: var(--dusk-blue);">
+                        <div style="font-weight: 700; font-size: 15px; margin-bottom: 4px;">👋 Benvenuto in Llampaca!</div>
+                        <div style="font-size: 13px; opacity: 0.9;">Nessun modello di chat risulta installato. Scegli e scarica uno dei modelli consigliati qui sotto per iniziare a conversare col tuo agente locale.</div>
+                    </div>
+
                     <!-- LLM (chat) models: the model that answers in chat. -->
                     <div class="section-head">
                         <h3 class="section-title">Modelli di chat</h3>
@@ -251,11 +257,15 @@ export default {
     `,
     setup() {
         const ctrl = useModelsController();
+        const { computed } = Vue;
+        const hasInstalledChatModels = computed(() => {
+            return (ctrl.chatModels.value || []).some(m => m.installed);
+        });
         // Adapt the card's object-payload events to the controller's explicit
         // argument signatures, forwarding the model kind so the chat and
         // embedding defaults stay separate.
         const onSetDefault = (m) => ctrl.setDefaultModel(m.id, m.kind || 'chat');
         const onDownload = (m) => ctrl.downloadPreset(m.repo_id, m.name);
-        return { ...ctrl, onSetDefault, onDownload };
+        return { ...ctrl, onSetDefault, onDownload, hasInstalledChatModels };
     }
 };

@@ -412,12 +412,14 @@ class LlamaServer:
         Returns True if the server started successfully and is healthy, False otherwise.
         """
         if not self.is_binary_available():
-            logger.error(f"Error: llama-server binary not found at {self.binary_path}.")
-            logger.info("Please run 'llampaca init' to download it first.")
-            return False
+            from llampaca.engine.downloader import ensure_initialized
+            logger.info("llama-server binary missing. Running automatic setup...")
+            if not ensure_initialized():
+                logger.error("Error: Automatic binary setup failed.")
+                return False
 
         if not self.model_path.exists():
-            logger.error(f"Error: Model file not found at {self.model_path}.")
+            logger.warning(f"[LlamaServer] Model file not found at {self.model_path}. Server will start when a model is downloaded from the Models tab.")
             return False
 
         # Kill any orphaned llama-server processes from previous sessions.

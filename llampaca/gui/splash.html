@@ -105,6 +105,13 @@
         }
     </style>
     <script>
+        window.customStatusOverridden = false;
+        window.setStatusMessage = function(msg) {
+            window.customStatusOverridden = true;
+            const el = document.getElementById("status-text");
+            if (el) el.textContent = msg;
+        };
+
         document.addEventListener("DOMContentLoaded", function () {
             const status_text = document.getElementById("status-text");
 
@@ -144,8 +151,11 @@
                 "Regolando la temperatura di generazione..."
             ];
 
-            status_text.textContent = messages[0];
+            if (!window.customStatusOverridden) {
+                status_text.textContent = messages[0];
+            }
             setInterval(() => {
+                if (window.customStatusOverridden) return;
                 const randomIndex = Math.floor(Math.random() * messages.length);
                 status_text.textContent = messages[randomIndex];
             }, 2000);

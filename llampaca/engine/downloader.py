@@ -464,3 +464,29 @@ def download_hf_model(repo_id: str, filename: str) -> Path:
     downloaded_path = Path(local_path)
     logger.info(f"Model downloaded and saved to: {downloaded_path}")
     return downloaded_path
+
+
+def ensure_initialized(progress_callback=None) -> bool:
+    """
+    Ensure the Llampaca environment is initialized (directories and llama-server binary).
+    If missing, automatically downloads llama-server binary.
+    Does NOT force model downloads, allowing the GUI to launch cleanly and guide the user in the Models tab.
+    """
+    from llampaca.config import ensure_dirs, BIN_DIR
+    ensure_dirs()
+
+    # 1. Check llama-server binary
+    server_bin = BIN_DIR / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
+    if not (server_bin.exists() and (sys.platform == "win32" or os.access(server_bin, os.X_OK))):
+        msg = "Primo avvio: Download del binario llama-server in corso..."
+        logger.info(f"[Auto-Init] {msg}")
+        if progress_callback:
+            try:
+                progress_callback(msg)
+            except Exception:
+                pass
+        if not download_llama_binaries():
+            logger.error("[Auto-Init] Failed to download llama-server binary.")
+            return False
+
+    return True

@@ -236,54 +236,77 @@ def start_gui_window(on_ready=None):
     main_window.events.closing += on_closing
     
     def background_startup():
-        _set_app_icon()
-        
-        # We give the splash screen a tiny bit of time to draw itself on macOS
-        time.sleep(0.3)
-        
-        # 1. Start the HTTP server (FastAPI/Uvicorn)
-        from llampaca.config import load_config
-        config = load_config()
-        agent_manager.start(config)
-        
-        import uvicorn
-        from llampaca.gui.routes import app
-        
-        config_uv = uvicorn.Config(
-            app, 
-            host="127.0.0.1", 
-            log_level="error",
-            ws_ping_interval=None,
-            ws_ping_timeout=None
-        )
-        uv_server = uvicorn.Server(config_uv)
-        
-        def run_uvicorn():
-            uv_server.run(sockets=[sock])
+        try:
+            _set_app_icon()
             
-        uv_thread = threading.Thread(target=run_uvicorn, daemon=True)
-        uv_thread.start()
-        
-        while not uv_server.started:
-            time.sleep(0.05)
+            # We give the splash screen a tiny bit of time to draw itself on macOS
+            time.sleep(0.3)
             
-        class ServerWrapper:
-            def shutdown(self):
-                uv_server.should_exit = True
-            def server_close(self):
-                pass
-        server_wrapper[0] = ServerWrapper()
-        
-        logger.info(f"GUI HTTP Server running locally at http://127.0.0.1:{port}")
-        
-        # 2. Trigger the heavy llama-server load
-        if on_ready:
-            on_ready()
+            def update_splash_status(msg: str):
+                try:
+                    msg_escaped = msg.replace("'", "\\'")
+                    splash_window.evaluate_js(f"window.setStatusMessage('{msg_escaped}')")
+                except Exception:
+                    pass
+
+            # 0. Check and perform auto-init on first launch (updating splash screen UI)
+            from llampaca.engine.downloader import ensure_initialized
+            ensure_initialized(progress_callback=update_splash_status)
             
-        # 3. Transition: Show main window, destroy splash
-        time.sleep(0.2) # small buffer to ensure main_window html is served
-        main_window.show()
-        splash_window.destroy()
+            # 1. Start the HTTP server (FastAPI/Uvicorn)
+            from llampaca.config import load_config
+            config = load_config()
+            agent_manager.start(config)
+            
+            import uvicorn
+            from llampaca.gui.routes import app
+            
+            config_uv = uvicorn.Config(
+                app, 
+                host="127.0.0.1", 
+                log_level="error",
+                ws_ping_interval=None,
+                ws_ping_timeout=None
+            )
+            uv_server = uvicorn.Server(config_uv)
+            
+            def run_uvicorn():
+                uv_server.run(sockets=[sock])
+                
+            uv_thread = threading.Thread(target=run_uvicorn, daemon=True)
+            uv_thread.start()
+            
+            while not uv_server.started:
+                time.sleep(0.05)
+                
+            class ServerWrapper:
+                def shutdown(self):
+                    uv_server.should_exit = True
+                def server_close(self):
+                    pass
+            server_wrapper[0] = ServerWrapper()
+            
+            logger.info(f"GUI HTTP Server running locally at http://127.0.0.1:{port}")
+            
+            # 2. Trigger the heavy llama-server load
+            if on_ready:
+                try:
+                    on_ready()
+                except Exception as e:
+                    logger.error(f"[GUI Server] Error in on_ready callback: {e}")
+        except Exception as err:
+            logger.error(f"[GUI Server] Critical error during background startup: {err}")
+        finally:
+            # 3. Transition: Show main window, destroy splash
+            time.sleep(0.2) # small buffer to ensure main_window html is served
+            try:
+                main_window.show()
+            except Exception as e:
+                logger.error(f"Error showing main window: {e}")
+            try:
+                splash_window.destroy()
+            except Exception as e:
+                logger.error(f"Error destroying splash window: {e}")
 
     debug = os.environ.get("LLAMPACA_DEBUG", "").strip() in ("1", "true", "yes")
     
