@@ -163,7 +163,7 @@ def resolve_user_output_path(filename: str, custom_dir: str = None, subfolder: s
 
 DEFAULT_CONFIG = {
     "llama_server_path": "",
-    "default_model": "qwen3.5-4b-instruct",
+    "default_model": "",
     "server_port": 8080,
     "context_size": DEFAULT_CONTEXT_SIZE,
     "n_threads": max(1, os.cpu_count() - 2 if os.cpu_count() else 4),
@@ -180,7 +180,7 @@ DEFAULT_CONFIG = {
     # GGUF filename in MODELS_DIR, same resolution rules as default_model.
     # The embedding server starts on its own port range so it never races
     # the chat server's auto-increment scan (8080, 8081, ...).
-    "embedding_model": "qwen3-embedding-0.6b",
+    "embedding_model": "",
     "embedding_port": 8180,
     # GPU layers for the embedding server, resolved INDEPENDENTLY from the
     # chat model's "gpu_layers" (they are two separate llama-server
