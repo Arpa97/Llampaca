@@ -90,23 +90,51 @@ def build_system_prompt(
         parts.append(tool_instructions_from_defs(tool_definitions))
 
     full = "\n\n".join(parts)
+    if len(full) <= max_chars:
+        return full
 
-    if len(full) > max_chars:
-        # Truncate wiki first (it's the largest variable), but keep tools
-        wiki_lines = wiki_index.splitlines() if wiki_index else []
-        while len(full) > max_chars and len(wiki_lines) > 5:
-            wiki_lines = wiki_lines[:-1]
-            parts = [base_prompt]
-            if summary:
-                parts.append(f"Conversation summary: {summary}")
-            parts.append("\n".join(wiki_lines) + "\n... (wiki truncated)")
-            if skills_index:
-                parts.append(skills_index)
-            if tool_definitions:
-                parts.append(tool_instructions_from_defs(tool_definitions))
-            full = "\n\n".join(parts)
+    def assemble(wiki_text: str) -> str:
+        """Rebuild the prompt with the wiki section replaced by `wiki_text`."""
+        rebuilt = [base_prompt]
+        if summary:
+            rebuilt.append(f"Conversation summary: {summary}")
+        if wiki_text:
+            rebuilt.append(wiki_text)
+        if skills_index:
+            rebuilt.append(skills_index)
+        if tool_definitions:
+            rebuilt.append(tool_instructions_from_defs(tool_definitions))
+        return "\n\n".join(rebuilt)
 
-    return full
+    marker = "\n... (wiki truncated)"
+
+    # Shrink the wiki index first — it is the largest variable part, and
+    # dropping whole entries keeps what remains readable as a list of pages.
+    wiki_lines = wiki_index.splitlines() if wiki_index else []
+    while len(full) > max_chars and len(wiki_lines) > 5:
+        wiki_lines = wiki_lines[:-1]
+        full = assemble("\n".join(wiki_lines) + marker)
+
+    if len(full) <= max_chars:
+        return full
+
+    # Dropping whole lines was not enough. That loop bottoms out at 5 lines
+    # however long they are, so a wiki held in a few long lines — or one
+    # single paragraph, the common case for a page written as prose — sailed
+    # straight past the budget: a one-line 25k-character index produced a
+    # 25k-character prompt against a ~6.5k cap. Cut the text itself to
+    # whatever room the fixed sections leave.
+    room = max_chars - len(assemble("")) - len(marker) - 2  # 2 = "\n\n" joiner
+    if room > 0:
+        full = assemble(wiki_index[:room] + marker)
+        if len(full) <= max_chars:
+            return full
+
+    # Even with no wiki at all it does not fit (very small context window, or
+    # a huge skills index). Hard-cap as a last resort: a prompt cut mid-word
+    # is bad, but silently blowing the context window is worse, and the
+    # budget above is documented as a guarantee.
+    return full[:max_chars]
 
 def tool_instructions_from_defs(definitions: list) -> str:
     return (

@@ -129,7 +129,7 @@ llampaca generate-image "a cute llama programmer sitting in front of a retro com
 | `llampaca run [model_name]` | Start the server and open an interactive chat session |
 | `llampaca gui [model_name]` | Start the standalone desktop app with GUI dashboard |
 | `llampaca serve [model_name]` | Start the full Llampaca backend (`llama-server` + HTTP API) headless, without a GUI |
-| `llampaca mcp` | Run Llampaca itself as an MCP server (stdio), exposing its built-in tools to VSCode or Claude Desktop |
+| `llampaca mcp` | Run Llampaca itself as an MCP server (stdio), exposing its built-in **read-only** tools to VSCode or Claude Desktop (see note below) |
 | `llampaca history list` | List all stored conversation sessions |
 | `llampaca history delete <id>` | Delete a conversation session by its ID |
 | `llampaca integrations list` | List all configured MCP integrations |
@@ -186,6 +186,7 @@ Safety model:
 - **Workspace sandbox** — file tools can only touch paths inside the directory where you launched `llampaca run`; anything else (e.g. `../../etc/passwd`) is rejected
 - **Explicit confirmation** — destructive tools show you the exact arguments and only run if you approve; a declined action is reported back to the model so it can adapt
 - **Iteration cap** — the tool loop stops after 10 round-trips to prevent runaway behavior
+- **MCP server mode** — `llampaca mcp` runs over stdio, where Llampaca has no way to show you a confirmation prompt. The confirmation-gated tools (`run_shell_command`, `write_file`, `edit_file`, `delete_path`, `update_wiki_page`, `install_package`) are therefore **not exposed** in that mode; only the read-only ones are. If you trust your MCP client to ask for approval itself, set `LLAMPACA_MCP_ALLOW_CONFIRMED_TOOLS=1` to expose them — they are then flagged as destructive so a compliant client prompts you
 
 Tool calling works with any model, via two modes picked automatically:
 

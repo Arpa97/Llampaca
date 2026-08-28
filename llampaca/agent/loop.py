@@ -239,12 +239,7 @@ class Agent:
             # mid-turn can overflow the window too. Trimming is cheap and
             # synchronous; the summary of what was dropped is generated
             # later, off this turn's critical path (summarize_pending).
-            dropped, removed = trim_history_to_budget(self.messages, self.context_size, self.tools_enabled, self.native_tools, self.registry)
-            if removed:
-                for msg in removed:
-                    if msg.get("id") is not None:
-                        self._pending_summary_last_id = msg["id"]
-                self._pending_summary_turns.extend(m for m in removed if m["role"] in ("user", "assistant"))
+            self._trim_history()
 
             prompt_mode = self.tools_enabled and not self.native_tools
             tools = (
@@ -639,6 +634,31 @@ class Agent:
     # Shared helpers
     # ------------------------------------------------------------------
 
+    def _trim_history(self) -> int:
+        """
+        Trim the history back inside the context budget and queue whatever was
+        dropped for deferred summarization. Returns the number of dropped turns.
+
+        The two halves belong together and are kept in one method rather than
+        inlined at the call site: dropping turns without queueing them would
+        lose them from the summary silently, with no visible symptom.
+        """
+        dropped, removed = trim_history_to_budget(
+            self.messages,
+            self.context_size,
+            self.tools_enabled,
+            self.native_tools,
+            self.registry,
+        )
+        for msg in removed:
+            if msg.get("id") is not None:
+                self._pending_summary_last_id = msg["id"]
+        self._pending_summary_turns.extend(
+            m for m in removed if m["role"] in ("user", "assistant")
+        )
+        return dropped
+
+    @staticmethod
     def _describe_error(exc: Exception) -> str:
         """
         Turn a raw client/server exception into a helpful, user-facing message.

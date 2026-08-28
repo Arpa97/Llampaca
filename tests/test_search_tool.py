@@ -22,6 +22,22 @@ from llampaca.rag import serialize_vector
 from llampaca.tools import ToolRegistry, register_document_tools
 
 
+class FakeEmbedClient:
+    """
+    Adapts the simple `query -> vector` callables these tests use to the
+    LlamaClient interface register_document_tools now expects: an object with
+    an async `embed(texts) -> vectors`. The signature changed when embedding
+    moved behind EmbeddingService; the tool takes the client and the query
+    prefix instead of a pre-bound embedding function.
+    """
+
+    def __init__(self, embed_query):
+        self._embed_query = embed_query
+
+    async def embed(self, texts):
+        return [self._embed_query(text) for text in texts]
+
+
 class FakeClient:
     """Just enough of LlamaClient for Agent.__init__'s template probe."""
 
@@ -74,7 +90,8 @@ class TestSearchDocumentsTool(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry()
         register_document_tools(
             registry,
-            embed_query=embed_query,
+            embed_client=FakeEmbedClient(embed_query),
+            query_prefix="",
             conversation_id=conversation_id or self.conv_id,
             db_path=self.db_path,
         )

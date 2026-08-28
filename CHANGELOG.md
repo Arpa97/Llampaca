@@ -17,6 +17,37 @@ Audit of the `installer` branch. Four issues, all verified by sending real reque
 
 - **`llampaca/gui/routes.py`** — the API validated neither `Host` nor `Origin`. Binding to 127.0.0.1 is not validation: any `Host` reached every route, which is exactly what DNS rebinding needs to become same-origin and bypass CORS entirely, reaching `POST /api/tools/custom` (which writes a `.py` file and immediately imports it — arbitrary code execution). `POST /api/conversations/{id}/messages` additionally parses its body with `request.json()`, making a `text/plain` POST a CORS "simple request" that skipped the preflight. A middleware now pins both headers to the loopback interface and rejects `Origin: null`.
 
+### Fixed — agent error path crashed instead of reporting the error
+
+`llampaca/agent/loop.py` defined `_describe_error(exc)` without `@staticmethod` while calling it as `self._describe_error(e)`, so `self` bound to `exc` and the real exception arrived as a surplus positional: every failure raised `TypeError: takes 1 positional argument but 2 were given`. The helper exists precisely to turn a raw server exception into a readable message (it special-cases the Metal out-of-memory "Compute error"), so the bug fired exactly when the user most needed the explanation. Added the missing decorator.
+
+### Fixed — system prompt could exceed its documented budget
+
+`llampaca/agent/prompts.py` promises the prompt "never exceeds 40% of the context window", but enforced it only by dropping whole wiki lines, stopping once fewer than six remained. A wiki held in a few long lines — or one paragraph, the normal shape for a page written as prose — was never shortened: a 25,013-character index produced a 25,013-character prompt against a ~6,550 cap, silently eating the context window. Line-dropping is still tried first (a shortened list of page titles still reads correctly); when that is not enough the wiki text itself is cut to the room left, with a hard cap as the final fallback.
+
+### Changed — `Agent._trim_history()` restored as a method
+
+Trimming and queueing the dropped turns for summarization had been inlined into `send()`. They must always happen together — dropping turns without queueing them loses them from the summary with no visible symptom — so they are back in one method, which `send()` now calls. Behaviour is unchanged.
+
+### Fixed — the test suite
+
+`pytest tests/` aborted on a collection error in `test_summary.py` and reported nothing else; the full picture needed `--continue-on-collection-errors`. All 10 failures and the collection error predate this branch's changes (confirmed against a clean `f94c757` worktree). Beyond the two production bugs above, the rest were tests left behind by refactors:
+
+- **`tests/test_summary.py`** — imported `MIN_ACTIVE_WINDOW` from `agent.loop`; it moved to `agent.context` when the trimming logic was split out. Same for `Agent._estimate_tokens()`, now the free function `estimate_tokens()`.
+- **`tests/test_search_tool.py`** (6 tests) — passed `embed_query=<callable>`; `register_document_tools` takes `embed_client` + `query_prefix` since embedding moved behind `EmbeddingService`. Added a small adapter so the existing test callables still drive it.
+- **`tests/test_declined.py`, `tests/test_stream_events.py`** — the `fake_events` doubles lacked the `temperature` argument the agent now forwards on every call.
+- **`tests/test_server.py`** — bound a socket but never called `listen()`, then expected `is_port_in_use()` (which probes with `connect_ex`) to see it. The test was wrong, not the code.
+
+Suite now: 152 passed, 0 failed, 0 errors.
+
+### Security — `llampaca mcp` exposed destructive tools without any confirmation gate
+
+`llampaca/engine/mcp_server.py` mapped every registry tool with `mcp.tool(name=tool.name)(tool.func)`, which passes the bare function and drops `requires_confirmation` entirely. `run_shell_command`, `delete_path`, `write_file`, `edit_file`, `update_wiki_page` and `install_package` were therefore callable by any connected MCP client with none of the approval the README documents — and unlike the CLI/GUI paths, nothing downstream re-applied it.
+
+Over stdio Llampaca is a subprocess with no UI, so it cannot prompt: the gate cannot be honoured, only withheld. Gated tools are now **not exposed by default** — `llampaca mcp` serves the 9 read-only tools and prints to stderr what it withheld. Setting `LLAMPACA_MCP_ALLOW_CONFIRMED_TOOLS=1` exposes all 15 and delegates approval to the MCP client; those tools then carry `ToolAnnotations(destructiveHint=True, readOnlyHint=False)` so a compliant client prompts. Verified end-to-end over a real stdio MCP handshake in both modes.
+
+`tests/test_mcp_server.py` asserted that *every* registry tool was mapped, so it encoded the flaw and passed while the gate was missing. Rewritten to assert the withholding, the opt-in, and the annotations.
+
 ### Fixed — `find_files`, `search_text` and `delete_path` raised NameError on every call
 
 `llampaca/tools/filesystem.py` referenced a `WORKSPACE_ROOT` global that does not exist (left over from the move to the context-var workspace), so three registered tools failed immediately and the guard refusing to delete `.git` or the workspace root was unreachable code. All references now go through `get_workspace_root()`.
@@ -31,7 +62,9 @@ Audit of the `installer` branch. Four issues, all verified by sending real reque
 
 ### Note — not a vulnerability after all
 
-`DELETE /api/models/{model_name}` looked traversable (`Path(MODELS_DIR) / model_name` then `unlink()`), but Starlette's default path converter is `[^/]+` and uvicorn percent-decodes before routing, so `model_name` can never contain a separator and the route simply does not match. A defensive check was added anyway; the flaw was not reachable.
+`DELETE /api/models/{model_name}` does carry a user confirmation, but a browser-side one: a native `confirm()` in `models_controller.js`. That protects against a misclick in the GUI, not against a request that never came from the GUI — the `Host`/`Origin` middleware above is what covers that case now.
+
+The same endpoint also looked traversable (`Path(MODELS_DIR) / model_name` then `unlink()`), but Starlette's default path converter is `[^/]+` and uvicorn percent-decodes before routing, so `model_name` can never contain a separator and the route simply does not match. A defensive check was added anyway; the flaw was not reachable.
 
 ## [2026-08-03]
 

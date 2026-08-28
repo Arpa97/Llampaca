@@ -8,7 +8,10 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llampaca.agent.loop import Agent, MIN_ACTIVE_WINDOW
+from llampaca.agent.loop import Agent
+# MIN_ACTIVE_WINDOW lives in agent/context.py since the history-trimming
+# logic was split out of the agent loop.
+from llampaca.agent.context import MIN_ACTIVE_WINDOW, estimate_tokens
 from llampaca.engine.client import LlamaClient
 from llampaca.engine.db import (
     init_db,
@@ -85,8 +88,12 @@ class TestSummaryAndTrimming(unittest.IsolatedAsyncioTestCase):
             {"role": "assistant", "content": "More answer 2", "id": 8},
         ]
         
-        # Ensure our self._estimate_tokens() will return > high_budget (which is 500 * 0.8 = 400)
-        estimated = agent._estimate_tokens()
+        # Ensure the token estimate exceeds high_budget (500 * 0.8 = 400).
+        # Agent._estimate_tokens() became the free function estimate_tokens()
+        # in agent/context.py when the trimming logic was split out.
+        estimated = estimate_tokens(
+            agent.messages, agent.tools_enabled, agent.native_tools, agent.registry
+        )
         self.assertGreater(estimated, 400)
 
         # Mock the chat.completions.create response for summarization

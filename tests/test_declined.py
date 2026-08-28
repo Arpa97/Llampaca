@@ -35,8 +35,9 @@ class TestAgentDeclined(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        # Mirrors LlamaClient.chat_stream_events, no_think included.
-        async def fake_events(messages, model="local-model", tools=None, no_think=False):
+        # Mirrors LlamaClient.chat_stream_events in full (no_think and
+        # temperature included): the agent forwards every one of them.
+        async def fake_events(messages, model="local-model", tools=None, no_think=False, temperature=0.7):
             yield ("tool_name", "dangerous_tool")
             yield ("message", tool_call_msg)
 
