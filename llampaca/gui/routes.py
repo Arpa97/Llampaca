@@ -16,10 +16,62 @@ from llampaca.engine.db import (
 from llampaca.config import load_config, save_config, MODELS_DIR, MODEL_PRESETS, DEFAULT_CONTEXT_SIZE, resolve_workspace_dir
 from llampaca.gui.agent_manager import agent_manager, run_async, is_server_running
 from llampaca.gui.restart_bridge import restart_via_agent_manager
+from llampaca.security import confine_path
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Llampaca GUI API")
+
+# Hostnames the API answers to. The server only ever binds to 127.0.0.1, but
+# binding is not the same as validating: a request carrying any Host header
+# still reached every route, which is precisely what a DNS rebinding attack
+# needs. An attacker page on evil.example whose domain briefly resolves to
+# 127.0.0.1 becomes same-origin with the API — same-origin, so CORS stops
+# applying and preflights are no longer involved — and can then drive every
+# endpoint, including the custom-tool endpoint that writes and imports Python.
+# Pinning the accepted Host values removes that: the browser sends the
+# attacker's domain in Host, and the request is refused.
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+
+def _hostname_of(value: str) -> str:
+    """Strip the port (and scheme, for Origin) from a Host/Origin header."""
+    value = value.strip()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    # IPv6 literals are bracketed: keep the brackets, drop only a real port.
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing != -1:
+            return value[: closing + 1].lower()
+    return value.rsplit(":", 1)[0].lower() if ":" in value else value.lower()
+
+
+@app.middleware("http")
+async def restrict_to_local_origin(request: Request, call_next):
+    """
+    Reject requests that are not genuinely local:
+
+    - **Host** must name the loopback interface. Blocks DNS rebinding.
+    - **Origin**, when present, must also be loopback. Blocks cross-site
+      requests from an ordinary web page: the browser attaches Origin to every
+      cross-origin request, including the "simple" POSTs that escape a
+      preflight (``/api/conversations/{id}/messages`` parses the body with
+      ``request.json()``, so a text/plain POST used to reach the agent).
+      ``Origin: null`` — a file:// page or a sandboxed iframe — is refused too.
+
+    Same-origin requests from the desktop window either omit Origin (GET,
+    images, SSE) or send the loopback origin, so the UI is unaffected.
+    """
+    host_header = request.headers.get("host", "")
+    if host_header and _hostname_of(host_header) not in _ALLOWED_HOSTS:
+        return JSONResponse(status_code=403, content={"detail": "Forbidden host."})
+
+    origin = request.headers.get("origin")
+    if origin and (origin == "null" or _hostname_of(origin) not in _ALLOWED_HOSTS):
+        return JSONResponse(status_code=403, content={"detail": "Forbidden origin."})
+
+    return await call_next(request)
 
 # --- CONVERSATIONS ---
 @app.get("/api/conversations")
@@ -359,8 +411,19 @@ class OpenFilePayload(BaseModel):
 @app.post("/api/open-file")
 async def open_file(payload: OpenFilePayload):
     import subprocess, sys
-    path = payload.path
-    if not os.path.exists(path):
+    from llampaca.security import media_roots, PathNotAllowed
+
+    # Handing an unchecked path to `open` / `os.startfile` / `xdg-open` means
+    # handing it to the OS launcher: a .app bundle, .exe or .desktop file
+    # would be executed, not displayed. Confine it to the same roots the media
+    # endpoint uses — those are the files the UI can legitimately link to.
+    try:
+        resolved = confine_path(payload.path, media_roots())
+    except PathNotAllowed:
+        raise HTTPException(status_code=403, detail="Path outside the allowed directories.")
+
+    path = str(resolved)
+    if not resolved.exists():
         raise HTTPException(status_code=404, detail="File not found")
     try:
         if sys.platform == 'darwin':
@@ -863,10 +926,21 @@ def delete_model(model_name: str):
     if model_name in (embedding_model, embedding_preset_file):
         raise HTTPException(status_code=400, detail="Non è possibile eliminare il modello di embedding attualmente predefinito.")
 
-    file_path = Path(MODELS_DIR) / model_name
+    # model_name arrives URL-decoded from the path, so '../../..' would walk
+    # straight out of MODELS_DIR and the unlink() below would delete an
+    # arbitrary file. Reject anything that is not a plain file name.
+    if "/" in model_name or "\\" in model_name or model_name in ("", ".", ".."):
+        raise HTTPException(status_code=400, detail="Nome modello non valido.")
+
+    from llampaca.security import PathNotAllowed
+    try:
+        file_path = confine_path(Path(MODELS_DIR) / model_name, [Path(MODELS_DIR)])
+    except PathNotAllowed:
+        raise HTTPException(status_code=400, detail="Nome modello non valido.")
+
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-        
+
     metadata_path = Path(MODELS_DIR) / f"{model_name}.json"
     if metadata_path.exists():
         try:
@@ -1463,18 +1537,52 @@ print(response.choices[0].message.content)"""
     }
 
 # --- MEDIA ---
-@app.get("/api/media/{path:path}")
-async def get_media(path: str):
-    abs_path = "/" + path
-    if not os.path.exists(abs_path):
+def _serve_media(raw_path: str) -> FileResponse:
+    """
+    Serve one file, confined to the media roots (generated-images directory
+    and the active workspace).
+
+    This endpoint used to build its target as ``"/" + path`` with no checks at
+    all, which turned it into an unauthenticated read primitive for the entire
+    filesystem: ``GET /api/media/etc/passwd`` returned the file. Everything
+    now goes through confine_path, which resolves symlinks and '..' before
+    testing containment, and refuses the credential deny list.
+    """
+    from llampaca.security import media_roots, PathNotAllowed
+
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="Missing 'path'.")
+
+    try:
+        abs_path = confine_path(raw_path, media_roots())
+    except PathNotAllowed:
+        # Deliberately indistinguishable from a missing file: a 403 here would
+        # let a caller probe which paths exist outside the allowed roots.
         raise HTTPException(status_code=404, detail="File not found")
-    
+
+    if not abs_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
     import mimetypes
-    mime_type, _ = mimetypes.guess_type(abs_path)
+    mime_type, _ = mimetypes.guess_type(str(abs_path))
     if not mime_type:
         mime_type = 'application/octet-stream'
-        
-    return FileResponse(abs_path, media_type=mime_type)
+
+    return FileResponse(str(abs_path), media_type=mime_type)
+
+
+@app.get("/api/media")
+async def get_media_query(path: str = ""):
+    """Query-string form: ``/api/media?path=<abs path>``. This is the form the
+    chat frontend emits (see formatImageLinks in ChatView.js); only the path
+    form below existed before, so inline image previews returned 404."""
+    return _serve_media(path)
+
+
+@app.get("/api/media/{path:path}")
+async def get_media(path: str):
+    """Path form: ``/api/media/<abs path without leading slash>``."""
+    return _serve_media("/" + path if not path.startswith("/") else path)
 
 
 # --- STATIC FILES AND FALLBACK ROUTE ---
@@ -1487,15 +1595,27 @@ async def serve_spa_or_static(full_path: str):
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="API route not found")
         
-    frontend_dir = os.path.dirname(__file__)
-    file_path = os.path.join(frontend_dir, full_path) if full_path else os.path.join(frontend_dir, "index.html")
+    frontend_dir = Path(os.path.dirname(__file__)).resolve()
 
-    if os.path.exists(file_path) and not os.path.isdir(file_path):
-        mime_type, _ = mimetypes.guess_type(file_path)
+    # os.path.join() happily accepts '../../..' and uvicorn does not normalize
+    # the request path, so joining the raw value served any file on the disk
+    # (verified: '/..%2f..%2f../etc/passwd' returned the file). Confine the
+    # join result to the GUI asset directory before touching it.
+    file_path = None
+    if full_path:
+        try:
+            file_path = confine_path(os.path.join(frontend_dir, full_path), [frontend_dir])
+        except PermissionError:
+            file_path = None  # fall through to the SPA index below
+    else:
+        file_path = frontend_dir / "index.html"
+
+    if file_path is not None and file_path.is_file():
+        mime_type, _ = mimetypes.guess_type(str(file_path))
         if not mime_type:
             mime_type = 'application/octet-stream'
-        return FileResponse(file_path, media_type=mime_type)
-        
+        return FileResponse(str(file_path), media_type=mime_type)
+
     # SPA fallback
     index_path = os.path.join(frontend_dir, "index.html")
     if os.path.exists(index_path):

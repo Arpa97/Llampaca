@@ -3,6 +3,36 @@
 All notable changes to the Llampaca project will be documented in this file.
 This project adheres to Semantic Versioning and complies with development logging guidelines.
 
+## [2026-08-28]
+
+### Security — path confinement for the tool sandbox and the local HTTP API
+
+Audit of the `installer` branch. Four issues, all verified by sending real requests to the running FastAPI app rather than by reading the code alone. A new `llampaca/security.py` centralises the path checks so the tool layer and the REST layer cannot drift apart on what "allowed" means; it uses `Path.resolve()`, which collapses `..` **and** follows symlinks, so neither a traversal string nor a symlink planted in the workspace escapes.
+
+- **`llampaca/tools/filesystem.py`** — the sandbox accepted anything under `$HOME`, not just the workspace, contradicting the README. Since `read_file` and `fetch_url` both run *without* user confirmation, a page fetched by the agent could instruct the model to read `~/.ssh/id_rsa` and send it out — no prompt shown. `_resolve_in_workspace()` now confines to the workspace alone, plus a deny list (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.llampaca/mcp_config.json`, browser profiles, OS keychains) that applies even when the user deliberately picks `$HOME` as the workspace. Verified end-to-end: the model attempted `../../../.ssh/id_rsa` on its own and was refused.
+
+- **`llampaca/gui/routes.py`** — `GET /api/media/{path}` built its target as `"/" + path` with no validation: `GET /api/media/etc/passwd` returned the file. It is now confined to the generated-images directory and the active workspace. The same endpoint was also **broken**: the chat frontend emits `/api/media?path=<abs>` (see `formatImageLinks`), a form no route matched, so inline image previews returned 404; a query-string variant now handles it.
+
+- **`llampaca/gui/routes.py`** — the SPA catch-all joined the raw request path onto the GUI directory. Uvicorn does not normalise the path, so `GET /..%2f..%2f../etc/passwd` served the file. The join result is now confined to the GUI asset directory, falling back to the SPA index. `POST /api/open-file` passed an unchecked path to `open`/`os.startfile`/`xdg-open` — the OS *launcher*, so a `.app`, `.exe` or `.desktop` would have been executed — and is confined to the same roots.
+
+- **`llampaca/gui/routes.py`** — the API validated neither `Host` nor `Origin`. Binding to 127.0.0.1 is not validation: any `Host` reached every route, which is exactly what DNS rebinding needs to become same-origin and bypass CORS entirely, reaching `POST /api/tools/custom` (which writes a `.py` file and immediately imports it — arbitrary code execution). `POST /api/conversations/{id}/messages` additionally parses its body with `request.json()`, making a `text/plain` POST a CORS "simple request" that skipped the preflight. A middleware now pins both headers to the loopback interface and rejects `Origin: null`.
+
+### Fixed — `find_files`, `search_text` and `delete_path` raised NameError on every call
+
+`llampaca/tools/filesystem.py` referenced a `WORKSPACE_ROOT` global that does not exist (left over from the move to the context-var workspace), so three registered tools failed immediately and the guard refusing to delete `.git` or the workspace root was unreachable code. All references now go through `get_workspace_root()`.
+
+### Changed — `llampaca run` defaults its workspace to the current directory
+
+`llampaca/cli.py` defaulted the workspace to `~/Documents/LlampacaDocs`; project files were readable only via the home-wide sandbox hole removed above. Without this change, tightening the sandbox would have left the CLI unable to read the project it was launched in. The default is now the cwd, which is what the README has always documented; `-w/--workspace` still overrides it, and the GUI keeps `LlampacaDocs` (cwd is meaningless for a bundled app).
+
+### Added — `tests/test_security_paths.py`
+
+21 regression tests covering confinement, the deny list, symlink escape, the tool sandbox, the two traversal routes and the Host/Origin middleware. Note for future tests: `TestClient` defaults to `http://testserver`, which the middleware now rejects — pass `base_url="http://127.0.0.1:8000"`.
+
+### Note — not a vulnerability after all
+
+`DELETE /api/models/{model_name}` looked traversable (`Path(MODELS_DIR) / model_name` then `unlink()`), but Starlette's default path converter is `[^/]+` and uvicorn percent-decodes before routing, so `model_name` can never contain a separator and the route simply does not match. A defensive check was added anyway; the flaw was not reachable.
+
 ## [2026-08-03]
 
 ### Fixed — GUI tool-confirmation buttons and Stop button (broken since the FastAPI refactor)

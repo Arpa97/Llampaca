@@ -15,6 +15,7 @@ import contextvars
 from pathlib import Path
 from typing import Union
 from llampaca.config import resolve_workspace_dir
+from llampaca.security import confine_path
 
 # Maximum number of characters returned when reading a file. Larger files
 # are truncated by the registry anyway, but we cut early here to avoid
@@ -54,24 +55,25 @@ def set_workspace_root(path: Union[str, Path, None]) -> Path:
 
 def _resolve_in_workspace(path: str) -> Path:
     """
-    Resolve a model-provided path safely inside the workspace root or user home.
+    Resolve a model-provided path safely inside the workspace root.
 
-    Relative paths are resolved against the workspace root. Tilde (~) and
-    absolute paths pointing inside the user home directory are expanded and allowed.
+    Relative paths are resolved against the workspace root; absolute paths and
+    tilde expansions are allowed only when they land inside it.
+
+    This used to also accept anything under the user's home directory, which
+    made the whole home readable by `read_file` — a tool that runs without
+    user confirmation. Combined with `fetch_url` (also unconfirmed), that gave
+    a page fetched by the agent a direct route to exfiltrate ~/.ssh: the page
+    only had to instruct the model to read a key and send it out. The sandbox
+    is now the workspace alone, as the README has always documented, with an
+    extra deny list applied on top for the case where the user deliberately
+    points the workspace at $HOME.
     """
     ws = get_workspace_root()
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
         candidate = ws / candidate
-    resolved = candidate.resolve()
-
-    home = Path.home().resolve()
-    if not (resolved.is_relative_to(ws) or resolved.is_relative_to(home)):
-        raise PermissionError(
-            f"Path '{path}' is outside the workspace ({ws}) and home directory ({home}). "
-            "Only paths inside the workspace or home directory are allowed."
-        )
-    return resolved
+    return confine_path(candidate, [ws])
 
 
 def read_file(path: str, start_line: int = 0, max_lines: int = 0) -> str:
@@ -208,9 +210,10 @@ def delete_path(path: str) -> str:
 
     # Extra guards on top of the sandbox: deleting these is catastrophic and
     # never what the user meant by removing "a file or folder".
-    if resolved == WORKSPACE_ROOT:
+    workspace_root = get_workspace_root()
+    if resolved == workspace_root:
         return "Error: refusing to delete the workspace root directory itself."
-    relative_parts = resolved.relative_to(WORKSPACE_ROOT).parts
+    relative_parts = resolved.relative_to(workspace_root).parts
     if relative_parts and relative_parts[0] == ".git":
         return (
             "Error: refusing to delete '.git' (or anything inside it) — that "
@@ -295,10 +298,11 @@ def find_files(pattern: str) -> str:
     """
     import fnmatch
 
+    workspace_root = get_workspace_root()
     matches = []
-    for file in _iter_searchable_files(WORKSPACE_ROOT):
+    for file in _iter_searchable_files(workspace_root):
         if fnmatch.fnmatch(file.name, pattern):
-            matches.append(str(file.relative_to(WORKSPACE_ROOT)))
+            matches.append(str(file.relative_to(workspace_root)))
             if len(matches) >= MAX_FOUND_FILES:
                 break
 
@@ -325,6 +329,7 @@ def search_text(text: str, path: str = ".") -> str:
     if not start.exists():
         return f"Error: path '{path}' does not exist."
 
+    workspace_root = get_workspace_root()
     needle = text.lower()
     matches = []
     truncated = False
@@ -340,7 +345,7 @@ def search_text(text: str, path: str = ".") -> str:
             continue  # binary file: skip
 
         content = raw.decode("utf-8", errors="replace")
-        rel = file.relative_to(WORKSPACE_ROOT)
+        rel = file.relative_to(workspace_root)
         for line_number, line in enumerate(content.splitlines(), start=1):
             if needle in line.lower():
                 # Trim very long lines so one minified file can't flood the result

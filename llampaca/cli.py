@@ -185,9 +185,17 @@ def remove_model(filename):
 @click.option("-w", "--workspace", help="Cartella di lavoro (workspace) per la sessione.")
 def run(model_name, port, ctx, threads, gpu, no_tools, no_think, draft_model, draft_gpu, ssd_offload, workspace):
     """Launch llama-server and open an interactive agent session."""
-    if workspace:
-        from llampaca.tools.filesystem import set_workspace_root
-        set_workspace_root(workspace)
+    from llampaca.tools.filesystem import set_workspace_root
+    # Default the workspace to the directory the command was launched from,
+    # which is what the README documents ("the directory where you launched
+    # llampaca run") and what a terminal user expects: the point of running
+    # the agent inside a project is to let it read that project.
+    #
+    # It used to default to ~/Documents/LlampacaDocs instead, and project
+    # files were reachable only because the sandbox separately allowed the
+    # whole home directory. Now that the sandbox is the workspace alone, the
+    # default has to be the cwd or the CLI could not read anything useful.
+    set_workspace_root(workspace if workspace else os.getcwd())
     config = load_config()
     
     # 1. Resolve model path
