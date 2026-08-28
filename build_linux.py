@@ -90,7 +90,8 @@ def main():
     print("=" * 60)
 
     if not sys.platform.startswith("linux"):
-        print("Warning: Running build_linux.py on non-Linux OS. PyInstaller step requires Linux environment.", file=sys.stderr)
+        print("Error: build_linux.py must be run on Linux.", file=sys.stderr)
+        sys.exit(1)
 
     project_root = Path(__file__).resolve().parent
     venv_py = project_root / ".venv" / "bin" / "python"

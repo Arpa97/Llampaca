@@ -1,7 +1,7 @@
 #!/bin/bash
 # Post-installation script for Llampaca macOS Installer (.pkg)
 # 1. Creates the global command-line shortcut in /usr/local/bin
-# 2. Runs init as logged-in console user to initialize ~/.llampaca, ~/.llampaca/venv, bin & default model
+# 2. Runs init as logged-in console user to initialize ~/.llampaca, bin & default model
 
 mkdir -p /usr/local/bin
 ln -sf "/Applications/Llampaca.app/Contents/MacOS/Llampaca" /usr/local/bin/llampaca

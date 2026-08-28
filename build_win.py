@@ -86,7 +86,8 @@ def main():
     print("=" * 60)
 
     if sys.platform != "win32":
-        print("Warning: Running build_win.py on non-Windows OS. PyInstaller step requires Windows environment.", file=sys.stderr)
+        print("Error: build_win.py must be run on Windows.", file=sys.stderr)
+        sys.exit(1)
 
     project_root = Path(__file__).resolve().parent
     venv_py = project_root / ".venv" / "Scripts" / "python.exe"

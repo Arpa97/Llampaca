@@ -222,6 +222,8 @@ def get_preset_for_file(filename: str):
 
 def ensure_venv():
     """Ensure dedicated isolated virtualenv exists in ~/.llampaca/venv."""
+    if getattr(sys, "frozen", False):
+        return
     if not (LLAMPACA_VENV / "bin" / "python").exists() and not (LLAMPACA_VENV / "Scripts" / "python.exe").exists():
         try:
             import venv
