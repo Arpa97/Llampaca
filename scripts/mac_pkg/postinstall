@@ -1,0 +1,16 @@
+#!/bin/bash
+# Post-installation script for Llampaca macOS Installer (.pkg)
+# 1. Creates the global command-line shortcut in /usr/local/bin
+# 2. Runs init as logged-in console user to initialize ~/.llampaca, bin & default model
+
+mkdir -p /usr/local/bin
+ln -sf "/Applications/Llampaca.app/Contents/MacOS/Llampaca" /usr/local/bin/llampaca
+chmod +x /usr/local/bin/llampaca
+
+CONSOLE_USER=$(stat -f "%Su" /dev/console)
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    echo "Initializing Llampaca environment for user: $CONSOLE_USER..."
+    sudo -u "$CONSOLE_USER" "/Applications/Llampaca.app/Contents/MacOS/Llampaca" init || true
+fi
+
+exit 0

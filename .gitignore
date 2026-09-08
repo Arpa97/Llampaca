@@ -3,8 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 .DS_Store
-
-
+.agents
+ROADMAP.*
 # C extensions
 *.so
 
@@ -12,7 +12,7 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+# dist/
 downloads/
 eggs/
 .eggs/
@@ -33,6 +33,7 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!Llampaca.spec
 
 # Installer logs
 pip-log.txt
@@ -218,3 +219,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated documents & dependencies
+*.docx
+*.txt
+node_modules/
+
+# I testi di licenza dei componenti di terze parti inclusi in
+# llampaca/gui/vendor/ devono essere versionati e finire nel pacchetto
+# distribuito: la regola "*.txt" qui sopra li escludeva, ma la SIL Open Font
+# License richiede che il suo testo accompagni i font che copre.
+!llampaca/gui/vendor/*.txt

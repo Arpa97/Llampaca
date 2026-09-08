@@ -16,6 +16,7 @@ loop. The registry does two jobs:
    the error and try a different approach.
 """
 
+import asyncio
 import inspect
 import json
 from dataclasses import dataclass, field
@@ -32,11 +33,16 @@ _PYTHON_TYPE_TO_JSON = {
     bool: "boolean",
 }
 
-# Hard cap on the size of a tool result sent back to the model.
+# Default cap on the size of a tool result sent back to the model.
 # Local models have small context windows (a few thousand tokens), so a
 # single huge tool result (e.g. reading a big file) could evict the whole
 # conversation. Anything longer is truncated with an explicit marker so the
 # model knows the output is partial.
+#
+# This is only the fallback for registries built without an explicit cap:
+# the CLI passes a cap proportional to the actual context size instead
+# (see build_default_registry / cli.py), so bigger contexts allow bigger
+# tool results and smaller contexts stay protected.
 MAX_TOOL_RESULT_CHARS = 8000
 
 
@@ -96,10 +102,10 @@ class Tool:
     description: str
     func: Callable
     parameters: dict = field(default_factory=dict)
-    # When True, the agent loop asks the user for confirmation before
     # executing (used for destructive/dangerous tools like shell commands
     # and file writes).
     requires_confirmation: bool = False
+    compressible: bool = False
 
     def to_openai_format(self) -> dict:
         """Return the tool definition in the OpenAI 'tools' request format."""
@@ -116,8 +122,17 @@ class Tool:
 class ToolRegistry:
     """Holds the set of tools available to an Agent and executes them."""
 
-    def __init__(self):
+    def __init__(self, max_result_chars: int = MAX_TOOL_RESULT_CHARS):
+        """
+        Args:
+            max_result_chars: Hard cap (in characters) on the size of a tool
+                result returned to the model; longer results are truncated
+                with an explicit marker. Callers that know the model's
+                context size should scale this accordingly (a character is
+                roughly a quarter of a token).
+        """
         self._tools: Dict[str, Tool] = {}
+        self.max_result_chars = max_result_chars
 
     def register(
         self,
@@ -126,6 +141,7 @@ class ToolRegistry:
         name: str = None,
         description: str = None,
         requires_confirmation: bool = False,
+        compressible: bool = False,
     ) -> Tool:
         """
         Register a Python function as a tool.
@@ -141,6 +157,7 @@ class ToolRegistry:
             name: Tool name shown to the model (defaults to the function name).
             description: Override for the docstring description.
             requires_confirmation: Ask the user before executing this tool.
+            compressible: If true, long output can be summarized.
         """
         tool_name = name or func.__name__
         doc_description, param_docs = _parse_docstring(func.__doc__)
@@ -171,6 +188,7 @@ class ToolRegistry:
                 "required": required,
             },
             requires_confirmation=requires_confirmation,
+            compressible=compressible,
         )
         self._tools[tool_name] = tool
         return tool
@@ -187,7 +205,7 @@ class ToolRegistry:
         """All tool definitions in the OpenAI 'tools' request format."""
         return [tool.to_openai_format() for tool in self._tools.values()]
 
-    def execute(self, name: str, arguments_json: str) -> str:
+    async def execute(self, name: str, arguments_json: str) -> str:
         """
         Execute a tool by name with the JSON arguments produced by the model.
 
@@ -210,7 +228,12 @@ class ToolRegistry:
             return f"Error: tool arguments must be a JSON object, got: {arguments_json!r}"
 
         try:
-            result = tool.func(**arguments)
+            if inspect.iscoroutinefunction(tool.func):
+                result = await tool.func(**arguments)
+            else:
+                result = tool.func(**arguments)
+                if inspect.isawaitable(result):
+                    result = await result
         except TypeError as e:
             # Wrong/missing parameters — tell the model what the schema expects
             return f"Error: invalid arguments for tool '{name}': {e}"
@@ -220,9 +243,9 @@ class ToolRegistry:
 
         result_str = str(result)
         # Truncate oversized results to protect the small local context window
-        if len(result_str) > MAX_TOOL_RESULT_CHARS:
+        if len(result_str) > self.max_result_chars:
             result_str = (
-                result_str[:MAX_TOOL_RESULT_CHARS]
+                result_str[:self.max_result_chars]
                 + f"\n... [truncated: output was {len(result_str)} characters]"
             )
         return result_str

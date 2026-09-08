@@ -9,6 +9,16 @@ from llampaca.config import DB_PATH
 
 db_path = DB_PATH
 
+# Database paths whose schema and migrations have already been verified by
+# THIS process. get_db_connection() opens a fresh connection for every
+# operation (several per chat turn: user message, assistant message,
+# summary update...), and the schema/migration block below — a PRAGMA
+# table_info plus several CREATE TABLE/INDEX IF NOT EXISTS statements and a
+# commit — is idempotent but not free. The schema cannot change while the
+# process runs, so verifying it once per database removes that fixed cost
+# from every subsequent connection.
+_migrated_paths = set()
+
 @asynccontextmanager
 async def get_db_connection(db_path: Path = None):
     """
@@ -17,24 +27,30 @@ async def get_db_connection(db_path: Path = None):
     Ensures that foreign key constraints are enabled and rows are accessible as Row objects.
     Automatically initializes database tables on the first connection (if file doesn't exist).
     Supports concurrent writes by enabling WAL mode and setting a connection busy timeout.
+    Schema creation and migrations run once per database per process (see _migrated_paths).
     """
     path = db_path if db_path is not None else DB_PATH
-    
+
     # Ensure parent directory of the database file exists
     path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Check if database file exists and is not empty before connecting
     db_exists = path.exists() and path.stat().st_size > 0
-    
+
     # Connect with a busy timeout of 5 seconds to prevent locking errors under concurrency
     conn = await aiosqlite.connect(str(path), timeout=5.0)
     conn.row_factory = aiosqlite.Row
-    
+
     # SQLite requires foreign keys to be explicitly enabled per connection
     await conn.execute("PRAGMA foreign_keys = ON;")
     # Enable WAL mode to allow non-blocking concurrent reads and writes
     await conn.execute("PRAGMA journal_mode = WAL;")
-    
+
+    # Schema/migrations are needed when this process has not verified this
+    # database yet, or when the file has disappeared since (e.g. deleted by
+    # a test): an empty file must always be (re)initialized.
+    needs_init = str(path) not in _migrated_paths or not db_exists
+
     # Implicit schema creation on first database file initialization
     if not db_exists:
         try:
@@ -43,6 +59,9 @@ async def get_db_connection(db_path: Path = None):
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     model_name TEXT NOT NULL,
+                    summary TEXT DEFAULT NULL,
+                    last_summarized_message_id INTEGER DEFAULT NULL,
+                    workspace_dir TEXT DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
@@ -68,6 +87,66 @@ async def get_db_connection(db_path: Path = None):
                 pass
             raise
             
+    # Run migrations for existing databases to ensure they have the new
+    # columns — skipped entirely once this process has verified this
+    # database (needs_init above): the schema cannot regress mid-process.
+    if needs_init:
+        try:
+            cursor = await conn.execute("PRAGMA table_info(conversations);")
+            columns = [row["name"] for row in await cursor.fetchall()]
+            migration_needed = False
+            if "summary" not in columns:
+                await conn.execute("ALTER TABLE conversations ADD COLUMN summary TEXT DEFAULT NULL;")
+                migration_needed = True
+            if "last_summarized_message_id" not in columns:
+                await conn.execute("ALTER TABLE conversations ADD COLUMN last_summarized_message_id INTEGER DEFAULT NULL;")
+                migration_needed = True
+            if "workspace_dir" not in columns:
+                await conn.execute("ALTER TABLE conversations ADD COLUMN workspace_dir TEXT DEFAULT NULL;")
+                migration_needed = True
+            if migration_needed:
+                await conn.commit()
+
+            # RAG tables (attachments too large for direct injection). Created
+            # unconditionally with IF NOT EXISTS so both fresh and pre-existing
+            # databases get them — table creation is idempotent and cheap, so it
+            # doubles as its own migration.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    pages INTEGER,
+                    embedder_name TEXT NOT NULL,
+                    embedding_dim INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id INTEGER NOT NULL,
+                    page INTEGER,
+                    position INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+                );
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id);"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_conversation ON documents(conversation_id);"
+            )
+            await conn.commit()
+            _migrated_paths.add(str(path))
+        except Exception:
+            await conn.close()
+            raise
+
+
     try:
         yield conn
         await conn.commit()
@@ -84,7 +163,7 @@ async def init_db(db_path: Path = None):
     async with get_db_connection(db_path) as _:
         pass
 
-async def create_conversation(model_name: str, title: str = "New Conversation", db_path: Path = None) -> str:
+async def create_conversation(model_name: str, title: str = "New Conversation", workspace_dir: str = None, db_path: Path = None) -> str:
     """
     Create a new conversation entry in the database.
     Returns the generated conversation UUID string.
@@ -93,13 +172,14 @@ async def create_conversation(model_name: str, title: str = "New Conversation", 
     
     async with get_db_connection(db_path) as conn:
         await conn.execute(
-            "INSERT INTO conversations (id, title, model_name) VALUES (?, ?, ?);",
-            (conv_id, title, model_name)
+            "INSERT INTO conversations (id, title, model_name, workspace_dir) VALUES (?, ?, ?, ?);",
+            (conv_id, title, model_name, workspace_dir)
         )
         
     return conv_id
 
-async def add_message(conversation_id: str, role: str, content: str, db_path: Path = None) -> int:
+async def add_message(conversation_id: str, role: str, content: str, db_path: Path = None,
+                      title_snippet: str = None) -> int:
     """
     Add a message to a conversation.
     Updates the 'updated_at' timestamp of the conversation.
@@ -136,8 +216,7 @@ async def add_message(conversation_id: str, role: str, content: str, db_path: Pa
                 )
                 row = await cursor.fetchone()
                 if row and row["title"] == "New Conversation":
-                    # Generate a nice, clean title from the message snippet
-                    snippet = content.strip().replace("\n", " ")
+                    snippet = (title_snippet or content).strip().replace("\n", " ")
                     if len(snippet) > 40:
                         snippet = snippet[:37].rstrip() + "..."
                     if snippet:
@@ -156,7 +235,7 @@ async def get_conversation(conversation_id: str, db_path: Path = None) -> dict:
     async with get_db_connection(db_path) as conn:
         # Fetch conversation metadata
         cursor = await conn.execute(
-            "SELECT id, title, model_name, created_at, updated_at FROM conversations WHERE id = ?;",
+            "SELECT id, title, model_name, summary, last_summarized_message_id, workspace_dir, created_at, updated_at FROM conversations WHERE id = ?;",
             (conversation_id,)
         )
         conv_row = await cursor.fetchone()
@@ -167,11 +246,21 @@ async def get_conversation(conversation_id: str, db_path: Path = None) -> dict:
         
         # Fetch conversation messages in ascending order
         cursor = await conn.execute(
-            "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC;",
+            "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC;",
             (conversation_id,)
         )
         rows = await cursor.fetchall()
-        messages = [dict(row) for row in rows]
+        import json
+        messages = []
+        for row in rows:
+            msg = dict(row)
+            content = msg["content"]
+            if content and isinstance(content, str) and content.startswith("[") and content.endswith("]"):
+                try:
+                    msg["content"] = json.loads(content)
+                except json.JSONDecodeError:
+                    pass
+            messages.append(msg)
         conv_data["messages"] = messages
         
     return conv_data
@@ -182,7 +271,7 @@ async def list_conversations(db_path: Path = None) -> list:
     """
     async with get_db_connection(db_path) as conn:
         cursor = await conn.execute(
-            "SELECT id, title, model_name, created_at, updated_at FROM conversations ORDER BY updated_at DESC;"
+            "SELECT id, title, model_name, summary, last_summarized_message_id, workspace_dir, created_at, updated_at FROM conversations ORDER BY updated_at DESC;"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -207,3 +296,133 @@ async def update_conversation_title(conversation_id: str, title: str, db_path: P
             "UPDATE conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
             (title, conversation_id)
         )
+
+async def update_conversation_workspace(conversation_id: str, workspace_dir: str, db_path: Path = None):
+    """
+    Update the workspace_dir of a specific conversation.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.execute(
+            "UPDATE conversations SET workspace_dir = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (workspace_dir, conversation_id)
+        )
+
+async def update_conversation_summary(
+    conversation_id: str,
+    summary: str,
+    last_summarized_message_id: int,
+    db_path: Path = None
+) -> None:
+    """
+    Update the conversation summary and the ID of the last summarized message.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.execute(
+            "UPDATE conversations SET summary = ?, last_summarized_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+            (summary, last_summarized_message_id, conversation_id)
+        )
+
+# ----------------------------------------------------------------------
+# RAG document index (attachments too large for direct injection)
+# ----------------------------------------------------------------------
+
+async def add_document(
+    conversation_id: str,
+    filename: str,
+    pages: int,
+    embedder_name: str,
+    embedding_dim: int,
+    db_path: Path = None,
+) -> int:
+    """
+    Register an indexed attachment for a conversation.
+
+    Args:
+        pages: Page count of the source (None/0 for pageless sources).
+        embedder_name: The embedding model file that produced the vectors.
+        embedding_dim: Vector dimension — stored so the pipeline can detect
+            an embedder change and re-index instead of comparing
+            incompatible vectors.
+
+    Returns:
+        The new document's integer id (chunks reference it).
+    """
+    async with get_db_connection(db_path) as conn:
+        cursor = await conn.execute(
+            "INSERT INTO documents (conversation_id, filename, pages, embedder_name, embedding_dim)"
+            " VALUES (?, ?, ?, ?, ?);",
+            (conversation_id, filename, pages, embedder_name, embedding_dim)
+        )
+        return cursor.lastrowid
+
+
+async def add_chunks(document_id: int, chunks: list, db_path: Path = None) -> None:
+    """
+    Store the retrieval chunks of a document in one transaction.
+
+    Args:
+        chunks: Dicts with keys "text", "page", "position" (as produced by
+            rag.chunk_text) plus "embedding": the raw float32 BLOB from
+            rag.serialize_vector. One transaction for all chunks: a
+            document must be indexed entirely or not at all — a partial
+            index would silently return incomplete search results.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.executemany(
+            "INSERT INTO chunks (document_id, page, position, text, embedding)"
+            " VALUES (?, ?, ?, ?, ?);",
+            [
+                (document_id, c["page"], c["position"], c["text"], c["embedding"])
+                for c in chunks
+            ]
+        )
+
+
+async def list_documents(conversation_id: str, db_path: Path = None) -> list:
+    """
+    The indexed documents of a conversation (metadata only, no chunks),
+    oldest first. Used to tell the model what is searchable and to detect
+    embedder mismatches on resume.
+    """
+    async with get_db_connection(db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT id, filename, pages, embedder_name, embedding_dim, created_at"
+            " FROM documents WHERE conversation_id = ? ORDER BY id ASC;",
+            (conversation_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_conversation_chunks(conversation_id: str, db_path: Path = None) -> list:
+    """
+    All retrieval chunks of all documents of a conversation, with their
+    filename attached — the exact input rag.top_k expects. The whole set is
+    loaded in memory by design: ~100 chunks x 4 KB per document, so even
+    ten attached documents are a few MB (see rag.py on why brute-force).
+    """
+    async with get_db_connection(db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT chunks.id, chunks.document_id, chunks.page, chunks.position,"
+            "       chunks.text, chunks.embedding, documents.filename"
+            " FROM chunks JOIN documents ON chunks.document_id = documents.id"
+            " WHERE documents.conversation_id = ?"
+            " ORDER BY chunks.document_id ASC, chunks.position ASC;",
+            (conversation_id,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_document(document_id: int, db_path: Path = None) -> None:
+    """
+    Remove one indexed document (its chunks go with it via CASCADE).
+    Used when re-indexing after an embedder change.
+    """
+    async with get_db_connection(db_path) as conn:
+        await conn.execute(
+            "DELETE FROM documents WHERE id = ?;",
+            (document_id,)
+        )
+
+
