@@ -6,7 +6,7 @@
 
 Llampaca is a `llama.cpp`-based local AI assistant written in Python. It self-hosts an inference engine, downloads precompiled binaries automatically, manages GGUF models from Hugging Face, and gives you a fully agentic, MCP-ready personal assistant — all without leaving your terminal or GUI.
 
-To download llampaca alpha click [here] (https://github.com/Arpa97/Llampaca/releases/tag/llampaca)
+To download llampaca alpha click [here](https://github.com/Arpa97/Llampaca/releases/tag/llampaca)
 
 ---
 
